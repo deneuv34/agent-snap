@@ -85,15 +85,11 @@ func (s *Store) Create(ctx context.Context, reason string) (Snapshot, error) {
 		reason = "manual"
 	}
 
-	tmpRoot, err := scratchRootOutside(s.repo)
+	tmpDir, cleanup, err := createScratchIndex(s.repo)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	tmpDir, err := os.MkdirTemp(tmpRoot, "agent-snap-index-")
-	if err != nil {
-		return Snapshot{}, err
-	}
-	defer os.RemoveAll(tmpDir)
+	defer cleanup()
 	indexPath := filepath.Join(tmpDir, "index")
 	scratchEnv := []string{
 		"GIT_INDEX_FILE=" + indexPath,
@@ -171,6 +167,23 @@ func (s *Store) Create(ctx context.Context, reason string) (Snapshot, error) {
 			return Snapshot{ID: id, Commit: commit, Reason: reason, CreatedAt: now, ChangedFiles: changed}, nil
 		}
 	}
+}
+
+// createScratchIndex allocates the private scratch directory that holds the
+// temporary index for one snapshot. The directory is guaranteed to live
+// outside the repository (so a snapshot can never capture it), is uniquely
+// named per allocation, and is removed by the returned cleanup function.
+// Create uses exactly this helper; the safety tests exercise it directly.
+func createScratchIndex(repo string) (scratchDir string, cleanup func(), err error) {
+	tmpRoot, err := scratchRootOutside(repo)
+	if err != nil {
+		return "", nil, err
+	}
+	dir, err := os.MkdirTemp(tmpRoot, "agent-snap-index-")
+	if err != nil {
+		return "", nil, err
+	}
+	return dir, func() { _ = os.RemoveAll(dir) }, nil
 }
 
 // scratchRootOutside returns a temp directory candidate that is not inside

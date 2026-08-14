@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,12 +30,26 @@ func protocolRepo(t *testing.T) string {
 	return dir
 }
 
+// requestLine builds a JSONL request with encoding/json so embedded paths
+// (Windows backslashes, quotes, non-ASCII) are always valid JSON.
+func requestLine(id int, method string, params map[string]any) string {
+	req := map[string]any{"id": id, "method": method}
+	if params != nil {
+		req["params"] = params
+	}
+	line, err := json.Marshal(req)
+	if err != nil {
+		panic(fmt.Sprintf("marshal request: %v", err))
+	}
+	return string(line)
+}
+
 func TestServerHandlesPingCreateAndList(t *testing.T) {
 	dir := protocolRepo(t)
 	input := strings.Join([]string{
-		`{"id":1,"method":"ping"}`,
-		`{"id":2,"method":"snapshot.create","params":{"cwd":"` + dir + `","reason":"test"}}`,
-		`{"id":3,"method":"snapshot.list","params":{"cwd":"` + dir + `","limit":5}}`,
+		requestLine(1, "ping", nil),
+		requestLine(2, "snapshot.create", map[string]any{"cwd": dir, "reason": "test"}),
+		requestLine(3, "snapshot.list", map[string]any{"cwd": dir, "limit": 5}),
 	}, "\n") + "\n"
 	var output bytes.Buffer
 

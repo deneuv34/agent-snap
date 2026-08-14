@@ -25,6 +25,11 @@ func serveRequest(t *testing.T, line string) map[string]any {
 	return response
 }
 
+func serveRequestFor(t *testing.T, id int, method string, params map[string]any) map[string]any {
+	t.Helper()
+	return serveRequest(t, requestLine(id, method, params))
+}
+
 func errCode(t *testing.T, response map[string]any) float64 {
 	t.Helper()
 	rawErr, ok := response["error"].(map[string]any)
@@ -39,54 +44,63 @@ func errCode(t *testing.T, response map[string]any) float64 {
 }
 
 func TestServerRejectsNonStringCwd(t *testing.T) {
-	response := serveRequest(t, `{"id":1,"method":"snapshot.create","params":{"cwd":42}}`)
+	response := serveRequest(t, requestLine(1, "snapshot.create", map[string]any{"cwd": 42}))
 	if got := errCode(t, response); got != CodeInvalidParams {
 		t.Fatalf("want %d, got %v: %v", CodeInvalidParams, got, response)
 	}
 }
 
 func TestServerRejectsUnknownParams(t *testing.T) {
-	response := serveRequest(t, `{"id":1,"method":"snapshot.create","params":{"cwd":"/tmp","reason":"x","bogus":1}}`)
+	response := serveRequest(t, requestLine(1, "snapshot.create", map[string]any{"cwd": "/tmp", "reason": "x", "bogus": 1}))
 	if got := errCode(t, response); got != CodeInvalidParams {
 		t.Fatalf("want %d, got %v: %v", CodeInvalidParams, got, response)
 	}
 }
 
 func TestServerRejectsBadLimit(t *testing.T) {
-	response := serveRequest(t, `{"id":1,"method":"snapshot.list","params":{"cwd":"/tmp","limit":"many"}}`)
+	response := serveRequest(t, requestLine(1, "snapshot.list", map[string]any{"cwd": "/tmp", "limit": "many"}))
 	if got := errCode(t, response); got != CodeInvalidParams {
 		t.Fatalf("want %d, got %v: %v", CodeInvalidParams, got, response)
 	}
 }
 
 func TestServerRejectsParamsForPing(t *testing.T) {
-	response := serveRequest(t, `{"id":1,"method":"ping","params":{"cwd":"/tmp"}}`)
+	response := serveRequest(t, requestLine(1, "ping", map[string]any{"cwd": "/tmp"}))
 	if got := errCode(t, response); got != CodeInvalidParams {
 		t.Fatalf("want %d, got %v: %v", CodeInvalidParams, got, response)
 	}
 }
 
 func TestServerRejectsMissingCwd(t *testing.T) {
-	response := serveRequest(t, `{"id":1,"method":"snapshot.list","params":{"limit":5}}`)
+	response := serveRequest(t, requestLine(1, "snapshot.list", map[string]any{"limit": 5}))
 	if got := errCode(t, response); got != CodeInvalidParams {
 		t.Fatalf("want %d, got %v: %v", CodeInvalidParams, got, response)
 	}
 }
 
 func TestServerRejectsOutOfRangeLimits(t *testing.T) {
-	for _, limit := range []string{"0", "-1", "101", "1.5"} {
-		response := serveRequest(t, `{"id":1,"method":"snapshot.list","params":{"cwd":"/tmp","limit":`+limit+`}}`)
+	for _, limit := range []any{0, -1, 101, 1.5} {
+		response := serveRequest(t, requestLine(1, "snapshot.list", map[string]any{"cwd": "/tmp", "limit": limit}))
 		if got := errCode(t, response); got != CodeInvalidParams {
-			t.Fatalf("limit %s: want %d, got %v: %v", limit, CodeInvalidParams, got, response)
+			t.Fatalf("limit %v: want %d, got %v: %v", limit, CodeInvalidParams, got, response)
 		}
 	}
 }
 
 func TestServerAcceptsBoundedLimit(t *testing.T) {
 	dir := protocolRepo(t)
-	line := `{"id":1,"method":"snapshot.list","params":{"cwd":"` + dir + `","limit":100}}`
-	response := serveRequest(t, line)
+	response := serveRequestFor(t, 1, "snapshot.list", map[string]any{"cwd": dir, "limit": 100})
 	if _, hasErr := response["error"]; hasErr {
 		t.Fatalf("limit 100 must be accepted: %v", response)
+	}
+}
+
+// Windows paths contain backslashes, which are invalid in string-concatenated
+// JSON. Marshaled requests must round-trip them as ordinary path values.
+func TestServerAcceptsBackslashPaths(t *testing.T) {
+	winPath := `C:\Users\runner\work\repo`
+	response := serveRequest(t, requestLine(1, "snapshot.list", map[string]any{"cwd": winPath, "limit": 100}))
+	if code := errCode(t, response); code != CodeInternalError {
+		t.Fatalf("backslash path must parse (then fail as a non-repo), got code %v: %v", code, response)
 	}
 }

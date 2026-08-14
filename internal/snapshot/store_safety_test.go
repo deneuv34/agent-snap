@@ -9,9 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestCreateWorksInRepoWithoutCommits(t *testing.T) {
@@ -99,71 +97,106 @@ func TestCreateIgnoresInheritedGitRepositoryEnv(t *testing.T) {
 }
 
 func TestCreateKeepsIndexInPrivateDir(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
-
 	dir := testRepo(t)
-	for i := 0; i < 100; i++ {
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%03d.txt", i)), []byte("x\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("changed\n"), 0o644); err != nil {
+	indexBefore := git(t, dir, "write-tree")
+
+	// Poison every temp override to point inside the repository: the scratch
+	// machinery must refuse to place its index (or git child temp files)
+	// anywhere the snapshot could capture them.
+	t.Setenv("TMPDIR", dir)
+	t.Setenv("TMP", dir)
+	t.Setenv("TEMP", dir)
+
+	repoReal, err := filepath.EvalSymlinks(dir)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	var sawEntry atomic.Bool
-	var sawBareFile atomic.Bool
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			entries, err := os.ReadDir(tmp)
-			if err == nil {
-				for _, e := range entries {
-					if strings.HasPrefix(e.Name(), "agent-snap-index-") {
-						sawEntry.Store(true)
-						if !e.IsDir() {
-							sawBareFile.Store(true)
-						}
-					}
-				}
-			}
-			time.Sleep(50 * time.Microsecond)
-		}
-	}()
+	// Deterministic part one: the exact production allocation path yields a
+	// scratch directory outside the repo.
+	scratch, cleanup, err := createScratchIndex(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOutside(t, repoReal, scratch, "scratch dir")
 
+	info, err := os.Stat(scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("scratch path %s is not a directory", scratch)
+	}
+	if runtime.GOOS == "windows" {
+		// Windows reports synthetic 0777 directory modes; Unix mode bits do
+		// not exist there. Assert the guarantees the platform provides
+		// instead: allocations are unique and the helper owns cleanup.
+		second, secondCleanup, err := createScratchIndex(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if second == scratch {
+			t.Fatalf("scratch dir path is not unique: %s", scratch)
+		}
+		secondCleanup()
+		if _, err := os.Stat(second); !os.IsNotExist(err) {
+			t.Fatalf("cleanup must remove the scratch dir, got %v", err)
+		}
+	} else {
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			t.Fatalf("scratch dir is not private: mode %v", perm)
+		}
+	}
+
+	// Deterministic part two: cleanup removes the scratch directory.
+	cleanup()
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Fatalf("cleanup must remove the scratch dir, got %v", err)
+	}
+
+	// Deterministic part three: a full create succeeds, leaves the real
+	// index untouched, and leaves no scratch artifacts behind.
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	store, err := New(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(context.Background(), "private-index"); err != nil {
-		t.Fatal(err)
-	}
-	close(stop)
-	wg.Wait()
-
-	if !sawEntry.Load() {
-		t.Fatal("watcher never observed the index in TMPDIR; test is not meaningful")
-	}
-	if sawBareFile.Load() {
-		t.Fatal("index was created as a bare file directly in TMPDIR; must live inside a private directory")
-	}
-	leftovers, err := os.ReadDir(tmp)
+	snap, err := store.Create(context.Background(), "private-index")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, e := range leftovers {
-		if strings.HasPrefix(e.Name(), "agent-snap-index-") {
-			t.Fatalf("leftover index entry: %s", e.Name())
+	if got := git(t, dir, "write-tree"); got != indexBefore {
+		t.Fatalf("index changed: got %s want %s", got, indexBefore)
+	}
+	out := git(t, dir, "ls-tree", "-r", "--name-only", snap.Commit)
+	if strings.Contains(out, "agent-snap-index-") {
+		t.Fatalf("scratch index captured into the snapshot: %s", out)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "agent-snap-index-") {
+			t.Fatalf("scratch dir left inside the repository: %s", entry.Name())
 		}
+	}
+}
+
+func assertOutside(t *testing.T, repoReal, candidate, label string) {
+	t.Helper()
+	real := candidate
+	if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
+		real = resolved
+	}
+	rel, err := filepath.Rel(repoReal, real)
+	if err != nil {
+		t.Fatalf("%s %s cannot be compared with repo %s: %v", label, candidate, repoReal, err)
+	}
+	if !(rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel)) {
+		t.Fatalf("%s %s is inside the repository %s", label, candidate, repoReal)
 	}
 }
 
