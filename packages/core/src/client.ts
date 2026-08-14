@@ -1,7 +1,18 @@
 import { execFile, spawn, type ChildProcessByStdio } from "node:child_process"
 import { createInterface, type Interface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
+import {
+  GROUP_POLL_MS,
+  GUARDIAN_WAIT_MS,
+  KILL_GRACE_MS,
+  WINDOWS_TREE_WAIT_MS,
+  groupEmptyDecision,
+  windowsTreeCompletionDecision,
+  type GroupState,
+} from "./teardown.js"
 import type { PingResult, SnapListResult, SnapSnapshot } from "./types.js"
+
+type SnapChild = ChildProcessByStdio<Writable, Readable, null>
 
 export class SnapRpcError extends Error {
   readonly code: number
@@ -28,18 +39,135 @@ export interface SnapClientOptions {
 }
 
 interface Pending {
-  child: ChildProcessByStdio<Writable, Readable, null>
+  child: SnapChild
   method: string
   resolve: (value: unknown) => void
   reject: (error: Error) => void
   timer: NodeJS.Timeout
 }
 
-const KILL_GRACE_MS = 2_000
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
+
+function errnoCode(err: unknown): string | undefined {
+  return (err as { code?: unknown } | null)?.code as string | undefined
+}
+
+function isEsrch(err: unknown): boolean {
+  return errnoCode(err) === "ESRCH"
+}
+
+/**
+ * Observes whether the POSIX process group identified by `pid` still has any
+ * member. Returns "live"/"empty" and throws on observation failures other
+ * than ESRCH (e.g. EPERM), so callers fail closed rather than guessing.
+ * Observation only — this never signals.
+ */
+function observeGroup(pid: number): GroupState {
+  try {
+    process.kill(-pid, 0)
+    return "live"
+  } catch (err) {
+    if (isEsrch(err)) return "empty"
+    throw err
+  }
+}
+
+function groupSignalError(pid: number, err: unknown): Error {
+  return new Error(`failed to inspect agent-snap process group ${pid}: ${err instanceof Error ? err.message : String(err)}`)
+}
+
+/**
+ * The guardian supervisor (POSIX only).
+ *
+ * The client never signals a bare process group: it spawns this small
+ * detached supervisor as the session and process-group leader, and the
+ * guardian spawns agent-snap under it, so the whole tree (git, filters, …)
+ * lives in the guardian's group. The guardian owns the group identity for
+ * its entire lifetime:
+ *
+ *  - it ignores SIGTERM, so it is still alive while any delayed cleanup
+ *    signal may need to be issued — the PGID cannot be recycled while a
+ *    member (the guardian) provably exists;
+ *  - it issues every group signal itself (SIGTERM now, SIGKILL after the
+ *    grace period), and a signal executed by a member of the group can
+ *    never hit a recycled PGID;
+ *  - after it exits, the client only *observes* the group (kill(-pgid, 0)
+ *    until ESRCH) — never signals — and fails closed if members remain.
+ *
+ * fd 3: control commands from the client ("shutdown").
+ * fd 4: reports to the client ("child-exit …", "spawn-error …").
+ * stdout/stdin: transparent passthrough to/from agent-snap.
+ */
+const GUARDIAN_SCRIPT = `
+process.on("SIGTERM", function () {})
+process.on("SIGINT", function () {})
+var cp = require("node:child_process")
+var fs = require("node:fs")
+var readline = require("node:readline")
+var shuttingDown = false
+function shutdown() {
+  if (shuttingDown) return
+  shuttingDown = true
+  try { process.kill(-process.pid, "SIGTERM") } catch (e) {}
+  var poll = setInterval(function () {
+    var members = -1
+    try {
+      members = cp
+        .execFileSync("pgrep", ["-g", String(process.pid)], { encoding: "utf8" })
+        .trim()
+        .split("\\n")
+        .filter(function (line) {
+          return line.length > 0 && Number(line) !== process.pid
+        }).length
+    } catch (e) {
+      // pgrep exits 1 when no process matches: it never lists itself, and
+      // macOS does not list its caller either, so "no match" means no OTHER
+      // members remain. Anything else (usage error, missing pgrep) stays
+      // conservative (-1) and the grace-period SIGKILL settles teardown.
+      members = e && e.status === 1 ? 0 : -1
+    }
+    if (members === 0) {
+      clearInterval(poll)
+      process.exit(0)
+    }
+  }, 100)
+  setTimeout(function () {
+    clearInterval(poll)
+    try { process.kill(-process.pid, "SIGKILL") } catch (e) {}
+    process.exit(0)
+  }, ${KILL_GRACE_MS})
+}
+var child = null
+try {
+  child = cp.spawn(process.argv[1], process.argv.slice(2), { stdio: ["pipe", "pipe", "inherit"], env: process.env })
+} catch (e) {
+  try { fs.writeSync(4, "spawn-error " + (e && e.message ? e.message : "unknown") + "\\n") } catch (e2) {}
+  process.exit(1)
+}
+child.on("error", function (e) {
+  try { fs.writeSync(4, "spawn-error " + (e && e.message ? e.message : "unknown") + "\\n") } catch (e2) {}
+  process.exit(1)
+})
+child.on("exit", function (code, signal) {
+  try { fs.writeSync(4, "child-exit " + (code === null ? "null" : String(code)) + " " + (signal || "none") + "\\n") } catch (e) {}
+})
+process.stdin.on("error", function () {})
+process.stdin.pipe(child.stdin)
+child.stdin.on("error", function () {})
+child.stdout.pipe(process.stdout)
+process.stdin.on("end", function () { shutdown() })
+// The control channel must be read via net.Socket, never fs.createReadStream:
+// a raw-fd read is serviced by libuv's threadpool and blocks forever once
+// the client stops writing, which deadlocks process.exit() in
+// uv__threadpool_cleanup (the supervisor would never die).
+var net = require("node:net")
+var control = new net.Socket({ fd: 3 })
+readline.createInterface({ input: control, terminal: false }).on("line", function (line) {
+  if (line === "shutdown") shutdown()
+})
+`
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string")
@@ -99,10 +227,21 @@ export class SnapClient {
   readonly #env: NodeJS.ProcessEnv | undefined
   readonly #timeoutMs: number
   readonly #log: (message: string) => void
-  #child: ChildProcessByStdio<Writable, Readable, null> | null = null
+  #child: SnapChild | null = null
   #rl: Interface | null = null
+  #reportRl: Interface | null = null
   #pending = new Map<number, Pending>()
   #nextId = 1
+  // Every teardown starts immediately and runs concurrently; this array is
+  // the aggregate barrier close() drains. A teardown never rejects here —
+  // failures are latched per child in #failedChildren.
+  #teardowns: Array<Promise<void>> = []
+  // Latch: a child stays failed until a retry actually verifies emptiness.
+  // Never consumed into a false success.
+  #failedChildren = new Map<SnapChild, Error>()
+  #killPromises = new WeakMap<SnapChild, Promise<void>>()
+  #tearingDown = new WeakSet<SnapChild>()
+  #closing = false
 
   constructor(options: SnapClientOptions = {}) {
     this.#bin = options.bin ?? SnapClient.defaultBin()
@@ -125,6 +264,10 @@ export class SnapClient {
     return this.#bin
   }
 
+  get pid(): number | undefined {
+    return this.#child?.pid
+  }
+
   async ping(signal?: AbortSignal): Promise<PingResult> {
     return this.request<PingResult>("ping", undefined, { signal })
   }
@@ -142,6 +285,13 @@ export class SnapClient {
     return result.snapshots ?? []
   }
 
+  /**
+   * Sends one JSON-RPC request. Requests made while close() is in progress
+   * reject with "agent-snap client is closing" — close() must exclusively
+   * cover the children that existed when it started, so no untracked
+   * replacement can be spawned mid-close. Once close() has resolved the
+   * client may be reused (it respawns lazily).
+   */
   async request<T>(method: string, params?: Record<string, unknown>, options: { signal?: AbortSignal } = {}): Promise<T> {
     const signal = options.signal
     if (signal?.aborted) {
@@ -161,14 +311,14 @@ export class SnapClient {
         settled = true
         clearTimeout(timer)
         this.#pending.delete(id)
-        void this.#teardown(child, `agent-snap request "${method}" aborted`)
+        this.#startTeardown(child, `agent-snap request "${method}" aborted`)
         reject(abortError())
       }
       const timer = setTimeout(() => {
         settled = true
         signal?.removeEventListener("abort", onAbort)
         this.#pending.delete(id)
-        void this.#teardown(child, `agent-snap request "${method}" timed out after ${this.#timeoutMs}ms`)
+        this.#startTeardown(child, `agent-snap request "${method}" timed out after ${this.#timeoutMs}ms`)
         reject(new Error(`agent-snap request "${method}" timed out after ${this.#timeoutMs}ms`))
       }, this.#timeoutMs)
       signal?.addEventListener("abort", onAbort, { once: true })
@@ -196,100 +346,349 @@ export class SnapClient {
         clearTimeout(timer)
         signal?.removeEventListener("abort", onAbort)
         this.#pending.delete(id)
-        void this.#teardown(child, `failed to write to agent-snap stdin: ${err.message}`)
+        this.#startTeardown(child, `failed to write to agent-snap stdin: ${err.message}`)
         reject(new Error(`failed to write to agent-snap stdin: ${err.message}`))
       })
     })
   }
 
+  /**
+   * Terminates the current child and awaits every teardown — the one just
+   * started and any earlier ones (timeouts/aborts/unexpected exits) that
+   * are still reaping their process trees. Rejects if any teardown failed
+   * to verify the tree is gone; a failure stays latched across close()
+   * calls until a retry actually verifies emptiness. Never resolves while
+   * descendants may be alive.
+   */
   async close(): Promise<void> {
-    const child = this.#child
-    this.#child = null
-    this.#rl?.close()
-    this.#rl = null
-    this.#failAll(new Error("agent-snap client closed"), child)
-    if (child !== null) await this.#killAndWait(child)
+    this.#closing = true
+    try {
+      const child = this.#child
+      this.#child = null
+      this.#rl?.close()
+      this.#rl = null
+      this.#reportRl?.close()
+      this.#reportRl = null
+      if (child !== null) {
+        this.#startTeardown(child, "agent-snap client closed")
+      }
+      await this.#drainTeardowns()
+      for (const child of [...this.#failedChildren.keys()]) {
+        try {
+          await this.#killAndWait(child)
+          this.#failedChildren.delete(child)
+        } catch (err) {
+          this.#failedChildren.set(child, err instanceof Error ? err : new Error(String(err)))
+        }
+      }
+      if (this.#failedChildren.size > 0) {
+        throw [...this.#failedChildren.values()][0]
+      }
+    } finally {
+      this.#closing = false
+    }
+  }
+
+  async #drainTeardowns(): Promise<void> {
+    for (;;) {
+      const batch = this.#teardowns
+      if (batch.length === 0) return
+      this.#teardowns = []
+      await Promise.all(batch)
+    }
   }
 
   #ensureStarted(): void {
+    if (this.#closing) {
+      throw new Error("agent-snap client is closing")
+    }
     if (this.#child !== null && this.#child.exitCode === null && this.#child.signalCode === null) return
-    const child = spawn(this.#bin, this.#serveArgs, {
-      stdio: ["pipe", "pipe", "inherit"],
-      env: this.#env === undefined ? process.env : { ...process.env, ...this.#env },
-      detached: process.platform !== "win32",
-    })
+    const env = this.#env === undefined ? process.env : { ...process.env, ...this.#env }
+    if (process.platform === "win32") {
+      const child = spawn(this.#bin, this.#serveArgs, {
+        stdio: ["pipe", "pipe", "inherit"],
+        env,
+      })
+      this.#child = child
+      const rl = createInterface({ input: child.stdout })
+      this.#rl = rl
+      rl.on("line", (line) => this.#onLine(line))
+      child.on("error", (err: NodeJS.ErrnoException) => {
+        const message =
+          err.code === "ENOENT"
+            ? `agent-snap binary not found at "${this.#bin}" — install it (go install ./cmd/agent-snap) or set AGENT_SNAP_BIN`
+            : `agent-snap failed to start: ${err.message}`
+        this.#log(message)
+        this.#failAll(new Error(message), child)
+        if (this.#child === child) this.#child = null
+        rl.close()
+      })
+      child.on("exit", (code, signal) => {
+        this.#log(`agent-snap exited (code=${code}, signal=${signal ?? "none"})`)
+        const message = `agent-snap exited unexpectedly (code=${code}, signal=${signal ?? "none"})`
+        this.#failAll(new Error(message), child)
+        if (this.#child === child) this.#child = null
+        rl.close()
+        if (!this.#tearingDown.has(child)) {
+          this.#startTeardown(child, message)
+        }
+      })
+      return
+    }
+    // POSIX: spawn the guardian supervisor, which owns the process group
+    // and spawns agent-snap inside it.
+    const child = spawn(process.execPath, ["--eval", GUARDIAN_SCRIPT, this.#bin, ...this.#serveArgs], {
+      stdio: ["pipe", "pipe", "inherit", "pipe", "pipe"],
+      env,
+      detached: true,
+    }) as SnapChild
     this.#child = child
     const rl = createInterface({ input: child.stdout })
     this.#rl = rl
     rl.on("line", (line) => this.#onLine(line))
+    const reportRl = createInterface({ input: child.stdio[4] as Readable })
+    this.#reportRl = reportRl
+    reportRl.on("line", (line) => this.#onReport(child, line))
     child.on("error", (err: NodeJS.ErrnoException) => {
-      const message =
-        err.code === "ENOENT"
-          ? `agent-snap binary not found at "${this.#bin}" — install it (go install ./cmd/agent-snap) or set AGENT_SNAP_BIN`
-          : `agent-snap failed to start: ${err.message}`
+      const message = `agent-snap supervisor failed to start: ${err.message}`
       this.#log(message)
       this.#failAll(new Error(message), child)
       if (this.#child === child) this.#child = null
       rl.close()
+      reportRl.close()
     })
     child.on("exit", (code, signal) => {
-      this.#log(`agent-snap exited (code=${code}, signal=${signal ?? "none"})`)
-      this.#failAll(new Error(`agent-snap exited unexpectedly (code=${code}, signal=${signal ?? "none"})`), child)
+      this.#log(`agent-snap supervisor exited (code=${code}, signal=${signal ?? "none"})`)
+      const message = `agent-snap supervisor exited (code=${code}, signal=${signal ?? "none"})`
+      this.#failAll(new Error(message), child)
       if (this.#child === child) this.#child = null
-      rl.close()
+      reportRl.close()
+      if (!this.#tearingDown.has(child)) {
+        this.#startTeardown(child, message)
+      }
     })
   }
 
-  async #teardown(child: ChildProcessByStdio<Writable, Readable, null>, message: string): Promise<void> {
-    if (this.#child === child) this.#child = null
-    this.#failAll(new Error(message), child)
-    await this.#killAndWait(child)
-  }
-
-  #killAndWait(child: ChildProcessByStdio<Writable, Readable, null>): Promise<void> {
-    return new Promise((resolve) => {
-      let settled = false
-      const killTimer = setTimeout(() => this.#signalGroup(child, "SIGKILL"), KILL_GRACE_MS)
-      const hardTimer = setTimeout(done, KILL_GRACE_MS + 5_000)
-      function done() {
-        if (settled) return
-        settled = true
-        clearTimeout(killTimer)
-        clearTimeout(hardTimer)
-        resolve()
-      }
-      child.once("exit", done)
-      if (child.exitCode !== null || child.signalCode !== null) {
-        done()
-        return
-      }
-      this.#signalGroup(child, "SIGTERM")
-    })
-  }
-
-  #signalGroup(child: ChildProcessByStdio<Writable, Readable, null>, signal: NodeJS.Signals): void {
-    if (process.platform === "win32") {
-      if (child.pid !== undefined) {
-        execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, () => {
-          // fallback if taskkill is unavailable
-          try {
-            child.kill(signal)
-          } catch {
-            // already gone
-          }
-        })
-      }
+  #onReport(child: SnapChild, line: string): void {
+    if (line.startsWith("child-exit ")) {
+      const parts = line.slice("child-exit ".length).trim().split(/\s+/)
+      const code = parts[0] ?? "null"
+      const signal = parts[1] ?? "none"
+      this.#log(`agent-snap exited (code=${code}, signal=${signal === "none" ? "none" : signal})`)
+      const message = `agent-snap exited unexpectedly (code=${code}, signal=${signal})`
+      this.#failAll(new Error(message), child)
+      if (this.#child === child) this.#child = null
+      this.#startTeardown(child, message)
       return
     }
-    try {
-      if (child.pid !== undefined) {
-        process.kill(-child.pid, signal)
-      } else {
-        child.kill(signal)
-      }
-    } catch {
-      // process already gone
+    if (line.startsWith("spawn-error ")) {
+      const detail = line.slice("spawn-error ".length)
+      const message = detail.includes("ENOENT")
+        ? `agent-snap binary not found at "${this.#bin}" — install it (go install ./cmd/agent-snap) or set AGENT_SNAP_BIN`
+        : `agent-snap failed to start: ${detail}`
+      this.#log(message)
+      this.#failAll(new Error(message), child)
+      if (this.#child === child) this.#child = null
+      this.#startTeardown(child, message)
+      return
     }
+  }
+
+  /**
+   * Starts a teardown for a child. Each teardown begins immediately (its
+   * first signal is never delayed behind another tree's grace period) and
+   * runs concurrently; failures latch on the child until verified away.
+   */
+  #startTeardown(child: SnapChild, message: string): void {
+    this.#tearingDown.add(child)
+    if (this.#child === child) this.#child = null
+    this.#failAll(new Error(message), child)
+    const teardown = this.#killAndWait(child).catch((err: unknown) => {
+      this.#failedChildren.set(child, err instanceof Error ? err : new Error(String(err)))
+    })
+    this.#teardowns.push(teardown)
+  }
+
+  #killAndWait(child: SnapChild): Promise<void> {
+    const existing = this.#killPromises.get(child)
+    if (existing !== undefined) return existing
+    const promise = new Promise<void>((resolve, reject) => {
+      const pid = child.pid
+      if (pid === undefined) {
+        resolve()
+        return
+      }
+      if (process.platform === "win32") {
+        this.#killTreeWindows(child, pid, resolve, reject)
+        return
+      }
+      this.#killGuardianPosix(child, pid, resolve, reject)
+    }).finally(() => this.#killPromises.delete(child))
+    this.#killPromises.set(child, promise)
+    return promise
+  }
+
+  /**
+   * POSIX teardown with the guardian supervisor.
+   *
+   * Invariant (no probe-then-signal): the client never signals a process
+   * group by number. All group signals (TERM now, KILL after the grace
+   * period) are issued by the guardian itself, which is a live member of
+   * the group at the instant of the syscall — a member-executed group
+   * signal cannot observe a recycled PGID. While the guardian lives, the
+   * PGID cannot recycle at all. Once the guardian exits, the client only
+   * observes (kill(-pgid, 0) until ESRCH) and fails closed if members
+   * remain. The only client-issued signal is a last-resort SIGKILL to the
+   * guardian's own pid, gated on it still being unreaped (an unreaped
+   * child's pid cannot have been recycled).
+   */
+  #killGuardianPosix(child: SnapChild, pid: number, resolve: () => void, reject: (error: Error) => void): void {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      this.#awaitGroupEmpty(pid, resolve, reject)
+      return
+    }
+    let finished = false
+    const done = () => {
+      if (finished) return
+      finished = true
+      clearTimeout(hard)
+      resolve()
+    }
+    const fail = (err: Error) => {
+      if (finished) return
+      finished = true
+      clearTimeout(hard)
+      reject(err)
+    }
+    const verify = () => this.#awaitGroupEmpty(pid, done, fail)
+    child.once("exit", verify)
+    const hard = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        try {
+          child.kill("SIGKILL")
+        } catch {
+          // already gone
+        }
+        setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) {
+            fail(new Error(`agent-snap supervisor (pid ${pid}) did not exit after being killed`))
+          } else {
+            verify()
+          }
+        }, 2_000)
+        return
+      }
+      verify()
+    }, GUARDIAN_WAIT_MS)
+    const control = child.stdio[3] as Writable | undefined
+    if (control === undefined || control === null || !control.writable) {
+      fail(new Error(`agent-snap supervisor (pid ${pid}) has no control channel`))
+      return
+    }
+    control.write("shutdown\n", (err) => {
+      if (err === null || err === undefined) return
+      // The supervisor died before we could command it: settle by
+      // observation only, never by signalling a bare group.
+      verify()
+    })
+  }
+
+  /**
+   * Observation-only emptiness verification: wait for kill(-pgid, 0) to
+   * report ESRCH, fail closed on observation errors (EPERM etc.) or when
+   * the window expires with members remaining.
+   */
+  #awaitGroupEmpty(pid: number, resolve: () => void, reject: (error: Error) => void): void {
+    let finished = false
+    const started = Date.now()
+    const done = () => {
+      if (finished) return
+      finished = true
+      clearInterval(timer)
+      resolve()
+    }
+    const fail = (err: Error) => {
+      if (finished) return
+      finished = true
+      clearInterval(timer)
+      reject(err)
+    }
+    const timer = setInterval(() => {
+      let state: GroupState
+      try {
+        state = observeGroup(pid)
+      } catch (err) {
+        fail(groupSignalError(pid, err))
+        return
+      }
+      const action = groupEmptyDecision({ state, elapsedMs: Date.now() - started })
+      if (action === "done") {
+        done()
+      } else if (action === "fail") {
+        fail(new Error(`agent-snap process group ${pid} did not terminate within the verification window`))
+      }
+    }, GROUP_POLL_MS)
+  }
+
+  /**
+   * Windows tree teardown. Cleanup succeeds only when BOTH conditions hold:
+   * taskkill /T /F reported success AND the root exited — within a bounded
+   * window. A taskkill failure always fails closed, even if the root has
+   * exited (its tree survives the root on Windows).
+   */
+  #killTreeWindows(child: SnapChild, pid: number, resolve: () => void, reject: (error: Error) => void): void {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      reject(
+        new Error(
+          `agent-snap (pid ${pid}) exited before its process tree could be terminated on Windows; descendants may still be running`,
+        ),
+      )
+      return
+    }
+    let finished = false
+    let taskkillDone = false
+    let taskkillFailed = false
+    let rootExited = false
+    const started = Date.now()
+    const settle = () => {
+      if (finished) return
+      const action = windowsTreeCompletionDecision({
+        taskkillDone,
+        taskkillFailed,
+        rootExited,
+        elapsedMs: Date.now() - started,
+      })
+      if (action === "wait") return
+      finished = true
+      clearTimeout(bound)
+      if (action === "done") {
+        resolve()
+        return
+      }
+      reject(
+        taskkillFailed
+          ? new Error(`taskkill failed for agent-snap (pid ${pid}): the process tree may still be running`)
+          : new Error(`agent-snap (pid ${pid}) did not terminate within the Windows tree-cleanup window`),
+      )
+    }
+    const bound = setTimeout(settle, WINDOWS_TREE_WAIT_MS)
+    child.once("exit", () => {
+      rootExited = true
+      settle()
+    })
+    execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true }, (err) => {
+      if (err !== null) {
+        taskkillFailed = true
+        try {
+          child.kill("SIGKILL")
+        } catch {
+          // already gone
+        }
+      } else {
+        taskkillDone = true
+      }
+      settle()
+    })
   }
 
   #onLine(line: string): void {
@@ -326,7 +725,7 @@ export class SnapClient {
     }
   }
 
-  #failAll(error: Error, child: ChildProcessByStdio<Writable, Readable, null> | null): void {
+  #failAll(error: Error, child: SnapChild | null): void {
     for (const [id, pending] of this.#pending) {
       if (child !== null && pending.child !== child) continue
       clearTimeout(pending.timer)

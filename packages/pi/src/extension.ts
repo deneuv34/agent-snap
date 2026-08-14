@@ -107,7 +107,11 @@ export function createAgentSnapExtension(deps: AgentSnapExtensionDeps): (pi: Ext
       await scheduler.flush()
       scheduler.dispose()
       await Promise.allSettled([...baselines])
-      await client.close()
+      try {
+        await client.close()
+      } catch (err) {
+        log(`agent-snap: shutdown cleanup failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
     })
 
     pi.registerTool(createTool)

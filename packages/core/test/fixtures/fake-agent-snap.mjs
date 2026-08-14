@@ -1,4 +1,5 @@
-import { appendFileSync, existsSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
+import { spawn } from "node:child_process"
 import { createInterface } from "node:readline"
 
 const mode = process.env.FAKE_AGENT_SNAP_MODE ?? ""
@@ -16,8 +17,16 @@ if (mode === "trap-term") {
   })
 }
 
+if (mode === "survive-eof") {
+  // Keep running even if stdin reaches EOF (e.g. the guardian supervisor is
+  // killed), so tests can exercise cleanup of a tree that survives its
+  // supervisor.
+  setInterval(() => {}, 10_000)
+}
+
 const rl = createInterface({ input: process.stdin })
 let created = 0
+let grandchildSpawned = false
 
 rl.on("line", (line) => {
   let req
@@ -28,8 +37,62 @@ rl.on("line", (line) => {
     return
   }
   record({ event: "request", method: req.method, params: req.params ?? null })
+  if (mode === "grandchild" && req.method === "ping" && !grandchildSpawned) {
+    grandchildSpawned = true
+    // The grandchild reports its own termination: the fake process itself is
+    // dead by the time the group signal is handled, so it cannot record it.
+    // The grandchild first installs its TERM trap, then signals readiness;
+    // the fake only answers once ready, so a close() racing the spawn can
+    // never TERM the shell before its trap exists.
+    spawn(
+      "sh",
+      ["-c", `trap 'echo grandchild-exited >> "$FAKE_LOG"' TERM; echo grandchild-ready >> "$FAKE_LOG"; sleep 30`],
+      { stdio: "ignore", env: { ...process.env, FAKE_LOG: logFile ?? "" } },
+    )
+    const respondWhenReady = () => {
+      try {
+        if (readFileSync(logFile ?? "", "utf8").includes("grandchild-ready")) {
+          handle(req)
+          return
+        }
+      } catch {
+        // log not written yet
+      }
+      setTimeout(respondWhenReady, 10)
+    }
+    respondWhenReady()
+    return
+  }
   if (mode === "exit-on-list" && req.method === "snapshot.list") {
     process.exit(0)
+  }
+  if (mode === "exit-on-ping" && req.method === "ping") {
+    process.exit(0)
+  }
+  if (mode === "slow-create-grandchild" && req.method === "snapshot.create" && !grandchildSpawned) {
+    grandchildSpawned = true
+    // Hang forever with a grandchild so the client times out and must tear
+    // down the whole process group. The grandchild reports its own
+    // termination; the fake never responds to the create.
+    spawn(
+      "sh",
+      ["-c", `trap 'echo grandchild-exited >> "$FAKE_LOG"' TERM; sleep 30`],
+      { stdio: "ignore", env: { ...process.env, FAKE_LOG: logFile ?? "" } },
+    )
+    return
+  }
+  if (mode === "stubborn-create-grandchild" && req.method === "snapshot.create" && !grandchildSpawned) {
+    grandchildSpawned = true
+    // Like slow-create-grandchild, but the grandchild traps SIGTERM and
+    // keeps sleeping, so the tree only dies when the guardian escalates to
+    // SIGKILL after the grace period — this makes teardown duration
+    // observable for concurrency tests.
+    spawn(
+      "sh",
+      ["-c", `trap 'echo grandchild-saw-term >> "$FAKE_LOG"' TERM; sleep 30`],
+      { stdio: "ignore", env: { ...process.env, FAKE_LOG: logFile ?? "" } },
+    )
+    return
   }
   if (mode === "garbage-line" && req.method === "ping") {
     console.log("this is not valid json at all")

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { SnapClient, SnapProtocolError, SnapRpcError } from "../src/index.js"
+import { GROUP_WAIT_MS, WINDOWS_TREE_WAIT_MS, groupEmptyDecision, windowsTreeCompletionDecision } from "../src/teardown.js"
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-agent-snap.mjs", import.meta.url))
 
@@ -78,12 +79,138 @@ test("client respawns lazily after close", async () => {
 
 test("in-flight request rejects when the child exits", async () => {
   const c = client({ FAKE_AGENT_SNAP_MODE: "exit-on-list" })
-  try {
-    await assert.rejects(() => c.list("/repo"), /exited unexpectedly/)
-  } finally {
+  const pending = c.list("/repo")
+  await assert.rejects(() => pending, /exited unexpectedly/)
+  // POSIX: the dead child's process group is empty, so close() succeeds.
+  // Windows: the tree of a root that exited on its own cannot be terminated,
+  // so close() fails closed instead of reporting success.
+  if (process.platform === "win32") {
+    await assert.rejects(() => c.close(), /process tree/)
+  } else {
     await c.close()
   }
 })
+
+test("close fails closed on Windows when the root has already exited", async () => {
+  const c = client({ FAKE_AGENT_SNAP_MODE: "exit-on-ping" })
+  await assert.rejects(() => c.ping(), /exited unexpectedly/)
+  if (process.platform === "win32") {
+    await assert.rejects(() => c.close(), /process tree/)
+  } else {
+    await c.close()
+  }
+})
+
+test(
+  "close awaits the teardown a timeout started, instead of racing it",
+  { skip: process.platform === "win32" ? "process-group semantics are POSIX-only" : false },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-snap-timeout-close-"))
+    const log = join(dir, "fake.log")
+    const c = client({ FAKE_AGENT_SNAP_MODE: "slow-create-grandchild", FAKE_AGENT_SNAP_LOG: log }, { timeoutMs: 300 })
+    await assert.rejects(() => c.create("/repo", "never-finishes"), /timed out/)
+    const start = Date.now()
+    await c.close()
+    const elapsed = Date.now() - start
+    const raw = readFileSync(log, "utf8")
+    assert.ok(
+      raw.includes("grandchild-exited"),
+      `close() must wait for the teardown the timeout started; grandchild was still alive: ${JSON.stringify(raw)}`,
+    )
+    assert.ok(elapsed >= 15, `close() returned after ${elapsed}ms — it must await the in-flight teardown`)
+  },
+)
+
+test("group emptiness decision: empty completes, errors fail closed, deadline fails", () => {
+  assert.equal(groupEmptyDecision({ state: "empty", elapsedMs: 0 }), "done")
+  assert.equal(groupEmptyDecision({ state: "empty", elapsedMs: GROUP_WAIT_MS + 1 }), "done")
+  assert.equal(groupEmptyDecision({ state: "error", elapsedMs: 0 }), "fail")
+  assert.equal(groupEmptyDecision({ state: "live", elapsedMs: 0 }), "wait")
+  assert.equal(groupEmptyDecision({ state: "live", elapsedMs: GROUP_WAIT_MS - 1 }), "wait")
+  assert.equal(groupEmptyDecision({ state: "live", elapsedMs: GROUP_WAIT_MS }), "fail")
+  assert.equal(groupEmptyDecision({ state: "live", elapsedMs: GROUP_WAIT_MS + 1 }), "fail")
+})
+
+test("windows tree decision: needs BOTH taskkill success and root exit", () => {
+  // nothing yet → wait
+  assert.equal(windowsTreeCompletionDecision({ taskkillDone: false, taskkillFailed: false, rootExited: false, elapsedMs: 0 }), "wait")
+  // taskkill done but root not exited → wait
+  assert.equal(windowsTreeCompletionDecision({ taskkillDone: true, taskkillFailed: false, rootExited: false, elapsedMs: 100 }), "wait")
+  // root exited but taskkill not done → wait
+  assert.equal(windowsTreeCompletionDecision({ taskkillDone: false, taskkillFailed: false, rootExited: true, elapsedMs: 100 }), "wait")
+  // both → done
+  assert.equal(windowsTreeCompletionDecision({ taskkillDone: true, taskkillFailed: false, rootExited: true, elapsedMs: 100 }), "done")
+  // taskkill failure rejects even when the root has exited
+  assert.equal(windowsTreeCompletionDecision({ taskkillDone: false, taskkillFailed: true, rootExited: true, elapsedMs: 100 }), "fail")
+  assert.equal(windowsTreeCompletionDecision({ taskkillDone: false, taskkillFailed: true, rootExited: false, elapsedMs: 100 }), "fail")
+  // window expiry without both conditions → fail, never a silent success
+  assert.equal(windowsTreeCompletionDecision({ taskkillDone: true, taskkillFailed: false, rootExited: false, elapsedMs: WINDOWS_TREE_WAIT_MS }), "fail")
+  assert.equal(windowsTreeCompletionDecision({ taskkillDone: false, taskkillFailed: false, rootExited: true, elapsedMs: WINDOWS_TREE_WAIT_MS }), "fail")
+})
+
+test("requests during close reject instead of spawning outside the barrier", async () => {
+  const c = client({ FAKE_AGENT_SNAP_MODE: "slow-create" })
+  const pendingCreate = c.create("/repo", "hangs")
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  const closing = c.close()
+  await assert.rejects(() => c.ping(), /client is closing/)
+  await assert.rejects(() => pendingCreate, /client closed/)
+  await closing
+  const ping = await c.ping()
+  assert.equal(ping.status, "ok")
+  await c.close()
+})
+
+test(
+  "teardowns of different children run concurrently, not serialized behind grace periods",
+  { skip: process.platform === "win32" ? "process-group semantics are POSIX-only" : false },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-snap-concurrent-"))
+    const log = join(dir, "fake.log")
+    const c = client({ FAKE_AGENT_SNAP_MODE: "stubborn-create-grandchild", FAKE_AGENT_SNAP_LOG: log }, { timeoutMs: 300 })
+    // First child times out and its teardown starts immediately (guardian
+    // grace timer running). The second request spawns a replacement child,
+    // which also times out. close() must drain both without delaying the
+    // second teardown behind the first one's grace window.
+    await assert.rejects(() => c.create("/repo", "first"), /timed out/)
+    await assert.rejects(() => c.create("/repo", "second"), /timed out/)
+    const start = Date.now()
+    await c.close()
+    const elapsed = Date.now() - start
+    // Concurrent: the second guardian's grace (~2s) dominates. Serialized
+    // behind the first teardown it would be ~4s+.
+    assert.ok(elapsed < 3_200, `teardowns appear serialized: close() took ${elapsed}ms`)
+    const raw = readFileSync(log, "utf8")
+    const sawTerm = (raw.match(/grandchild-saw-term/g) ?? []).length
+    assert.equal(sawTerm, 2, `both stubborn grandchildren must receive SIGTERM, log: ${JSON.stringify(raw)}`)
+  },
+)
+
+test(
+  "cleanup failures latch until verified: repeated close never fakes success",
+  { skip: process.platform === "win32" ? "guardian semantics are POSIX-only" : false },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-snap-latch-"))
+    const log = join(dir, "fake.log")
+    const c = client({ FAKE_AGENT_SNAP_MODE: "survive-eof", FAKE_AGENT_SNAP_LOG: log })
+    await c.ping()
+    const guardianPid = c.pid
+    const firstLine = readFileSync(log, "utf8").trim().split("\n")[0]
+    const fakePid = JSON.parse(firstLine).pid as number
+    assert.ok(guardianPid !== undefined && fakePid > 0)
+    // Kill the supervisor out from under the client: the tree (the fake)
+    // survives, so cleanup cannot be verified and must fail closed.
+    process.kill(guardianPid, "SIGKILL")
+    await assert.rejects(() => c.close(), /did not terminate|supervisor/)
+    // The failure latches: a second close must not report success.
+    await assert.rejects(() => c.close(), /did not terminate|supervisor/)
+    // Once the surviving tree is actually gone, a retry verifies emptiness
+    // and the latch clears.
+    process.kill(fakePid, "SIGKILL")
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    await c.close()
+  },
+)
 
 test("aborted request tears down the transport and rejects with AbortError", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agent-snap-abort-test-"))
@@ -103,6 +230,23 @@ test("aborted request tears down the transport and rejects with AbortError", asy
     .map((line) => JSON.parse(line) as { event: string })
   assert.ok(!entries.some((entry) => entry.event === "completed"), "aborted create must never complete")
 })
+
+test(
+  "close waits for the whole process group, including grandchildren",
+  { skip: process.platform === "win32" ? "process-group semantics are POSIX-only" : false },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-snap-group-test-"))
+    const log = join(dir, "fake.log")
+    const c = client({ FAKE_AGENT_SNAP_MODE: "grandchild", FAKE_AGENT_SNAP_LOG: log })
+    await c.ping()
+    await c.close()
+    const raw = readFileSync(log, "utf8")
+    assert.ok(
+      raw.includes("grandchild-exited"),
+      `close() resolved before the grandchild was terminated; raw log: ${JSON.stringify(raw)}`,
+    )
+  },
+)
 
 test("missing binary rejects with an actionable message", async () => {
   const c = new SnapClient({ bin: "/definitely/not/a/real/agent-snap-binary" })
