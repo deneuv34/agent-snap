@@ -154,13 +154,24 @@ test("close terminates a child that ignores SIGTERM within the grace period", as
   const start = Date.now()
   await c.close()
   const elapsed = Date.now() - start
-  assert.ok(elapsed >= 1500, `close returned too early: ${elapsed}ms`)
-  assert.ok(elapsed < 4500, `close did not force-kill: ${elapsed}ms`)
   const entries = readFileSync(log, "utf8")
     .split("\n")
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as { event: string })
-  assert.ok(entries.some((entry) => entry.event === "sigterm"), "SIGTERM must be delivered")
+
+  if (process.platform === "win32") {
+    // Windows has no SIGTERM escalation: taskkill /T /F force-kills the
+    // tree immediately. The safety contract is that close() resolves
+    // promptly and the child is gone — there is no grace period to wait.
+    assert.ok(elapsed < 1500, `windows force-kill should be immediate, took ${elapsed}ms`)
+    assert.ok(!entries.some((entry) => entry.event === "sigterm"), "SIGTERM is not deliverable on Windows")
+  } else {
+    // Unix: SIGTERM first (the child traps it and delays exit), then
+    // SIGKILL after the grace period — close must wait for the escalation.
+    assert.ok(elapsed >= 1500, `close returned too early: ${elapsed}ms`)
+    assert.ok(elapsed < 4500, `close did not force-kill: ${elapsed}ms`)
+    assert.ok(entries.some((entry) => entry.event === "sigterm"), "SIGTERM must be delivered")
+  }
 })
 
 test("non-object or garbage child output is rejected or ignored safely", async () => {

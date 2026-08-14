@@ -1,0 +1,21 @@
+# Repository line-ending policy.
+#
+# Everything textual is stored LF and checked out LF on every platform, so
+# gofmt and other byte-exact checks see identical content on Windows (Git
+# Bash) and Unix. This overrides Git for Windows' core.autocrlf default.
+* text=auto
+
+# Source, config, scripts, and docs: always LF.
+*.go       text eol=lf
+*.ts       text eol=lf
+*.mts      text eol=lf
+*.js       text eol=lf
+*.mjs      text eol=lf
+*.json     text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.md       text eol=lf
+*.sh       text eol=lf
+LICENSE    text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
