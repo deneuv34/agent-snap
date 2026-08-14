@@ -8,11 +8,11 @@ import (
 	"io"
 	"strings"
 
-	"github.com/denev34/agent-snap/internal/snapshot"
+	"github.com/deneuv34/agent-snap/internal/snapshot"
 )
 
 // Version is the agent-snap host version. It is a variable so release builds
-// can override it with -ldflags "-X github.com/denev34/agent-snap/internal/protocol.Version=x.y.z".
+// can override it with -ldflags "-X github.com/deneuv34/agent-snap/internal/protocol.Version=x.y.z".
 var Version = "0.1.0"
 
 type Request struct {

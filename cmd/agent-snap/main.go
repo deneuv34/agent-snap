@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/denev34/agent-snap/internal/protocol"
-	"github.com/denev34/agent-snap/internal/snapshot"
+	"github.com/deneuv34/agent-snap/internal/protocol"
+	"github.com/deneuv34/agent-snap/internal/snapshot"
 )
 
 const usage = `agent-snap - zero-impact working-tree snapshots for agent sessions
