@@ -1,0 +1,37 @@
+{
+  "name": "@agent-snap/core",
+  "version": "0.1.0",
+  "description": "Type-safe TypeScript client for the agent-snap Go core (JSONL over stdin/stdout)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "agent-snap",
+    "snapshot",
+    "git",
+    "working-tree"
+  ]
+}

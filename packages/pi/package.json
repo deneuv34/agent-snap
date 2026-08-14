@@ -1,0 +1,55 @@
+{
+  "name": "@agent-snap/pi",
+  "version": "0.1.0",
+  "description": "agent-snap extension for Pi Coding Agent (pi.dev): baseline at session_start, coalesced snapshot at agent_settled, flush/cleanup at session_shutdown, plus snapshot tools and commands",
+  "type": "module",
+  "main": "./dist/extension.js",
+  "types": "./dist/extension.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/extension.d.ts",
+      "default": "./dist/extension.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "pi": {
+    "extensions": [
+      "dist/extension.js"
+    ]
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@agent-snap/core": "0.1.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "^0.84.0",
+    "@earendil-works/pi-coding-agent": "^0.84.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "pi",
+    "agent-snap",
+    "snapshot",
+    "git",
+    "working-tree",
+    "coding-agent"
+  ]
+}

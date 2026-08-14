@@ -1,0 +1,102 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func gitRun(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.com")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func cliRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", "file.txt")
+	gitRun(t, dir, "commit", "-m", "initial")
+	return dir
+}
+
+func TestCLIPingAndVersion(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"ping"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var ping struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &ping); err != nil {
+		t.Fatal(err)
+	}
+	if ping.Status != "ok" || ping.Version == "" {
+		t.Fatalf("unexpected ping: %+v", ping)
+	}
+
+	out.Reset()
+	if err := run([]string{"version"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(out.String()); got != ping.Version {
+		t.Fatalf("version mismatch: got %q want %q", got, ping.Version)
+	}
+}
+
+func TestCLICreateAndList(t *testing.T) {
+	dir := cliRepo(t)
+	var out bytes.Buffer
+	if err := run([]string{"create", "cli-test", "--cwd", dir}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var snap struct {
+		ID     string `json:"id"`
+		Commit string `json:"commit"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &snap); err != nil {
+		t.Fatal(err)
+	}
+	if snap.ID == "" || snap.Commit == "" || snap.Reason != "cli-test" {
+		t.Fatalf("unexpected snapshot: %+v", snap)
+	}
+
+	out.Reset()
+	if err := run([]string{"list", "--cwd", dir, "--limit", "5"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var listed struct {
+		Snapshots []struct {
+			ID string `json:"id"`
+		} `json:"snapshots"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Snapshots) != 1 || listed.Snapshots[0].ID != snap.ID {
+		t.Fatalf("unexpected list: %+v", listed)
+	}
+}
+
+func TestCLIUnknownCommand(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"frobnicate"}, &out); err == nil || !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("expected unknown command error, got: %v", err)
+	}
+}

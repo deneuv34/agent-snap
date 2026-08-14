@@ -1,0 +1,35 @@
+{
+  "name": "agent-snap",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Zero-impact git working-tree snapshots for AI agent sessions (Go core + Pi/OpenCode connectors)",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/pi && tsc --noEmit -p packages/opencode && tsc --noEmit -p tsconfig.json",
+    "pretest": "npm run build",
+    "test": "node --import tsx --test packages/core/test/*.test.ts packages/pi/test/*.test.ts packages/opencode/test/*.test.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "pack-check": "tsx scripts/pack-check.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "agent-snap",
+    "snapshot",
+    "git",
+    "opencode",
+    "pi",
+    "coding-agent"
+  ]
+}

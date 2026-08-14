@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go core (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26.x"
+      - name: gofmt
+        shell: bash
+        run: test -z "$(gofmt -l .)"
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./... -count=1
+      - name: build binary
+        run: go build -o bin/agent-snap ./cmd/agent-snap
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-snap-${{ matrix.os }}
+          path: bin/agent-snap*
+
+  node:
+    name: TypeScript adapters (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: typecheck
+        run: npm run typecheck
+      - name: unit tests
+        run: npm test
+
+  smoke:
+    name: Smoke test (real git repo through the binary)
+    needs: go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: agent-snap-ubuntu-latest
+          path: bin
+      - run: chmod +x bin/agent-snap
+      - run: npm ci
+      - run: npm run build
+      - name: smoke
+        env:
+          AGENT_SNAP_BIN: ${{ github.workspace }}/bin/agent-snap
+        run: npm run smoke
+      - name: integration tests against real binary
+        env:
+          AGENT_SNAP_BIN: ${{ github.workspace }}/bin/agent-snap
+        run: node --import tsx --test packages/core/test/integration.test.ts packages/pi/test/integration.test.ts
+
+  package:
+    name: Packed-package install check
+    needs: go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: agent-snap-ubuntu-latest
+          path: bin
+      - run: chmod +x bin/agent-snap
+      - run: npm ci
+      - run: npm run build
+      - name: pack-check (npm pack, clean tarball install, official Pi loader, discovery topology)
+        env:
+          AGENT_SNAP_BIN: ${{ github.workspace }}/bin/agent-snap
+        run: npm run pack-check

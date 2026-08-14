@@ -1,0 +1,46 @@
+{
+  "name": "@agent-snap/opencode",
+  "version": "0.1.0",
+  "description": "agent-snap plugin for OpenCode: baseline snapshot at session start, coalesced snapshot at session idle, snapshot tools",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@agent-snap/core": "0.1.0"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "agent-snap",
+    "snapshot",
+    "git",
+    "working-tree"
+  ],
+  "peerDependencies": {
+    "@opencode-ai/plugin": "^1.18.18"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.18"
+  }
+}
