@@ -19,9 +19,11 @@
   argument. `SnapClient` retries without origin when a 0.1.0 binary rejects
   it, so upgrading a plugin before its binary does not stop snapshots.
 - `snapshot.create` now rejects, with `-32602`, a reason that contains a NUL
-  byte or ends with a paragraph of `Agent-Snap-` lines. Git already refused
-  NUL bytes; such a reason was previously reused silently on an unchanged
-  tree, or failed with `-32603`.
+  byte or ends with a paragraph of `Agent-Snap-` lines. Git always refused NUL
+  bytes, so 0.1.0 failed such a create with `-32603`, or silently reused the
+  latest snapshot when the tree was unchanged. 0.1.0 stored a reason ending in
+  `Agent-Snap-` lines as given; this release reads such a snapshot back with
+  an origin and a shorter reason.
 
 ## 0.1.0
 

@@ -141,6 +141,8 @@ Mixed versions:
   upgraded ahead of its binary keeps taking snapshots, without origin.
 - A 0.1.0 client ignores `source` and `host` in results.
 - A 0.1.0 reader shows a newer snapshot's origin lines as part of its reason.
+- A 0.1.0 snapshot whose reason ends with `Agent-Snap-` lines reads back with
+  an origin and a shorter reason.
 
 ## Hidden Git refs
 

@@ -200,7 +200,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - `close()` MUST prevent a replacement transport from being created until close completes.
 - Result validation checks `source` and `host` only for type: each is a string when present. A later release can widen their syntax without breaking older clients.
 - When a create that carries origin values is rejected with `-32602` and the message `unknown param: source` or `unknown param: host`, the client MUST retry that create once without origin values. That rejection is how a 0.1.0 binary answers, and it comes before the repository is resolved, so the retry cannot duplicate a checkpoint. The retry is a new request under the same signal, with its own timeout. The client logs the first time it drops origin. A plugin upgraded ahead of its binary therefore keeps taking snapshots.
-- A 0.1.0 binary does not check reasons. The client MUST NOT send that retry when the reason contains `\n\nAgent-Snap-`; the create fails instead, so the client never stores a reason that a newer reader would take as origin.
+- A 0.1.0 binary does not check reasons. The client MUST NOT send that retry when the reason contains `\n\nAgent-Snap-`; the create fails instead, so the retry never stores a reason that a newer reader would take as origin. A create sent without origin values reaches a 0.1.0 binary unchanged, as it did with a 0.1.0 client.
 
 ### FR-11: Agent-host integrations
 
