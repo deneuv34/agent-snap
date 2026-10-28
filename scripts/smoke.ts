@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { SnapClient, type SnapSnapshot } from "@agent-snap/core"
+import { SnapClient, type SnapSnapshot, type SnapSnapshotDetail } from "@agent-snap/core"
 
 const bin = process.env.AGENT_SNAP_BIN?.trim() ?? "agent-snap"
 
@@ -49,7 +49,7 @@ async function runChecks(dir: string): Promise<void> {
   const headBefore = git(dir, ["rev-parse", "HEAD"])
   const indexBefore = git(dir, ["write-tree"])
 
-  // 1. Direct CLI: create + list.
+  // 1. Direct CLI: create + list + get.
   const created = runJson(["create", "smoke-direct", "--cwd", dir]) as SnapSnapshot
   if (!created.id || !created.commit) fail(`direct create returned unexpected JSON: ${JSON.stringify(created)}`)
 
@@ -58,23 +58,31 @@ async function runChecks(dir: string): Promise<void> {
     fail(`direct list mismatch: ${JSON.stringify(listed)}`)
   }
 
+  const detail = runJson(["get", created.id, "--cwd", dir]) as SnapSnapshotDetail
+  if (detail.commit !== created.commit || detail.parent !== headBefore || detail.tree !== git(dir, ["rev-parse", `${created.commit}^{tree}`])) {
+    fail(`direct get mismatch: ${JSON.stringify(detail)}`)
+  }
+
   // 2. JSONL serve mode through the binary.
   const input =
     [
       JSON.stringify({ id: 1, method: "ping" }),
       JSON.stringify({ id: 2, method: "snapshot.create", params: { cwd: dir, reason: "smoke-jsonl" } }),
       JSON.stringify({ id: 3, method: "snapshot.list", params: { cwd: dir, limit: 10 } }),
+      JSON.stringify({ id: 4, method: "snapshot.get", params: { cwd: dir, id: created.id } }),
     ].join("\n") + "\n"
   const proc = spawnSync(bin, ["serve"], { input, encoding: "utf8" })
   if (proc.status !== 0) fail(`serve mode exited with ${proc.status}: ${proc.stderr}`)
   const lines = proc.stdout.trim().split("\n")
-  if (lines.length !== 3) fail(`serve mode returned ${lines.length} lines: ${proc.stdout}`)
+  if (lines.length !== 4) fail(`serve mode returned ${lines.length} lines: ${proc.stdout}`)
   const ping = JSON.parse(lines[0] ?? "{}") as { result?: { status?: string } }
   if (ping.result?.status !== "ok") fail(`ping failed: ${lines[0]}`)
   const jsonlSnap = (JSON.parse(lines[1] ?? "{}") as { result?: SnapSnapshot }).result
   if (jsonlSnap?.reused !== true) fail(`expected unchanged tree reuse via JSONL, got: ${lines[1]}`)
   const jsonlList = (JSON.parse(lines[2] ?? "{}") as { result?: { snapshots?: SnapSnapshot[] } }).result
   if (jsonlList?.snapshots?.length !== 1) fail(`list via JSONL mismatch: ${lines[2]}`)
+  const jsonlDetail = (JSON.parse(lines[3] ?? "{}") as { result?: SnapSnapshotDetail }).result
+  if (jsonlDetail?.commit !== created.commit) fail(`get via JSONL mismatch: ${lines[3]}`)
 
   // 3. TypeScript client against serve mode.
   writeFileSync(join(dir, "file.txt"), "changed\n")
@@ -88,6 +96,10 @@ async function runChecks(dir: string): Promise<void> {
     if (again.reused !== true) fail(`expected reuse of unchanged tree: ${JSON.stringify(again)}`)
     const items = await client.list(dir, 10)
     if (items.length !== 2) fail(`expected 2 snapshots, got ${items.length}: ${JSON.stringify(items)}`)
+    const described = await client.get(dir, snap.id)
+    if (described.parent_id !== created.id || described.changed_files.join(",") !== "file.txt") {
+      fail(`expected the client snapshot to chain onto ${created.id}: ${JSON.stringify(described)}`)
+    }
   } finally {
     await client.close()
   }

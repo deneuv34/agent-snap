@@ -114,13 +114,15 @@ let result = await discoverAndLoadExtensions([piEntry], repo)
 if (result.errors.length > 0) throw new Error("pi load errors: " + JSON.stringify(result.errors))
 const viaConfig = result.extensions.filter((e) => e.path === piEntry)
 if (viaConfig.length !== 1) throw new Error("pi extension did not load via configured path")
-for (const tool of ["agent_snap_create", "agent_snap_list"]) {
+for (const tool of ["agent_snap_create", "agent_snap_list", "agent_snap_get"]) {
   if (!viaConfig[0].tools.has(tool)) throw new Error("missing tool: " + tool)
 }
 for (const event of ["session_start", "agent_settled", "session_shutdown"]) {
   if (!viaConfig[0].handlers.has(event)) throw new Error("missing handler: " + event)
 }
-if (!viaConfig[0].commands.has("agent-snap-create")) throw new Error("missing command")
+for (const command of ["agent-snap-create", "agent-snap-get"]) {
+  if (!viaConfig[0].commands.has(command)) throw new Error("missing command: " + command)
+}
 
 // pi: documented direct-placement topology — discovery WITHOUT configured paths
 const piRoot = require.resolve("@agent-snap/pi/package.json").replace(/package\\.json$/, "")
