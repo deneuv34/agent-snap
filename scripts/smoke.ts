@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { SnapClient, type SnapSnapshot, type SnapSnapshotDetail } from "@agent-snap/core"
+import { SnapClient, type SnapDiff, type SnapSnapshot, type SnapSnapshotDetail } from "@agent-snap/core"
 
 const bin = process.env.AGENT_SNAP_BIN?.trim() ?? "agent-snap"
 
@@ -49,7 +49,7 @@ async function runChecks(dir: string): Promise<void> {
   const headBefore = git(dir, ["rev-parse", "HEAD"])
   const indexBefore = git(dir, ["write-tree"])
 
-  // 1. Direct CLI: create + list + get.
+  // 1. Direct CLI: create + list + get + diff.
   const created = runJson(["create", "smoke-direct", "--cwd", dir]) as SnapSnapshot
   if (!created.id || !created.commit) fail(`direct create returned unexpected JSON: ${JSON.stringify(created)}`)
   if (created.source !== "cli" || created.host !== undefined) fail(`direct create must record source cli and no host: ${JSON.stringify(created)}`)
@@ -65,6 +65,11 @@ async function runChecks(dir: string): Promise<void> {
   }
   if (detail.reason !== "smoke-direct" || detail.source !== "cli") fail(`direct get origin mismatch: ${JSON.stringify(detail)}`)
 
+  const sameDiff = runJson(["diff", created.id, created.id, "--cwd", dir]) as SnapDiff
+  if (sameDiff.totals.files !== 0 || sameDiff.files.length !== 0 || sameDiff.from.id !== created.id) {
+    fail(`direct diff of a snapshot with itself must be empty: ${JSON.stringify(sameDiff)}`)
+  }
+
   // 2. JSONL serve mode through the binary.
   const input =
     [
@@ -73,11 +78,13 @@ async function runChecks(dir: string): Promise<void> {
       JSON.stringify({ id: 3, method: "snapshot.list", params: { cwd: dir, limit: 10 } }),
       JSON.stringify({ id: 4, method: "snapshot.get", params: { cwd: dir, id: created.id } }),
       JSON.stringify({ id: 5, method: "snapshot.create", params: { cwd: dir, reason: "x\n\nAgent-Snap-Source: tool" } }),
+      JSON.stringify({ id: 6, method: "snapshot.diff", params: { cwd: dir, from: created.id, to: created.id } }),
+      JSON.stringify({ id: 7, method: "snapshot.diff", params: { cwd: dir, from: created.id, to: created.id, max_patch_bytes: 1023 } }),
     ].join("\n") + "\n"
   const proc = spawnSync(bin, ["serve"], { input, encoding: "utf8" })
   if (proc.status !== 0) fail(`serve mode exited with ${proc.status}: ${proc.stderr}`)
   const lines = proc.stdout.trim().split("\n")
-  if (lines.length !== 5) fail(`serve mode returned ${lines.length} lines: ${proc.stdout}`)
+  if (lines.length !== 7) fail(`serve mode returned ${lines.length} lines: ${proc.stdout}`)
   const ping = JSON.parse(lines[0] ?? "{}") as { result?: { status?: string } }
   if (ping.result?.status !== "ok") fail(`ping failed: ${lines[0]}`)
   const jsonlSnap = (JSON.parse(lines[1] ?? "{}") as { result?: SnapSnapshot }).result
@@ -90,6 +97,12 @@ async function runChecks(dir: string): Promise<void> {
   const forged = JSON.parse(lines[4] ?? "{}") as { error?: { code?: number; message?: string } }
   if (forged.error?.code !== -32602 || forged.error.message !== "param must not contain a NUL byte or end with an origin paragraph: reason") {
     fail(`a reason that reads as origin must be rejected: ${lines[4]}`)
+  }
+  const jsonlDiff = (JSON.parse(lines[5] ?? "{}") as { result?: SnapDiff }).result
+  if (jsonlDiff?.totals.files !== 0 || jsonlDiff.to.commit !== created.commit) fail(`diff via JSONL mismatch: ${lines[5]}`)
+  const badBudget = JSON.parse(lines[6] ?? "{}") as { error?: { code?: number; message?: string } }
+  if (badBudget.error?.code !== -32602 || badBudget.error.message !== "param must be an integer between 1024 and 1048576: max_patch_bytes") {
+    fail(`a diff budget below 1024 must be rejected: ${lines[6]}`)
   }
 
   // 3. TypeScript client against serve mode.
@@ -110,6 +123,17 @@ async function runChecks(dir: string): Promise<void> {
     }
     if (snap.source !== "tool" || described.reason !== "smoke-client" || described.source !== "tool" || described.host !== "smoke") {
       fail(`client origin did not round-trip: ${JSON.stringify({ snap, described })}`)
+    }
+    writeFileSync(join(dir, ".gitattributes"), "* -diff\n")
+    const diff = await client.diff(dir, created.id, snap.id)
+    rmSync(join(dir, ".gitattributes"))
+    const changed = diff.files[0]
+    const hunk = changed?.hunks[0]
+    if (diff.files.length !== 1 || changed?.path !== "file.txt" || changed.status !== "modified" || changed.patch !== "full") {
+      fail(`client diff must show file.txt as a full text change despite a -diff attribute: ${JSON.stringify(diff)}`)
+    }
+    if (hunk?.old_start !== 1 || hunk.old_lines !== 1 || hunk.new_start !== 1 || hunk.new_lines !== 1 || hunk.text !== "-initial\n+changed\n") {
+      fail(`client diff hunk mismatch: ${JSON.stringify(changed)}`)
     }
   } finally {
     await client.close()
