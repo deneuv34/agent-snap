@@ -66,15 +66,17 @@ func TestCLICreateAndList(t *testing.T) {
 		t.Fatal(err)
 	}
 	var snap struct {
-		ID     string `json:"id"`
-		Commit string `json:"commit"`
-		Reason string `json:"reason"`
+		ID     string  `json:"id"`
+		Commit string  `json:"commit"`
+		Reason string  `json:"reason"`
+		Source string  `json:"source"`
+		Host   *string `json:"host"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &snap); err != nil {
 		t.Fatal(err)
 	}
-	if snap.ID == "" || snap.Commit == "" || snap.Reason != "cli-test" {
-		t.Fatalf("unexpected snapshot: %+v", snap)
+	if snap.ID == "" || snap.Commit == "" || snap.Reason != "cli-test" || snap.Source != "cli" || snap.Host != nil {
+		t.Fatalf("unexpected snapshot: %s", out.String())
 	}
 
 	out.Reset()
@@ -83,14 +85,34 @@ func TestCLICreateAndList(t *testing.T) {
 	}
 	var listed struct {
 		Snapshots []struct {
-			ID string `json:"id"`
+			ID     string `json:"id"`
+			Source string `json:"source"`
 		} `json:"snapshots"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &listed); err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Snapshots) != 1 || listed.Snapshots[0].ID != snap.ID {
+	if len(listed.Snapshots) != 1 || listed.Snapshots[0].ID != snap.ID || listed.Snapshots[0].Source != "cli" {
 		t.Fatalf("unexpected list: %+v", listed)
+	}
+}
+
+func TestCLICreateRejectsAReasonThatReadsAsOrigin(t *testing.T) {
+	dir := cliRepo(t)
+	var out bytes.Buffer
+	err := run([]string{"create", "x\n\nAgent-Snap-Host: pi", "--cwd", dir}, &out)
+	if err == nil || !strings.Contains(err.Error(), "invalid snapshot reason") {
+		t.Fatalf("want an invalid reason error, got %v", err)
+	}
+	out.Reset()
+	if err := run([]string{"list", "--cwd", dir}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var listed struct {
+		Snapshots []json.RawMessage `json:"snapshots"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &listed); err != nil || len(listed.Snapshots) != 0 {
+		t.Fatalf("a rejected create must not write a snapshot: %v %s", err, out.String())
 	}
 }
 
