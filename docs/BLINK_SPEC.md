@@ -198,7 +198,9 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - Timeout or cancellation MUST start teardown of the spawned process tree, preventing a timed-out request from later producing an unobserved checkpoint.
 - After a crash or close, the client MAY spawn a fresh transport lazily for a subsequent request.
 - `close()` MUST prevent a replacement transport from being created until close completes.
-- When a create that carries origin values is rejected with `-32602` and the message `unknown param: source` or `unknown param: host`, which is how a 0.1.0 binary answers, the client MUST retry that create once without origin values, under the same signal, and log that origin was dropped. The binary rejected the first request before resolving the repository, so the retry cannot duplicate a checkpoint. A plugin upgraded ahead of its binary therefore keeps taking snapshots.
+- Result validation checks `source` and `host` only for type: each is a string when present. A later release can widen their syntax without breaking older clients.
+- When a create that carries origin values is rejected with `-32602` and the message `unknown param: source` or `unknown param: host`, the client MUST retry that create once without origin values. That rejection is how a 0.1.0 binary answers, and it comes before the repository is resolved, so the retry cannot duplicate a checkpoint. The retry is a new request under the same signal, with its own timeout. The client logs the first time it drops origin. A plugin upgraded ahead of its binary therefore keeps taking snapshots.
+- A 0.1.0 binary does not check reasons. The client MUST NOT send that retry when the reason contains `\n\nAgent-Snap-`; the create fails instead, so the client never stores a reason that a newer reader would take as origin.
 
 ### FR-11: Agent-host integrations
 
@@ -232,15 +234,36 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 ### FR-13: Snapshot origin
 
 - `snapshot.create` accepts two optional origin values. `source` names the event or action that asked for the snapshot. `host` names the integration that sent the request.
-- An origin value MUST be 1 to 64 characters of lowercase ASCII letters and digits in hyphen-separated words, starting with a letter: `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`. Any other value, including a blank string, is invalid.
-- Origin values are reported by the caller. They are provenance hints for display and filtering, not authenticated facts.
-- Origin values MUST NOT carry session, user, machine, or path identifiers. Session identifiers are not stored.
-- When a new snapshot has at least one origin value, its commit message ends with an origin paragraph: a blank line, then `Agent-Snap-Source: <source>` and `Agent-Snap-Host: <host>`, in that order, each only when supplied. Without origin values the message is the 0.1.0 form, `agent-snap: <reason>`.
-- A reader treats the final paragraph of the message as origin only when every line in it is `Agent-Snap-<Key>: <value>`, where `<Key>` is one or more capitalized ASCII words joined by hyphens, `<value>` is a valid origin value, and no key repeats. Keys other than `Source` and `Host` are ignored, so a later release can add keys with origin-value syntax without a schema version. Any other final paragraph is part of the reason.
+- An origin value MUST match `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` and be at most 64 characters. Any other value, including a blank string or JSON `null`, is invalid.
+- Origin is reported by the caller and is never evidence. Any caller can send any valid value, a 0.1.0 writer stores whatever reason it is given, and listing does not verify item refs, so a snapshot can carry an origin that does not describe how it was made. Display and filter on origin; do not draw conclusions from it.
+- Callers MUST NOT put session, user, machine, or path identifiers in origin values. Blink enforces only the syntax, which cannot tell such an identifier from an event name. No integration in this repository stores a session identifier.
+
+Stored form:
+
+- With at least one origin value, the commit message is `agent-snap: ` + reason + `\n\n` + the origin lines joined by `\n`, with no trailing newline. The lines are `Agent-Snap-Source: <source>` then `Agent-Snap-Host: <host>`, each only when supplied.
+- Without origin values, the message is the 0.1.0 form, `agent-snap: ` + reason.
 - Blink writes and parses the origin paragraph itself. It MUST NOT depend on Git's trailer parsing or trailer configuration.
-- A reason whose final paragraph would be read as origin is invalid, so no reason Blink stores can be read back as origin.
+
+Reading:
+
+1. Remove the `agent-snap: ` prefix and cut the rest at its last `\n\n`. Without a `\n\n`, the whole text is the reason and there is no origin.
+2. The text after the cut is an origin paragraph when, split on `\n`, every line matches `^Agent-Snap-([A-Za-z0-9]+(-[A-Za-z0-9]+)*): ([!-~]([ -~]{0,253}[!-~])?)$` and no key repeats. The value is printable ASCII, 1 to 255 characters, with no leading or trailing space.
+3. If it is an origin paragraph, the reason is the text before the cut. Otherwise the whole text is the reason and there is no origin.
+4. `source` and `host` come from the `Source` and `Host` lines, and each is reported only when its value is a valid origin value. Lines with other keys are ignored, so a later release can add keys whose values fit the line grammar without a schema version.
+
+Bytes are compared exactly. Nothing is trimmed, and `\r` is an ordinary character.
+
+Validation:
+
+- A reason is invalid when reading step 2, applied to the reason alone after its own last `\n\n`, finds an origin paragraph, or when the reason contains a NUL byte, which Git refuses to store. This holds whether or not origin values are supplied. As a result, a reason Blink stores never reads back as origin, and always reads back unchanged.
+- Reason and origin values are checked before any Git work. A rejected create writes nothing, even when the tree is unchanged and the create would have reused a snapshot.
+- Invalid input fails with `-32602` and one of these messages: `param must be an origin value: source`, `param must be an origin value: host`, `param must not contain a NUL byte or end with an origin paragraph: reason`. A non-string value, including `null`, fails with `param must be a string: <key>`.
+
+Results:
+
 - Deduplication ignores origin. A reused snapshot reports the origin stored on it, not the origin of the request that reused it.
-- Create, list, and lookup results include `source` and `host` when the snapshot stores them, and omit them otherwise. Snapshots written by 0.1.0 have no origin.
+- Create, list, and lookup results include `source` and `host` when the snapshot has them, and omit them otherwise.
+- A 0.1.0 snapshot has origin only if its reason ends with an origin paragraph.
 - A 0.1.0 reader shows a newer snapshot's origin paragraph as part of its reason. Nothing else about the snapshot changes for that reader.
 
 Values this repository sends:
