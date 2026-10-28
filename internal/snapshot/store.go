@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,10 +17,18 @@ import (
 )
 
 const (
-	refsPrefix   = "refs/agent-snapshots/"
-	itemsSuffix  = "/items/"
-	latestSuffix = "/latest"
-	addAttempts  = 5
+	refsPrefix        = "refs/agent-snapshots/"
+	itemsSuffix       = "/items/"
+	latestSuffix      = "/latest"
+	messagePrefix     = "agent-snap: "
+	addAttempts       = 5
+	changedFilesLimit = 1000
+)
+
+var (
+	ErrInvalidID = errors.New("invalid snapshot id")
+	ErrNotFound  = errors.New("snapshot not found")
+	idPattern    = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}\.[0-9]{9}Z-[0-9a-f]{12}$`)
 )
 
 type Snapshot struct {
@@ -29,6 +38,25 @@ type Snapshot struct {
 	CreatedAt    time.Time `json:"created_at"`
 	ChangedFiles []string  `json:"changed_files,omitempty"`
 	Reused       bool      `json:"reused,omitempty"`
+}
+
+type Detail struct {
+	ID                    string    `json:"id"`
+	Commit                string    `json:"commit"`
+	Reason                string    `json:"reason"`
+	CreatedAt             time.Time `json:"created_at"`
+	Tree                  string    `json:"tree"`
+	Parent                string    `json:"parent,omitempty"`
+	ParentID              string    `json:"parent_id,omitempty"`
+	ChangedFiles          []string  `json:"changed_files"`
+	ChangedFilesTruncated bool      `json:"changed_files_truncated,omitempty"`
+}
+
+// ValidID reports whether id has the shape Create mints. Get checks it before
+// building a ref path from id, so an id can never name a ref outside this
+// worktree's items namespace or smuggle a for-each-ref pattern.
+func ValidID(id string) bool {
+	return idPattern.MatchString(id)
 }
 
 type Store struct {
@@ -145,7 +173,7 @@ func (s *Store) Create(ctx context.Context, reason string) (Snapshot, error) {
 			args = append(args, "-p", parent)
 		}
 		args = append(args, "-F", "-")
-		commit, err := s.gitStdin(ctx, append(scratchEnv, authorEnv()...), "agent-snap: "+reason, args...)
+		commit, err := s.gitStdin(ctx, append(scratchEnv, authorEnv()...), messagePrefix+reason, args...)
 		if err != nil {
 			return Snapshot{}, err
 		}
@@ -325,7 +353,7 @@ func (s *Store) List(ctx context.Context, limit int) ([]Snapshot, error) {
 		created, _ := time.Parse(time.RFC3339, fields[3])
 		items = append(items, Snapshot{
 			ID: fields[0], Commit: fields[1],
-			Reason: strings.TrimPrefix(fields[2], "agent-snap: "), CreatedAt: created,
+			Reason: strings.TrimPrefix(fields[2], messagePrefix), CreatedAt: created,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].ID > items[j].ID })
@@ -352,7 +380,80 @@ func (s *Store) snapshotForCommit(ctx context.Context, commit string, reused boo
 		return Snapshot{}, errors.New("snapshot ref not found")
 	}
 	created, _ := time.Parse(time.RFC3339, fields[2])
-	return Snapshot{ID: fields[0], Commit: commit, Reason: strings.TrimPrefix(fields[1], "agent-snap: "), CreatedAt: created, Reused: reused}, nil
+	return Snapshot{ID: fields[0], Commit: commit, Reason: strings.TrimPrefix(fields[1], messagePrefix), CreatedAt: created, Reused: reused}, nil
+}
+
+// Get resolves id inside this worktree's namespace only. A symbolic item ref
+// is refused rather than followed, and the ref must point at a commit with at
+// most one parent whose ID begins with the id's suffix, so a hand-edited ref
+// cannot pass off a branch commit or a foreign object as a snapshot.
+func (s *Store) Get(ctx context.Context, id string) (Detail, error) {
+	if !ValidID(id) {
+		return Detail{}, fmt.Errorf("%w: %q", ErrInvalidID, id)
+	}
+	ref := s.itemsRef() + id
+	if symref, err := s.isSymref(ctx, ref); err != nil {
+		return Detail{}, err
+	} else if symref {
+		return Detail{}, fmt.Errorf("snapshot ref %s is a symbolic ref; refusing to read it", ref)
+	}
+
+	format := "%(refname)%00%(objecttype)%00%(objectname)%00%(tree)%00%(parent)%00%(creatordate:iso-strict)%00%(contents)%00"
+	out, err := s.gitRaw(ctx, nil, "for-each-ref", "--format="+format, ref)
+	if err != nil {
+		return Detail{}, err
+	}
+	fields := strings.Split(strings.TrimSuffix(out, "\x00\n"), "\x00")
+	if len(fields) != 7 || fields[0] != ref {
+		return Detail{}, fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	objectType, commit, tree, parents, message := fields[1], fields[2], fields[3], strings.Fields(fields[4]), fields[6]
+	if objectType != "commit" {
+		return Detail{}, fmt.Errorf("snapshot ref %s points at a %s, not a commit", ref, objectType)
+	}
+	if !strings.HasPrefix(commit, id[len(id)-12:]) {
+		return Detail{}, fmt.Errorf("snapshot ref %s points at commit %s, which does not match its id", ref, commit)
+	}
+	if len(parents) > 1 {
+		return Detail{}, fmt.Errorf("snapshot commit %s has more than one parent", commit)
+	}
+
+	created, _ := time.Parse(time.RFC3339, fields[5])
+	detail := Detail{ID: id, Commit: commit, Reason: strings.TrimPrefix(message, messagePrefix), CreatedAt: created, Tree: tree}
+	if len(parents) == 1 {
+		detail.Parent = parents[0]
+		if detail.ParentID, err = s.snapshotIDOf(ctx, detail.Parent); err != nil {
+			return Detail{}, err
+		}
+	}
+
+	changed, err := s.changedFiles(ctx, detail.Parent, commit)
+	if err != nil {
+		return Detail{}, err
+	}
+	if len(changed) > changedFilesLimit {
+		changed = changed[:changedFilesLimit]
+		detail.ChangedFilesTruncated = true
+	}
+	detail.ChangedFiles = changed
+	return detail, nil
+}
+
+// snapshotIDOf names the snapshot whose item ref points at commit. It skips
+// symbolic refs and ids that do not match the commit, the refs Get refuses,
+// so a reported parent_id always resolves through Get.
+func (s *Store) snapshotIDOf(ctx context.Context, commit string) (string, error) {
+	out, err := s.git(ctx, nil, "for-each-ref", "--points-at", commit, "--format=%(refname:strip=4)%00%(symref)", s.itemsRef())
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		id, symref, _ := strings.Cut(line, "\x00")
+		if symref == "" && ValidID(id) && strings.HasPrefix(commit, id[len(id)-12:]) {
+			return id, nil
+		}
+	}
+	return "", nil
 }
 
 func (s *Store) changedFiles(ctx context.Context, parent, commit string) ([]string, error) {
