@@ -38,6 +38,7 @@ Normal Git commits are not sufficient for this purpose: committing affects the u
 
 - Create a snapshot of a Git working tree.
 - List snapshots for a repository, newest first.
+- Look up one snapshot by identifier and inspect its commit, tree, parent, and changed paths.
 - Expose a CLI and a long-running JSONL protocol server.
 - Provide a type-safe TypeScript client for the Go core.
 - Integrate automatic and manual snapshot creation with OpenCode and Pi Coding Agent.
@@ -90,9 +91,10 @@ Normal Git commits are not sufficient for this purpose: committing affects the u
 
 1. The developer or agent invokes the list tool/command for a repository.
 2. Blink returns up to the requested number of snapshots in descending creation order.
-3. The caller can use the returned commit IDs with normal read-only Git inspection commands where appropriate.
+3. The caller selects a snapshot identifier and invokes the get tool/command to see its commit, tree, parent, and changed paths.
+4. The caller can use the returned commit and tree IDs with normal read-only Git inspection commands where appropriate.
 
-**Success condition:** the checkpoint timeline is usable without exposing hidden refs as normal branches.
+**Success condition:** the checkpoint timeline is usable without exposing hidden refs as normal branches or asking the caller to construct ref paths.
 
 ### 5.5 Future: developer reviewing and restoring
 
@@ -169,6 +171,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 | --- | --- |
 | `create [reason] [--cwd <dir>]` | Create one snapshot and print JSON. `--reason` and positional reason are mutually exclusive. |
 | `list [--cwd <dir>] [--limit <n>]` | List snapshots and print JSON. |
+| `get <id> [--cwd <dir>]` | Print the snapshot detail object for one snapshot as JSON. |
 | `ping` | Print protocol status and version JSON. |
 | `version` | Print the version string. |
 | `serve` | Process newline-delimited JSON requests on standard input and emit one JSON response per request on standard output. |
@@ -179,10 +182,10 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - Empty input lines are ignored.
 - The server MUST continue to process later requests after a request-level parse, validation, or operation error.
 - The maximum input line size is 4 MiB.
-- Supported methods are `ping`, `snapshot.create`, and `snapshot.list`.
+- Supported methods are `ping`, `snapshot.create`, `snapshot.list`, and `snapshot.get`.
 - Unknown methods return code `-32601`.
-- Malformed JSON returns `-32700`; invalid parameters return `-32602`; internal operation failures return `-32603`.
-- Parameter validation MUST reject unknown keys, missing `cwd`, blank `cwd`, malformed types, and invalid list limits.
+- Malformed JSON returns `-32700`; invalid parameters return `-32602`; internal operation failures return `-32603`; a well-formed snapshot identifier with no snapshot in the worktree namespace returns `-32001`.
+- Parameter validation MUST reject unknown keys, missing `cwd`, blank `cwd`, malformed types, invalid list limits, and malformed snapshot identifiers.
 
 ### FR-10: TypeScript client
 
@@ -203,14 +206,22 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - A transition to busy cancels pending idle work and aborts idle work already in flight.
 - `session.deleted` cancels work for that session and removes session state.
 - During disposal, reject new events, flush pending snapshots, abort remaining work, and close the core client.
-- Expose `agent_snap_create(reason?, cwd?)` and `agent_snap_list(cwd?, limit?)` with caller cancellation support.
+- Expose `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`, and `agent_snap_get(id, cwd?)` with caller cancellation support.
 
 #### Pi Coding Agent
 
 - At `session_start`, create a `session-start` baseline and await it as a session-start barrier. Failure is logged rather than propagated.
 - At `agent_settled`, create an `agent-settled` snapshot through the same 1.5-second coalescing policy.
 - At `session_shutdown`, flush queued work, dispose the scheduler, await tracked baselines, and close the client.
-- Expose `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`, `agent-snap-create`, and `agent-snap-list`.
+- Expose `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`, `agent_snap_get(id, cwd?)`, `agent-snap-create`, `agent-snap-list`, and `agent-snap-get <id>`.
+
+### FR-12: Snapshot lookup
+
+- Lookup takes `cwd` and a snapshot identifier, and resolves the identifier only inside the worktree namespace derived from `cwd`. Identifiers from another worktree are not found.
+- An identifier MUST match `<YYYYMMDD>T<HHMMSS>.<nanoseconds>Z-<12 lowercase hex digits>` before any ref path is built from it.
+- Lookup MUST fail closed when the item ref is symbolic, does not point at a commit, points at a commit with more than one parent, or points at a commit whose ID does not begin with the identifier's 12-digit suffix.
+- Lookup MUST return the snapshot detail object defined in section 8.2. `changed_files` lists paths changed between the snapshot and its parent (or every path when there is no parent), is capped at 1000 entries, and sets `changed_files_truncated: true` when the cap is reached.
+- Lookup MUST NOT write the index, refs, objects, `HEAD`, or working-tree files.
 
 ## 7. Technical Architecture
 
@@ -227,7 +238,7 @@ Pi extension ────┘                                                │
 | --- | --- |
 | `cmd/agent-snap` | User-facing CLI and process entrypoint. |
 | `internal/protocol` | Strict JSONL request parsing, parameter validation, dispatch, and JSON-RPC-style errors. |
-| `internal/snapshot` | Repository discovery, scratch-index snapshot construction, hidden-ref persistence, deduplication, and listing. |
+| `internal/snapshot` | Repository discovery, scratch-index snapshot construction, hidden-ref persistence, deduplication, listing, and lookup. |
 | `packages/core` | Typed Node client, response validation, process lifecycle management, cancellation, and teardown. |
 | `packages/opencode` | OpenCode lifecycle integration and manual tools. |
 | `packages/pi` | Pi lifecycle integration, manual tools, and commands. |
@@ -262,7 +273,33 @@ The commit message is `agent-snap: <reason>`. Commit author and committer identi
 | `changed_files` | string array, optional | Paths changed between the new snapshot and its parent; supplied for a newly created snapshot. |
 | `reused` | boolean, optional | `true` if the current tree equals the latest checkpoint and Blink reused that checkpoint. |
 
-### 8.2 Request and response examples
+### 8.2 Snapshot detail object
+
+Returned by lookup (`snapshot.get`).
+
+```json
+{
+  "id": "20260814T120000.000000000Z-abc123def456",
+  "commit": "abc123def456...",
+  "reason": "before-refactor",
+  "created_at": "2026-08-14T12:00:00Z",
+  "tree": "4b825dc642cb...",
+  "parent": "9f8e7d6c5b4a...",
+  "parent_id": "20260814T115500.000000000Z-9f8e7d6c5b4a",
+  "changed_files": ["src/main.go"]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id`, `commit`, `reason`, `created_at` | | As in the snapshot object. |
+| `tree` | string | Full Git tree object ID of the snapshot. |
+| `parent` | string, optional | Full ID of the parent commit: the previous checkpoint, or `HEAD` when the snapshot started the chain. Absent when the snapshot has no parent. |
+| `parent_id` | string, optional | Snapshot identifier of the parent when the parent is a snapshot in the same worktree namespace. |
+| `changed_files` | string array | Paths changed between the snapshot and its parent, or every path when there is no parent. Always present; at most 1000 entries. |
+| `changed_files_truncated` | boolean, optional | `true` when more than 1000 paths changed and `changed_files` holds only the first 1000. |
+
+### 8.3 Request and response examples
 
 Create:
 
@@ -274,6 +311,12 @@ List:
 
 ```json
 {"id":2,"method":"snapshot.list","params":{"cwd":"/path/to/repo","limit":20}}
+```
+
+Get:
+
+```json
+{"id":3,"method":"snapshot.get","params":{"cwd":"/path/to/repo","id":"20260814T120000.000000000Z-abc123def456"}}
 ```
 
 Success responses contain `id` and `result`. Failure responses contain `id` and `error`:
@@ -326,6 +369,7 @@ An intelligent review layer may prioritize risky changes, summarize scope, and f
 - Test CLI argument parsing, protocol strictness, response shapes, default values, and error codes.
 - Test snapshot creation in repositories with and without a `HEAD` commit.
 - Test ignored files, untracked files, staged and unstaged changes, deletions, deduplication, ref namespace isolation, symbolic-ref refusal, and concurrent creation.
+- Test lookup with empty history, malformed and path-like identifiers, identifiers from another worktree, SHA-1 and SHA-256 repositories, tampered item refs, and changed-path truncation.
 - Test scratch-directory selection and cleanup, including a temporary directory configured inside the repository.
 - Test client cancellation, timeout, crash recovery, close barriers, response validation, and platform teardown decisions.
 - Test host lifecycle coalescing, busy/session-deleted cancellation, shutdown flush, and manual tools/commands.
