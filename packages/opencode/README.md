@@ -13,6 +13,8 @@ OpenCode plugin for agent-snap. See the repository README for full details.
   subprocess.
 - Tools: `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
   `agent_snap_get(id, cwd?)` — all honour the caller's abort signal.
+- Every snapshot records host `opencode` and source `session-start`,
+  `session-idle`, or `tool`. No session identifier is stored.
 
 Enable in `opencode.json`:
 

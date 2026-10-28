@@ -14,7 +14,9 @@ The package declares `pi.extensions: ["dist/extension.js"]` in its
 - registers `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
   and `agent_snap_get(id, cwd?)` tools,
 - registers `agent-snap-create`, `agent-snap-list`, and `agent-snap-get <id>`
-  commands.
+  commands,
+- records host `pi` and source `session-start`, `agent-settled`, `tool`, or
+  `command` on each snapshot. No session identifier is stored.
 
 ## Install
 

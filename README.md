@@ -74,13 +74,13 @@ one JSON response per line to stdout.
 Request:
 
 ```json
-{"id":1,"method":"snapshot.create","params":{"cwd":"/path/to/repo","reason":"why"}}
+{"id":1,"method":"snapshot.create","params":{"cwd":"/path/to/repo","reason":"why","source":"tool","host":"pi"}}
 ```
 
 Response (success):
 
 ```json
-{"id":1,"result":{"id":"20260814T120000.000000000Z-abc123def456","commit":"abc123def456","reason":"why","created_at":"2026-08-14T12:00:00Z","changed_files":["src/main.go"],"reused":false}}
+{"id":1,"result":{"id":"20260814T120000.000000000Z-abc123def456","commit":"abc123def456","reason":"why","created_at":"2026-08-14T12:00:00Z","source":"tool","host":"pi","changed_files":["src/main.go"],"reused":false}}
 ```
 
 Response (error — processing continues with the next request):
@@ -94,11 +94,20 @@ Methods:
 | Method           | Params                        | Result                                   |
 | ---------------- | ----------------------------- | ---------------------------------------- |
 | `ping`           | —                             | `{"status":"ok","version":...}`          |
-| `snapshot.create`| `cwd`, `reason?`              | snapshot object (see above)              |
+| `snapshot.create`| `cwd`, `reason?`, `source?`, `host?` | snapshot object (see above)       |
 | `snapshot.list`  | `cwd`, `limit?`               | `{"snapshots":[...]}` (newest first)     |
+| `snapshot.get`   | `cwd`, `id`                   | snapshot detail object                   |
 
 Error codes: `-32700` parse error, `-32601` method not found,
-`-32602` invalid params, `-32603` internal error.
+`-32602` invalid params, `-32603` internal error, `-32001` snapshot not found.
+
+`source` and `host` are the snapshot's origin: what asked for it, and which
+integration sent the request. Each is a lowercase hyphenated token of at most
+64 characters. They are stored in the snapshot commit and returned by create,
+list, and get when present. The CLI records `source: cli`; the OpenCode and Pi
+integrations record their own host and event. Origin is reported by the
+caller, so treat it as a label, not evidence. No session identifiers are
+stored. See FR-13 in [`docs/BLINK_SPEC.md`](docs/BLINK_SPEC.md).
 
 ## Adapters
 
@@ -114,7 +123,9 @@ or copy the built package into `.opencode/plugins/`. The plugin:
 - snapshots the session directory when a session is created,
 - coalesces `session.idle` bursts (1.5 s window) into one settled snapshot,
 - exposes `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
-  and `agent_snap_get(id, cwd?)` tools.
+  and `agent_snap_get(id, cwd?)` tools,
+- records host `opencode` and source `session-start`, `session-idle`, or
+  `tool` on each snapshot.
 
 Set `AGENT_SNAP_BIN` if the binary is not on `PATH`.
 
@@ -151,7 +162,9 @@ The extension:
 - registers `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
   and `agent_snap_get(id, cwd?)` tools,
 - registers `agent-snap-create`, `agent-snap-list`, and `agent-snap-get <id>`
-  commands.
+  commands,
+- records host `pi` and source `session-start`, `agent-settled`, `tool`, or
+  `command` on each snapshot.
 
 Set `AGENT_SNAP_BIN` if the binary is not on `PATH`.
 

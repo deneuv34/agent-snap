@@ -9,7 +9,7 @@ secrets, or full file listings.
 - Operation (`create`, `list`, `ping`, `close`, teardown)
 - JSON-RPC error code and the error message returned by the core
 - Repository *existence* / "not a git repository", never file bodies
-- Snapshot id, commit id, reason string, `reused`
+- Snapshot id, commit id, reason string, `reused`, origin `source` and `host`
 - Process id, process-group id, `taskkill` exit status, timeout duration
 - Host event name (`session.created`, `agent_settled`, …)
 - Binary path (`AGENT_SNAP_BIN`) and protocol version
@@ -36,7 +36,9 @@ blob or working-tree payload to host logs.
 | `snapshot ref … points at a …, not a commit` / `does not match its id` / `has more than one parent` / `which agent-snap did not write` | An item ref was edited by hand or repointed at a commit agent-snap did not create | Lookup refuses tampered item refs. Delete the bad ref with `git update-ref -d`; do not repoint it. |
 | `update refs` / CAS failure | Concurrent create lost the compare-and-swap | Retry is the client's job on the next create. Confirm the ref namespace is the worktree's. |
 | `git …` with object-format / git-dir errors | Broken Git dir or unsupported repo | Confirm SHA-1 or SHA-256 repo; inherited `GIT_*` must not redirect the repo. |
-| JSON-RPC `-32602` | Unknown key, missing `cwd`, bad `limit`, malformed snapshot `id` | Fix the request. The server does not coerce types. |
+| JSON-RPC `-32602` | Unknown key, missing `cwd`, bad `limit`, malformed snapshot `id`, invalid `source`/`host`, a reason with a NUL byte or ending in `Agent-Snap-` lines | Fix the request. The server does not coerce types. |
+| Log: `agent-snap binary does not accept snapshot origin; creating snapshots without source and host` | The binary is 0.1.0 and the plugin is newer | Snapshots still work. Upgrade the binary to record origin. |
+| `agent-snap binary does not accept snapshot origin; refusing to send it a reason that ends like an origin paragraph` | 0.1.0 binary, and a reason containing `\n\nAgent-Snap-` | Upgrade the binary, or use a different reason. |
 | JSON-RPC `-32001` | `snapshot.get` id does not exist in this worktree | Take ids from `snapshot.list` for the same `cwd`. Ids from another worktree do not resolve. |
 | JSON-RPC `-32601` | Unknown method | Only `ping`, `snapshot.create`, `snapshot.list`, `snapshot.get` exist. |
 | `SnapProtocolError` | Child wrote a non-conforming line | Treat as a transport bug. Discard the payload; do not forward it to the host. |
