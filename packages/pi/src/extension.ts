@@ -1,6 +1,16 @@
 import { Type } from "@earendil-works/pi-ai"
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { createCoalescedScheduler, SnapClient, type SnapLike, type SnapOrigin, type SnapSnapshot, type SnapSnapshotDetail } from "@agent-snap/core"
+import {
+  createCoalescedScheduler,
+  SnapClient,
+  type SnapDiff,
+  type SnapDiffFile,
+  type SnapDiffPage,
+  type SnapLike,
+  type SnapOrigin,
+  type SnapSnapshot,
+  type SnapSnapshotDetail,
+} from "@agent-snap/core"
 
 const IDLE_COALESCE_MS = 1500
 const HOST = "pi"
@@ -31,6 +41,56 @@ function formatDetail(snap: SnapSnapshotDetail): string {
   const changed = snap.changed_files.length > 0 ? `${heading}:\n${snap.changed_files.map((f) => `  ${f}`).join("\n")}` : `${heading}: none`
   const origin = formatOrigin(snap)
   return `Snapshot ${snap.id}\ncommit: ${snap.commit}\ntree: ${snap.tree}\nreason: ${snap.reason}\n${origin === "" ? "" : `origin: ${origin}\n`}created: ${snap.created_at}\nparent: ${parent}\n${changed}`
+}
+
+function formatDiffCounts(file: SnapDiffFile): string {
+  return file.patch === "binary" ? "binary" : `+${file.additions} -${file.deletions}`
+}
+
+function formatDiffIndexLine(file: SnapDiffFile, number: number): string {
+  const rename = file.status === "renamed" ? ` <- ${file.old_path} (${file.similarity}%)` : ""
+  return `${number}  ${file.status}  ${file.path}${rename}  ${formatDiffCounts(file)}\n`
+}
+
+function formatDiffPatch(file: SnapDiffFile, number: number): string {
+  const lossy = file.lossy === true ? " (non-UTF-8 bytes shown as U+FFFD)" : ""
+  let out = `== ${number} ${file.path}${lossy}\n`
+  for (const hunk of file.hunks) {
+    const section = hunk.section ? ` ${hunk.section}` : ""
+    out += `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@${section}\n${hunk.text}`
+  }
+  if (file.patch === "truncated") {
+    out +=
+      file.patch_bytes === undefined
+        ? "Patch truncated. The rest of this file is over 1048576 bytes and cannot be shown.\n"
+        : `Patch truncated. Call agent_snap_diff with offset ${number - 1} and max_patch_bytes ${file.patch_bytes} to see this file whole.\n`
+  }
+  return out
+}
+
+function formatDiff(diff: SnapDiff): string {
+  const { from, to, offset, totals, files } = diff
+  let out = `Git evidence: snapshot diff (read-only)\nfrom ${from.id}\nto   ${to.id}\n`
+  if (totals.files === 0) {
+    out += "No files changed.\n"
+  } else {
+    const window = files.length === 0 ? `No files at offset ${offset}.` : `Files ${offset + 1}-${offset + files.length} of ${totals.files}.`
+    out += `${totals.files} files changed, +${totals.additions} -${totals.deletions}. ${window}\n`
+    if (files.length > 0) out += `\n${files.map((file, index) => formatDiffIndexLine(file, offset + index + 1)).join("")}`
+    const patches = files.flatMap((file, index) => (file.patch === "full" || file.patch === "truncated" ? [formatDiffPatch(file, offset + index + 1)] : []))
+    if (patches.length > 0) out += `\n${patches.join("")}`
+    if (diff.next_offset !== undefined) {
+      out += `\nHunks from file ${diff.next_offset + 1} on are not shown. Call agent_snap_diff with offset ${diff.next_offset}.\n`
+    }
+  }
+  return `${out}\nCite a finding as \`<path> @@ -a,b +c,d @@\` from this output. Lines not shown here are not evidence.`
+}
+
+function diffPage(offset: number | undefined, maxPatchBytes: number | undefined): SnapDiffPage {
+  const page: SnapDiffPage = {}
+  if (offset !== undefined) page.offset = offset
+  if (maxPatchBytes !== undefined) page.maxPatchBytes = maxPatchBytes
+  return page
 }
 
 export interface AgentSnapExtensionDeps {
@@ -118,6 +178,29 @@ export function createAgentSnapExtension(deps: AgentSnapExtensionDeps): (pi: Ext
     },
   })
 
+  const diffTool = defineTool({
+    name: "agent_snap_diff",
+    label: "Agent Snap: Diff snapshots",
+    description:
+      "Show what changed between two agent-snap snapshots as Git hunks. Read-only. Snapshot ids come from agent_snap_list. Large diffs are paged: pass the offset the output names. Cite findings by path and hunk header.",
+    promptSnippet: "agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?) - show what changed between two agent-snap snapshots as Git hunks",
+    parameters: Type.Object({
+      from: Type.String({ description: "Snapshot id from agent_snap_list to diff from" }),
+      to: Type.String({ description: "Snapshot id from agent_snap_list to diff to" }),
+      offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647, description: "Index of the first file to show; use the offset the previous page named" })),
+      max_patch_bytes: Type.Optional(Type.Integer({ minimum: 1024, maximum: 1048576, description: "Patch byte budget for this page, 1024 to 1048576" })),
+      cwd: Type.Optional(Type.String({ description: "Repository directory; defaults to the session directory" })),
+    }),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const cwd = params.cwd ?? ctx.cwd
+      const diff = await client.diff(cwd, params.from, params.to, diffPage(params.offset, params.max_patch_bytes), signal)
+      return {
+        content: [{ type: "text", text: formatDiff(diff) }],
+        details: { diff },
+      }
+    },
+  })
+
   return function agentSnapExtension(pi: ExtensionAPI): void {
     pi.on("session_start", async (_event, ctx) => {
       // Barrier: the session does not proceed until the baseline snapshot
@@ -153,6 +236,7 @@ export function createAgentSnapExtension(deps: AgentSnapExtensionDeps): (pi: Ext
     pi.registerTool(createTool)
     pi.registerTool(listTool)
     pi.registerTool(getTool)
+    pi.registerTool(diffTool)
 
     pi.registerCommand("agent-snap-create", {
       description: "Create an agent-snap snapshot of the working tree (optional reason as argument)",
@@ -176,6 +260,19 @@ export function createAgentSnapExtension(deps: AgentSnapExtensionDeps): (pi: Ext
       handler: async (args, ctx) => {
         const snapshot = await client.get(ctx.cwd, args.trim())
         ctx.ui.notify(formatDetail(snapshot).split("\n").slice(0, 12).join("\n"), "info")
+      },
+    })
+
+    pi.registerCommand("agent-snap-diff", {
+      description: "Show what changed between two agent-snap snapshots (from and to ids as arguments)",
+      handler: async (args, ctx) => {
+        const [from, to, ...extra] = args.trim().split(/\s+/)
+        if (from === undefined || from === "" || to === undefined || extra.length > 0) {
+          ctx.ui.notify("Usage: agent-snap-diff <from> <to>", "warning")
+          return
+        }
+        const diff = await client.diff(ctx.cwd, from, to)
+        ctx.ui.notify(formatDiff(diff).split("\n").slice(0, 12).join("\n"), "info")
       },
     })
   }

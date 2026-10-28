@@ -1,8 +1,20 @@
 import { tool } from "@opencode-ai/plugin"
 import type { Hooks } from "@opencode-ai/plugin"
-import { createCoalescedScheduler, type SnapLike, type SnapOrigin, type SnapSnapshot, type SnapSnapshotDetail } from "@agent-snap/core"
+import {
+  createCoalescedScheduler,
+  type SnapDiff,
+  type SnapDiffFile,
+  type SnapDiffPage,
+  type SnapLike,
+  type SnapOrigin,
+  type SnapSnapshot,
+  type SnapSnapshotDetail,
+} from "@agent-snap/core"
 
 const HOST = "opencode"
+
+const DIFF_DESCRIPTION =
+  "Show what changed between two agent-snap snapshots as Git hunks. Read-only. Snapshot ids come from agent_snap_list. Large diffs are paged: pass the offset the output names. Cite findings by path and hunk header."
 
 function formatCreated(snap: SnapSnapshot): string {
   const reused = snap.reused === true ? " (working tree unchanged — reused previous snapshot)" : ""
@@ -30,6 +42,56 @@ function formatDetail(snap: SnapSnapshotDetail): string {
   const changed = snap.changed_files.length > 0 ? `${heading}:\n${snap.changed_files.map((f) => `  ${f}`).join("\n")}` : `${heading}: none`
   const origin = formatOrigin(snap)
   return `Snapshot ${snap.id}\ncommit: ${snap.commit}\ntree: ${snap.tree}\nreason: ${snap.reason}\n${origin === "" ? "" : `origin: ${origin}\n`}created: ${snap.created_at}\nparent: ${parent}\n${changed}`
+}
+
+function formatDiffCounts(file: SnapDiffFile): string {
+  return file.patch === "binary" ? "binary" : `+${file.additions} -${file.deletions}`
+}
+
+function formatDiffIndexLine(file: SnapDiffFile, number: number): string {
+  const rename = file.status === "renamed" ? ` <- ${file.old_path} (${file.similarity}%)` : ""
+  return `${number}  ${file.status}  ${file.path}${rename}  ${formatDiffCounts(file)}\n`
+}
+
+function formatDiffPatch(file: SnapDiffFile, number: number): string {
+  const lossy = file.lossy === true ? " (non-UTF-8 bytes shown as U+FFFD)" : ""
+  let out = `== ${number} ${file.path}${lossy}\n`
+  for (const hunk of file.hunks) {
+    const section = hunk.section ? ` ${hunk.section}` : ""
+    out += `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@${section}\n${hunk.text}`
+  }
+  if (file.patch === "truncated") {
+    out +=
+      file.patch_bytes === undefined
+        ? "Patch truncated. The rest of this file is over 1048576 bytes and cannot be shown.\n"
+        : `Patch truncated. Call agent_snap_diff with offset ${number - 1} and max_patch_bytes ${file.patch_bytes} to see this file whole.\n`
+  }
+  return out
+}
+
+function formatDiff(diff: SnapDiff): string {
+  const { from, to, offset, totals, files } = diff
+  let out = `Git evidence: snapshot diff (read-only)\nfrom ${from.id}\nto   ${to.id}\n`
+  if (totals.files === 0) {
+    out += "No files changed.\n"
+  } else {
+    const window = files.length === 0 ? `No files at offset ${offset}.` : `Files ${offset + 1}-${offset + files.length} of ${totals.files}.`
+    out += `${totals.files} files changed, +${totals.additions} -${totals.deletions}. ${window}\n`
+    if (files.length > 0) out += `\n${files.map((file, index) => formatDiffIndexLine(file, offset + index + 1)).join("")}`
+    const patches = files.flatMap((file, index) => (file.patch === "full" || file.patch === "truncated" ? [formatDiffPatch(file, offset + index + 1)] : []))
+    if (patches.length > 0) out += `\n${patches.join("")}`
+    if (diff.next_offset !== undefined) {
+      out += `\nHunks from file ${diff.next_offset + 1} on are not shown. Call agent_snap_diff with offset ${diff.next_offset}.\n`
+    }
+  }
+  return `${out}\nCite a finding as \`<path> @@ -a,b +c,d @@\` from this output. Lines not shown here are not evidence.`
+}
+
+function diffPage(offset: number | undefined, maxPatchBytes: number | undefined): SnapDiffPage {
+  const page: SnapDiffPage = {}
+  if (offset !== undefined) page.offset = offset
+  if (maxPatchBytes !== undefined) page.maxPatchBytes = maxPatchBytes
+  return page
 }
 
 export interface AgentSnapDeps {
@@ -155,6 +217,21 @@ export function createAgentSnapPlugin(deps: AgentSnapDeps): Hooks {
           if (closing) throw new Error("agent-snap plugin is closing")
           const snap = await client.get(args.cwd ?? ctx.directory, args.id, ctx.abort)
           return formatDetail(snap)
+        },
+      }),
+      agent_snap_diff: tool({
+        description: DIFF_DESCRIPTION,
+        args: {
+          from: tool.schema.string().describe("Snapshot id from agent_snap_list to diff from"),
+          to: tool.schema.string().describe("Snapshot id from agent_snap_list to diff to"),
+          offset: tool.schema.number().int().min(0).max(2147483647).describe("Index of the first file to show; use the offset the previous page named").optional(),
+          max_patch_bytes: tool.schema.number().int().min(1024).max(1048576).describe("Patch byte budget for this page, 1024 to 1048576").optional(),
+          cwd: tool.schema.string().describe("Repository directory; defaults to the session directory").optional(),
+        },
+        async execute(args, ctx) {
+          if (closing) throw new Error("agent-snap plugin is closing")
+          const diff = await client.diff(args.cwd ?? ctx.directory, args.from, args.to, diffPage(args.offset, args.max_patch_bytes), ctx.abort)
+          return formatDiff(diff)
         },
       }),
     },
