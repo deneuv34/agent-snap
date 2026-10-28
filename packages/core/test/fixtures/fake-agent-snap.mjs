@@ -94,6 +94,22 @@ rl.on("line", (line) => {
     )
     return
   }
+  if (mode === "v010" && req.method === "snapshot.create") {
+    // A 0.1.0 binary rejects keys it does not know before any other work.
+    const unknown = Object.keys(req.params ?? {}).find((key) => key !== "cwd" && key !== "reason")
+    if (unknown !== undefined) {
+      respond(req, null, { code: -32602, message: `unknown param: ${unknown}` })
+      return
+    }
+  }
+  if (mode === "invalid-origin" && req.method === "snapshot.create") {
+    respond(req, null, { code: -32602, message: "param must be an origin value: source" })
+    return
+  }
+  if (mode === "internal-unknown-param" && req.method === "snapshot.create") {
+    respond(req, null, { code: -32603, message: "unknown param: source" })
+    return
+  }
   if (mode === "garbage-line" && req.method === "ping") {
     console.log("this is not valid json at all")
   }
@@ -132,6 +148,8 @@ function handle(req) {
           commit: "0123456789ab",
           reason: req.params?.reason ?? "manual",
           created_at: new Date().toISOString(),
+          source: mode === "malformed-origin" ? 7 : req.params?.source,
+          host: req.params?.host,
           changed_files: [],
           reused: false,
         })
@@ -165,6 +183,8 @@ const malformedDetails = {
   "detail-bad-parent": { parent: 7 },
   "detail-bad-parent-id": { parent_id: null },
   "detail-bad-truncated": { changed_files_truncated: "yes" },
+  "detail-bad-source": { source: 7 },
+  "detail-bad-host": { host: null },
 }
 
 function detail(id) {

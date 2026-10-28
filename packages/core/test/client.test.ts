@@ -69,6 +69,8 @@ test("get sends exactly cwd and id and returns a typed detail", async () => {
       parent_id: "20251231T000000.000000000Z-fedcba987654",
       changed_files: ["src/a.ts"],
       changed_files_truncated: undefined,
+      source: undefined,
+      host: undefined,
     })
   } finally {
     await c.close()
@@ -103,6 +105,8 @@ test("malformed snapshot.get results surface SnapProtocolError", async () => {
     "detail-bad-parent",
     "detail-bad-parent-id",
     "detail-bad-truncated",
+    "detail-bad-source",
+    "detail-bad-host",
   ]) {
     const c = client({ FAKE_AGENT_SNAP_MODE: mode })
     try {
@@ -114,6 +118,94 @@ test("malformed snapshot.get results surface SnapProtocolError", async () => {
     } finally {
       await c.close()
     }
+  }
+})
+
+function originClient(mode: string, messages: string[]) {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-origin-")), "log.jsonl")
+  const c = new SnapClient({
+    bin: process.execPath,
+    serveArgs: [fixture, "serve"],
+    env: { FAKE_AGENT_SNAP_MODE: mode, FAKE_AGENT_SNAP_LOG: log },
+    log: (message) => messages.push(message),
+  })
+  const createParams = () =>
+    readFileSync(log, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { event: string; method: string; params: unknown })
+      .filter((entry) => entry.event === "request" && entry.method === "snapshot.create")
+      .map((entry) => entry.params)
+  return { c, createParams }
+}
+
+test("create sends source and host and returns the stored origin", async () => {
+  const { c, createParams } = originClient("", [])
+  try {
+    const snap = await c.create("/repo", "before", undefined, { source: "tool", host: "pi" })
+    assert.equal(snap.source, "tool")
+    assert.equal(snap.host, "pi")
+    const plain = await c.create("/repo", "plain")
+    assert.equal(plain.source, undefined)
+    assert.equal(plain.host, undefined)
+  } finally {
+    await c.close()
+  }
+  assert.deepEqual(createParams(), [
+    { cwd: "/repo", reason: "before", source: "tool", host: "pi" },
+    { cwd: "/repo", reason: "plain" },
+  ])
+})
+
+test("a 0.1.0 binary's unknown-param rejection is retried without origin and logged once", async () => {
+  const messages: string[] = []
+  const { c, createParams } = originClient("v010", messages)
+  try {
+    const first = await c.create("/repo", "session-start", undefined, { source: "session-start", host: "pi" })
+    const second = await c.create("/repo", undefined, undefined, { host: "pi" })
+    assert.equal(first.reason, "session-start")
+    assert.equal(first.source, undefined)
+    assert.equal(second.reason, "manual")
+  } finally {
+    await c.close()
+  }
+  assert.deepEqual(createParams(), [
+    { cwd: "/repo", reason: "session-start", source: "session-start", host: "pi" },
+    { cwd: "/repo", reason: "session-start" },
+    { cwd: "/repo", host: "pi" },
+    { cwd: "/repo" },
+  ])
+  assert.equal(messages.filter((message) => message.includes("does not accept snapshot origin")).length, 1)
+})
+
+test("the 0.1.0 retry refuses a reason a newer reader would take as origin", async () => {
+  const { c, createParams } = originClient("v010", [])
+  try {
+    await assert.rejects(
+      () => c.create("/repo", "x\n\nAgent-Snap-Source: session-start", undefined, { source: "tool" }),
+      /refusing to send it a reason that ends like an origin paragraph/,
+    )
+  } finally {
+    await c.close()
+  }
+  assert.deepEqual(createParams(), [{ cwd: "/repo", reason: "x\n\nAgent-Snap-Source: session-start", source: "tool" }])
+})
+
+test("create errors other than the 0.1.0 rejection are not retried", async () => {
+  for (const [mode, code, message] of [
+    ["invalid-origin", -32602, "param must be an origin value: source"],
+    ["internal-unknown-param", -32603, "unknown param: source"],
+  ] as const) {
+    const { c, createParams } = originClient(mode, [])
+    try {
+      await assert.rejects(
+        () => c.create("/repo", "r", undefined, { source: "tool" }),
+        (err: unknown) => err instanceof SnapRpcError && err.code === code && err.message === message,
+      )
+    } finally {
+      await c.close()
+    }
+    assert.equal(createParams().length, 1, `mode ${mode} must not retry`)
   }
 })
 
@@ -394,7 +486,7 @@ test("non-object or garbage child output is rejected or ignored safely", async (
 })
 
 test("null, array, and scalar results surface SnapProtocolError", async () => {
-  for (const mode of ["null-result", "array-result", "scalar-result", "malformed-snapshot"]) {
+  for (const mode of ["null-result", "array-result", "scalar-result", "malformed-snapshot", "malformed-origin"]) {
     const c = client({ FAKE_AGENT_SNAP_MODE: mode })
     try {
       await assert.rejects(

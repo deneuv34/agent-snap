@@ -10,7 +10,7 @@ import {
   windowsTreeCompletionDecision,
   type GroupState,
 } from "./teardown.js"
-import type { PingResult, SnapListResult, SnapSnapshot, SnapSnapshotDetail } from "./types.js"
+import type { PingResult, SnapListResult, SnapOrigin, SnapSnapshot, SnapSnapshotDetail } from "./types.js"
 
 type SnapChild = ChildProcessByStdio<Writable, Readable, null>
 
@@ -173,11 +173,28 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string")
 }
 
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string"
+}
+
+// A 0.1.0 binary answers origin params with exactly this rejection, before it
+// resolves the repository, so a create can be retried without them.
+function rejectsOrigin(error: unknown): boolean {
+  return (
+    error instanceof SnapRpcError &&
+    error.code === -32602 &&
+    (error.message === "unknown param: source" || error.message === "unknown param: host")
+  )
+}
+
 function validateSnapshot(result: unknown): SnapSnapshot {
   if (!isRecord(result)) throw new SnapProtocolError("snapshot.create result must be an object")
-  const { id, commit, reason, created_at, changed_files, reused } = result
+  const { id, commit, reason, created_at, source, host, changed_files, reused } = result
   if (typeof id !== "string" || typeof commit !== "string" || typeof reason !== "string" || typeof created_at !== "string") {
     throw new SnapProtocolError("snapshot.create result is missing string fields")
+  }
+  if (!isOptionalString(source) || !isOptionalString(host)) {
+    throw new SnapProtocolError("snapshot.create result has a malformed origin")
   }
   if (changed_files !== undefined && !isStringArray(changed_files)) {
     throw new SnapProtocolError("snapshot.create result has malformed changed_files")
@@ -185,12 +202,21 @@ function validateSnapshot(result: unknown): SnapSnapshot {
   if (reused !== undefined && typeof reused !== "boolean") {
     throw new SnapProtocolError("snapshot.create result has malformed reused flag")
   }
-  return { id, commit, reason, created_at, changed_files: changed_files as string[] | undefined, reused: reused as boolean | undefined }
+  return {
+    id,
+    commit,
+    reason,
+    created_at,
+    source,
+    host,
+    changed_files: changed_files as string[] | undefined,
+    reused: reused as boolean | undefined,
+  }
 }
 
 function validateDetail(result: unknown): SnapSnapshotDetail {
   if (!isRecord(result)) throw new SnapProtocolError("snapshot.get result must be an object")
-  const { id, commit, reason, created_at, tree, parent, parent_id, changed_files, changed_files_truncated } = result
+  const { id, commit, reason, created_at, source, host, tree, parent, parent_id, changed_files, changed_files_truncated } = result
   if (
     typeof id !== "string" ||
     typeof commit !== "string" ||
@@ -199,6 +225,9 @@ function validateDetail(result: unknown): SnapSnapshotDetail {
     typeof tree !== "string"
   ) {
     throw new SnapProtocolError("snapshot.get result is missing string fields")
+  }
+  if (!isOptionalString(source) || !isOptionalString(host)) {
+    throw new SnapProtocolError("snapshot.get result has a malformed origin")
   }
   if ((parent !== undefined && typeof parent !== "string") || (parent_id !== undefined && typeof parent_id !== "string")) {
     throw new SnapProtocolError("snapshot.get result has a malformed parent")
@@ -214,6 +243,8 @@ function validateDetail(result: unknown): SnapSnapshotDetail {
     commit,
     reason,
     created_at,
+    source,
+    host,
     tree,
     parent: parent as string | undefined,
     parent_id: parent_id as string | undefined,
@@ -278,6 +309,7 @@ export class SnapClient {
   #killPromises = new WeakMap<SnapChild, Promise<void>>()
   #tearingDown = new WeakSet<SnapChild>()
   #closing = false
+  #originDropLogged = false
 
   constructor(options: SnapClientOptions = {}) {
     this.#bin = options.bin ?? SnapClient.defaultBin()
@@ -308,9 +340,29 @@ export class SnapClient {
     return this.request<PingResult>("ping", undefined, { signal })
   }
 
-  async create(cwd: string, reason?: string, signal?: AbortSignal): Promise<SnapSnapshot> {
+  async create(cwd: string, reason?: string, signal?: AbortSignal, origin?: SnapOrigin): Promise<SnapSnapshot> {
     const params: Record<string, unknown> = { cwd }
     if (reason && reason.trim().length > 0) params.reason = reason
+    if (origin?.source === undefined && origin?.host === undefined) {
+      return this.request<SnapSnapshot>("snapshot.create", params, { signal })
+    }
+    const withOrigin = { ...params }
+    if (origin.source !== undefined) withOrigin.source = origin.source
+    if (origin.host !== undefined) withOrigin.host = origin.host
+    try {
+      return await this.request<SnapSnapshot>("snapshot.create", withOrigin, { signal })
+    } catch (error) {
+      if (!rejectsOrigin(error)) throw error
+    }
+    // A 0.1.0 binary stores any reason, so the retry must not send one that a
+    // newer reader would take as origin.
+    if (typeof params.reason === "string" && params.reason.includes("\n\nAgent-Snap-")) {
+      throw new Error("agent-snap binary does not accept snapshot origin; refusing to send it a reason that ends like an origin paragraph")
+    }
+    if (!this.#originDropLogged) {
+      this.#originDropLogged = true
+      this.#log("agent-snap binary does not accept snapshot origin; creating snapshots without source and host. Upgrade agent-snap to record them.")
+    }
     return this.request<SnapSnapshot>("snapshot.create", params, { signal })
   }
 
