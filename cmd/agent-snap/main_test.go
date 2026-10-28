@@ -94,6 +94,48 @@ func TestCLICreateAndList(t *testing.T) {
 	}
 }
 
+func TestCLIGet(t *testing.T) {
+	dir := cliRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := run([]string{"create", "--cwd", dir}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var snap struct {
+		ID     string `json:"id"`
+		Commit string `json:"commit"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &snap); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	if err := run([]string{"get", snap.ID, "--cwd", dir}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var detail struct {
+		ID           string   `json:"id"`
+		Commit       string   `json:"commit"`
+		Tree         string   `json:"tree"`
+		Parent       string   `json:"parent"`
+		ChangedFiles []string `json:"changed_files"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.ID != snap.ID || detail.Commit != snap.Commit || detail.Tree != gitRun(t, dir, "rev-parse", snap.Commit+"^{tree}") ||
+		detail.Parent != gitRun(t, dir, "rev-parse", "HEAD") || len(detail.ChangedFiles) != 1 || detail.ChangedFiles[0] != "file.txt" {
+		t.Fatalf("unexpected detail: %+v", detail)
+	}
+
+	missing := snap.ID[:len(snap.ID)-12] + "000000000000"
+	if err := run([]string{"get", missing, "--cwd", dir}, &out); err == nil || err.Error() != "snapshot not found: "+missing {
+		t.Fatalf("expected not found for %s, got: %v", missing, err)
+	}
+}
+
 func TestCLIUnknownCommand(t *testing.T) {
 	var out bytes.Buffer
 	if err := run([]string{"frobnicate"}, &out); err == nil || !strings.Contains(err.Error(), "unknown command") {

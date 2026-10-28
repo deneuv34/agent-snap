@@ -18,6 +18,7 @@ const usage = `agent-snap - zero-impact working-tree snapshots for agent session
 Usage:
   agent-snap create [reason] [--cwd <dir>]     create a snapshot, print JSON
   agent-snap list [--cwd <dir>] [--limit <n>]  list snapshots, print JSON
+  agent-snap get <id> [--cwd <dir>]            show one snapshot, print JSON
   agent-snap ping                              print protocol version info
   agent-snap serve                             JSONL request/response server on stdin/stdout
   agent-snap version                           print version
@@ -82,6 +83,20 @@ func run(args []string, stdout io.Writer) error {
 			return err
 		}
 		return printJSON(stdout, map[string]any{"snapshots": items})
+	case "get":
+		cwd, id, err := getFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		store, err := snapshot.New(cwd)
+		if err != nil {
+			return err
+		}
+		detail, err := store.Get(context.Background(), id)
+		if err != nil {
+			return err
+		}
+		return printJSON(stdout, detail)
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", args[0], usage)
 	}
@@ -149,6 +164,36 @@ func listFlags(args []string) (cwd string, limit int, err error) {
 		}
 	}
 	return cwd, limit, nil
+}
+
+func getFlags(args []string) (cwd, id string, err error) {
+	cwd, err = os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--cwd":
+			if i+1 >= len(args) {
+				return "", "", fmt.Errorf("flag %s requires a value", args[i])
+			}
+			cwd = args[i+1]
+			i++
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return "", "", fmt.Errorf("unknown flag %q", args[i])
+			}
+			positional = append(positional, args[i])
+		}
+	}
+	if len(positional) != 1 {
+		return "", "", fmt.Errorf("expected exactly one snapshot id, got %d", len(positional))
+	}
+	if !snapshot.ValidID(positional[0]) {
+		return "", "", fmt.Errorf("invalid snapshot id %q", positional[0])
+	}
+	return cwd, positional[0], nil
 }
 
 func printJSON(stdout io.Writer, v any) error {

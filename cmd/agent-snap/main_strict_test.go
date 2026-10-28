@@ -41,6 +41,25 @@ func TestCLIRejectsConflictingReasonFlagAndPositional(t *testing.T) {
 	}
 }
 
+func TestCLIGetRejectsBadArguments(t *testing.T) {
+	const id = "20260101T000000.000000000Z-0123456789ab"
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"get"}, "exactly one snapshot id, got 0"},
+		{[]string{"get", id, id}, "exactly one snapshot id, got 2"},
+		{[]string{"get", id, "--limit", "5"}, "unknown flag"},
+		{[]string{"get", id, "--cwd"}, "requires a value"},
+		{[]string{"get", "../latest", "--cwd", "/not/a/repo"}, "invalid snapshot id"},
+	} {
+		var out bytes.Buffer
+		if err := run(tc.args, &out); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: expected an error containing %q, got: %v", tc.args, tc.want, err)
+		}
+	}
+}
+
 func TestCLIRejectsTrailingArgs(t *testing.T) {
 	for _, args := range [][]string{{"ping", "extra"}, {"version", "extra"}, {"serve", "extra"}} {
 		var out bytes.Buffer
