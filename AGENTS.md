@@ -14,7 +14,7 @@ Identity is frozen: executable `agent-snap`, packages `@agent-snap/*`, JSONL met
 These are non-negotiable. Capture, list, and inspect must never modify `HEAD`, the real index, normal refs, or the working tree.
 
 - Snapshot creation uses a private scratch `GIT_INDEX_FILE` outside the repository. Fail closed if that cannot be guaranteed.
-- Every Git invocation strips inherited `GIT_*` repository-redirect variables and runs against the resolved repo.
+- Every Git invocation strips inherited `GIT_*` repository-redirect variables and runs against the resolved repo. The one exception is `Store.Diff`: it runs Git in a private bare evidence repository outside the worktree whose only link to the resolved repo is a read-only `objects/info/alternates` entry, so attributes, configuration, and replace refs cannot shape the evidence.
 - `Store` owns every hidden-ref path. Callers never construct `refs/agent-snapshots/...` themselves.
 - Host plugins and extensions never invoke Git and never spawn `agent-snap` except through `SnapClient`.
 - Any operation that would write working-tree files needs a dedicated design review, adversarial tests, and explicit user confirmation UX that lifecycle hooks cannot manufacture.
@@ -36,7 +36,7 @@ Pi extension ────┘         │                         │
 | --- | --- |
 | `cmd/agent-snap` | CLI parsing and process entry. No Git policy. |
 | `internal/protocol` | Strict JSONL parse, unknown-key rejection, dispatch, error codes. |
-| `internal/snapshot` | Repo discovery, scratch index, hidden refs, dedup, list/get. |
+| `internal/snapshot` | Repo discovery, scratch index, hidden refs, dedup, list/get, diff evidence repository. |
 | `packages/core` | Typed client, result validation, cancellation, process-tree teardown. |
 | `packages/opencode`, `packages/pi` | Host lifecycle and tools. No Git, no protocol parsing. |
 
@@ -55,7 +55,7 @@ Before writing code, name all of:
 
 Prioritize: safety and data-loss risk → reliability and cross-platform correctness → evidence and review quality → explicit restore → branding and packaging.
 
-YAGNI: do not implement `snapshot.diff`, restore, retention/GC, or Blink renaming until that phase. Do not add a service layer, plugin framework, or generic repository for a single function.
+YAGNI: do not implement restore, retention/GC, or Blink renaming until that phase. Do not add a service layer, plugin framework, or generic repository for a single function.
 
 DRY: put shared rules in the owning layer (`Store` for refs, `protocol` for validation, `SnapClient` for transport). Do not extract host formatters until a third consumer exists.
 
@@ -100,7 +100,7 @@ Comments are reserved for non-obvious safety constraints (scratch-index placemen
 - Reuse one `SnapClient` transport while it is healthy. Do not spawn a core process per tool call.
 - Coalesce bursty idle/settled events; do not snapshot on every host event.
 - Deduplicate identical trees in `Store.Create`. Do not mint a commit when `reused` should be true.
-- Bound protocol input (4 MiB line) and list limits (1–100). Future diff/get payloads must define size and truncation before implementation.
+- Bound protocol input (4 MiB line) and list limits (1–100). Diff pages are bounded by FR-14 (200 files, `max_patch_bytes` of hunks). Any new payload must define size and truncation before implementation.
 - Scratch indexes are created outside the repo and removed on success and failure.
 
 ## Testing and verification
@@ -128,7 +128,7 @@ Working-tree writes, if ever added, also need adversarial tests for dirty trees,
 - Rename protocol methods, packages, the executable, or ref namespaces without a published migration policy and compatibility tests.
 - Expose raw Git commands through host plugins.
 - Let lifecycle hooks create restore confirmations.
-- Present an inference as a confirmed fact. Future review findings must cite a path and hunk from a snapshot diff.
+- Present an inference as a confirmed fact. Review findings must cite a path and hunk from a snapshot diff, in the FR-14 citation form.
 - Commit secrets, or log repository file contents in diagnostics.
 - Add dependencies, abstractions, or files that are not required by the current phase.
 

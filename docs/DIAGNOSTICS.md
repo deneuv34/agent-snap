@@ -1,12 +1,12 @@
 # Operational diagnostics
 
-Use this when snapshot create/list or client teardown fails. Collect enough to
+Use this when a snapshot operation or client teardown fails. Collect enough to
 see *which* operation failed. Do **not** log working-tree file contents, diffs,
 secrets, or full file listings.
 
 ## What is safe to record
 
-- Operation (`create`, `list`, `ping`, `close`, teardown)
+- Operation (`create`, `list`, `diff`, `ping`, `close`, teardown)
 - JSON-RPC error code and the error message returned by the core
 - Repository *existence* / "not a git repository", never file bodies
 - Snapshot id, commit id, reason string, `reused`, origin `source` and `host`
@@ -16,7 +16,7 @@ secrets, or full file listings.
 
 ## What must not be recorded
 
-- File contents, patches, or `git show` / `git diff` output
+- File contents, patches, `snapshot.diff` hunks, or `git show` / `git diff` output
 - Secrets, tokens, `.env` values, or credential helpers
 - Entire `git status --porcelain` dumps in shared logs (path names in a
   short error are acceptable; do not attach the tree)
@@ -31,16 +31,20 @@ blob or working-tree payload to host logs.
 | Symptom | Likely cause | What to check |
 | --- | --- | --- |
 | `find git repository` | `cwd` is not inside a Git work tree | `cwd`, that Git is on `PATH` |
-| `no scratch directory found outside repository` | `TMPDIR` / temp dir resolves inside the repo | Point temp at a directory *outside* the worktree. Capture refuses to write a scratch index inside the repo. |
+| `no scratch directory found outside repository` | `TMPDIR` / temp dir resolves inside the repo | Point temp at a directory *outside* the worktree. Capture and diff refuse to write scratch files inside the repo. |
 | `snapshot ref … is a symbolic ref; refusing to update it` / `refusing to read it` | A hidden ref is a symlink into another ref | Do not retarget `refs/agent-snapshots/*`. Inspect the ref name only. |
 | `snapshot ref … points at a …, not a commit` / `does not match its id` / `has more than one parent` / `which agent-snap did not write` | An item ref was edited by hand or repointed at a commit agent-snap did not create | Lookup refuses tampered item refs. Delete the bad ref with `git update-ref -d`; do not repoint it. |
 | `update refs` / CAS failure | Concurrent create lost the compare-and-swap | Retry is the client's job on the next create. Confirm the ref namespace is the worktree's. |
 | `git …` with object-format / git-dir errors | Broken Git dir or unsupported repo | Confirm SHA-1 or SHA-256 repo; inherited `GIT_*` must not redirect the repo. |
-| JSON-RPC `-32602` | Unknown key, missing `cwd`, bad `limit`, malformed snapshot `id`, invalid `source`/`host`, a reason with a NUL byte or ending in `Agent-Snap-` lines | Fix the request. The server does not coerce types. |
+| `create evidence repository: …` | Git could not create the private bare repository that `snapshot.diff` runs in | The temp directory outside the worktree is writable, and Git is 2.30 or newer. The repository is unchanged. |
+| `object directory … cannot be written to an alternates file` | The repository's object directory path contains a line break | Move the repository to a path without line breaks. |
+| `git diff-tree: …` naming a bad or missing object | A snapshot tree names an object the repository no longer has, for example in a partial clone | Diff never fetches. Check the object with `GIT_NO_LAZY_FETCH=1 git cat-file -e <oid>`. |
+| `diff summary …`, `diff patch …`, `diff hunk …`, `malformed raw diff record`, `malformed numstat record`, or `… but numstat reports …` | Git's diff output failed the integrity check | Record the Git version and the message. Do not attach the patch. |
+| JSON-RPC `-32602` | Unknown key, missing `cwd`, bad `limit`, malformed snapshot `id`, `from`, or `to`, `offset` outside 0 through 2147483647, `max_patch_bytes` outside 1024 through 1048576, invalid `source`/`host`, a reason with a NUL byte or ending in `Agent-Snap-` lines | Fix the request. The server does not coerce types. |
 | Log: `agent-snap binary does not accept snapshot origin; creating snapshots without source and host` | The binary is 0.1.0 and the plugin is newer | Snapshots still work. Upgrade the binary to record origin. |
 | `agent-snap binary does not accept snapshot origin; refusing to send it a reason that ends like an origin paragraph` | 0.1.0 binary, and a reason containing `\n\nAgent-Snap-` | Upgrade the binary, or use a different reason. |
-| JSON-RPC `-32001` | `snapshot.get` id does not exist in this worktree | Take ids from `snapshot.list` for the same `cwd`. Ids from another worktree do not resolve. |
-| JSON-RPC `-32601` | Unknown method | Only `ping`, `snapshot.create`, `snapshot.list`, `snapshot.get` exist. |
+| JSON-RPC `-32001` | The `snapshot.get` id, or either `snapshot.diff` side, does not exist in this worktree. Diff checks `from` first. | Take ids from `snapshot.list` for the same `cwd`. Ids from another worktree do not resolve. |
+| JSON-RPC `-32601` | Unknown method, or `snapshot.diff` sent to a binary that predates it | Only `ping`, `snapshot.create`, `snapshot.list`, `snapshot.get`, `snapshot.diff` exist. Upgrade the binary if the diff tool gets `-32601`. |
 | `SnapProtocolError` | Child wrote a non-conforming line | Treat as a transport bug. Discard the payload; do not forward it to the host. |
 
 A failed create must not leave an unobserved checkpoint. If the client
@@ -98,7 +102,7 @@ Hosts should log the resolved path, not spawn Git as a fallback.
 OpenCode and Pi log lifecycle failures so they do not crash the host (except
 Pi's session-start barrier, which still logs rather than throwing). Keep
 those messages to operation + error string. Do not attach snapshot
-`changed_files` arrays to telemetry.
+`changed_files` arrays or diff `files` to telemetry.
 
 ## Support bundle (safe)
 

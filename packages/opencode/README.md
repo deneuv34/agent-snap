@@ -12,7 +12,10 @@ OpenCode plugin for agent-snap. See the repository README for full details.
   barrier: flushes pending snapshots, aborts leftover work, and closes the Go
   subprocess.
 - Tools: `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
-  `agent_snap_get(id, cwd?)` — all honour the caller's abort signal.
+  `agent_snap_get(id, cwd?)`,
+  `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)` — all honour
+  the caller's abort signal. `agent_snap_diff` returns one page of Git
+  evidence and names the `offset` of the next page.
 - Every snapshot records host `opencode` and source `session-start`,
   `session-idle`, or `tool`. No session identifier is stored.
 

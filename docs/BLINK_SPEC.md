@@ -325,7 +325,7 @@ Paging and limits:
 
 Text:
 
-- Every string is UTF-8. When a path, an old path, a hunk section, or hunk text contains bytes that are not valid UTF-8, Blink replaces each invalid sequence with U+FFFD and sets `lossy: true` on that file entry. Line counts, ranges, budget charges, and object IDs come from the original bytes.
+- Every string is UTF-8. When a path, an old path, a hunk section, or hunk text contains bytes that are not valid UTF-8, Blink replaces each run of invalid bytes with one U+FFFD and sets `lossy: true` on that file entry. Line counts, ranges, budget charges, and object IDs come from the original bytes.
 - Hunk text keeps carriage returns and every other byte Git printed, apart from that UTF-8 repair.
 
 Integrity:
