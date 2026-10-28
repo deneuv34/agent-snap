@@ -39,6 +39,7 @@ Normal Git commits are not sufficient for this purpose: committing affects the u
 - Create a snapshot of a Git working tree.
 - List snapshots for a repository, newest first.
 - Look up one snapshot by identifier and inspect its commit, tree, parent, and changed paths.
+- Compare two snapshots and page through their changed files and hunks.
 - Record which host integration and which event or action asked for each snapshot.
 - Expose a CLI and a long-running JSONL protocol server.
 - Provide a type-safe TypeScript client for the Go core.
@@ -48,7 +49,6 @@ Normal Git commits are not sufficient for this purpose: committing affects the u
 
 ### 4.2 Planned capabilities (not implemented)
 
-- Compare any two snapshots and review their file-level and content-level differences.
 - Restore all or selected paths from a snapshot.
 - Preview, confirm, and back up a restore operation.
 - Retention and garbage-collection policy.
@@ -93,7 +93,8 @@ Normal Git commits are not sufficient for this purpose: committing affects the u
 1. The developer or agent invokes the list tool/command for a repository.
 2. Blink returns up to the requested number of snapshots in descending creation order.
 3. The caller selects a snapshot identifier and invokes the get tool/command to see its commit, tree, parent, and changed paths.
-4. The caller can use the returned commit and tree IDs with normal read-only Git inspection commands where appropriate.
+4. The caller can pass two identifiers to the diff tool/command to see the changed files and hunks between them.
+5. The caller can use the returned commit and tree IDs with normal read-only Git inspection commands where appropriate.
 
 **Success condition:** the checkpoint timeline is usable without exposing hidden refs as normal branches or asking the caller to construct ref paths.
 
@@ -174,6 +175,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 | `create [reason] [--cwd <dir>]` | Create one snapshot with source `cli` and no host, and print JSON. `--reason` and positional reason are mutually exclusive. |
 | `list [--cwd <dir>] [--limit <n>]` | List snapshots and print JSON. |
 | `get <id> [--cwd <dir>]` | Print the snapshot detail object for one snapshot as JSON. |
+| `diff <from> <to> [--cwd <dir>] [--offset <n>] [--max-patch-bytes <n>]` | Print one page of the diff result object (FR-14) as JSON. `--offset` takes an integer from 0 through 2147483647, and `--max-patch-bytes` an integer from 1024 through 1048576. |
 | `ping` | Print protocol status and version JSON. |
 | `version` | Print the version string. |
 | `serve` | Process newline-delimited JSON requests on standard input and emit one JSON response per request on standard output. |
@@ -184,10 +186,10 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - Empty input lines are ignored.
 - The server MUST continue to process later requests after a request-level parse, validation, or operation error.
 - The maximum input line size is 4 MiB.
-- Supported methods are `ping`, `snapshot.create`, `snapshot.list`, and `snapshot.get`.
+- Supported methods are `ping`, `snapshot.create`, `snapshot.list`, `snapshot.get`, and `snapshot.diff`.
 - Unknown methods return code `-32601`.
-- Malformed JSON returns `-32700`; invalid parameters return `-32602`; internal operation failures return `-32603`; a well-formed snapshot identifier with no snapshot in the worktree namespace returns `-32001`.
-- Parameter validation MUST reject unknown keys, missing `cwd`, blank `cwd`, malformed types, invalid list limits, malformed snapshot identifiers, invalid origin values, and reasons that end with an origin paragraph (FR-13).
+- Malformed JSON returns `-32700`; invalid parameters return `-32602`; internal operation failures return `-32603`; a well-formed snapshot identifier with no snapshot in the worktree namespace returns `-32001`, for `snapshot.get` and for either side of `snapshot.diff`.
+- Parameter validation MUST reject unknown keys, missing `cwd`, blank `cwd`, malformed types, invalid list limits, malformed snapshot identifiers, invalid origin values, reasons that end with an origin paragraph (FR-13), and a diff `offset` or `max_patch_bytes` outside its range (FR-14).
 
 ### FR-10: TypeScript client
 
@@ -198,6 +200,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - Timeout or cancellation MUST start teardown of the spawned process tree, preventing a timed-out request from later producing an unobserved checkpoint.
 - After a crash or close, the client MAY spawn a fresh transport lazily for a subsequent request.
 - `close()` MUST prevent a replacement transport from being created until close completes.
+- `SnapClient.diff(cwd, from, to, page?, signal?)` sends `snapshot.diff` and returns the validated diff result object. Validation checks every field's type and enum, and the cross-field rules in section 8.4.
 - Result validation checks `source` and `host` only for type: each is a string when present. A later release can widen their syntax without breaking older clients.
 - When a create that carries origin values is rejected with `-32602` and the message `unknown param: source` or `unknown param: host`, the client MUST retry that create once without origin values. That rejection is how a 0.1.0 binary answers, and it comes before the repository is resolved, so the retry cannot duplicate a checkpoint. The retry is a new request under the same signal, with its own timeout. The client logs the first time it drops origin. A plugin upgraded ahead of its binary therefore keeps taking snapshots.
 - A 0.1.0 binary does not check reasons. The client MUST NOT send that retry when the reason contains `\n\nAgent-Snap-`; the create fails instead, so the retry never stores a reason that a newer reader would take as origin. A create sent without origin values reaches a 0.1.0 binary unchanged, as it did with a 0.1.0 client.
@@ -211,7 +214,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - A transition to busy cancels pending idle work and aborts idle work already in flight.
 - `session.deleted` cancels work for that session and removes session state.
 - During disposal, reject new events, flush pending snapshots, abort remaining work, and close the core client.
-- Expose `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`, and `agent_snap_get(id, cwd?)` with caller cancellation support.
+- Expose `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`, `agent_snap_get(id, cwd?)`, and `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)` with caller cancellation support.
 - Send host `opencode` on every create, with source `session-start` (`session.created`), `session-idle` (`session.idle`), or `tool` (`agent_snap_create`).
 
 #### Pi Coding Agent
@@ -219,8 +222,13 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - At `session_start`, create a `session-start` baseline and await it as a session-start barrier. Failure is logged rather than propagated.
 - At `agent_settled`, create an `agent-settled` snapshot through the same 1.5-second coalescing policy.
 - At `session_shutdown`, flush queued work, dispose the scheduler, await tracked baselines, and close the client.
-- Expose `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`, `agent_snap_get(id, cwd?)`, `agent-snap-create`, `agent-snap-list`, and `agent-snap-get <id>`.
+- Expose `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`, `agent_snap_get(id, cwd?)`, `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)`, `agent-snap-create`, `agent-snap-list`, `agent-snap-get <id>`, and `agent-snap-diff <from> <to>`. The diff command shows the first 12 lines of the tool's text.
 - Send host `pi` on every create, with source `session-start` (`session_start`), `agent-settled` (`agent_settled`), `tool` (`agent_snap_create`), or `command` (`agent-snap-create`).
+
+#### Both hosts
+
+- The diff tool returns the page as text that lists every file on the page with its status and line counts, then the included hunks, then the `offset` or `max_patch_bytes` to request next when the page does not finish the diff. It ends by naming the citation form from FR-14.
+- The diff tool result is Git evidence only. Hosts MUST NOT add generated summaries, rankings, or opinions to it.
 
 ### FR-12: Snapshot lookup
 
@@ -274,6 +282,75 @@ Values this repository sends:
 | OpenCode plugin | `opencode` | `session-start`, `session-idle`, `tool` |
 | Pi extension | `pi` | `session-start`, `agent-settled`, `tool`, `command` |
 
+### FR-14: Snapshot diff
+
+Selection:
+
+- `snapshot.diff` takes `cwd`, `from`, and `to`, and optionally `offset` and `max_patch_bytes`. `from` and `to` are snapshot identifiers. Each is resolved as FR-12 resolves a lookup, inside the worktree namespace derived from `cwd` and with the same identifier syntax and fail-closed item checks. Commit IDs, refs, and revision expressions are not accepted.
+- The diff shows how the tree of `to` differs from the tree of `from`. Either snapshot may be the older one.
+- `from` and `to` may be the same identifier, or name snapshots with equal trees. The result then has no files.
+- `from` is resolved before `to`. When both are missing, the error names `from`.
+
+Content:
+
+- Each changed path is one file entry. Entries are in the order `git diff-tree` reports them: byte order of the path, with a rename at its new path.
+- Renames are detected at 50% similarity, with Git's rename limit set to 1000. Copies are not detected.
+- A type change, such as a regular file replaced by a symbolic link, is one entry with status `type_changed`. Its hunks are the deletion of the old content followed by the addition of the new content.
+- A symbolic link is compared by its target text. A submodule entry (mode `160000`) is compared by commit ID and appears as `Subproject commit <id>` hunk lines. Blink does not read submodule repositories.
+- A file is binary when Git's built-in content rule finds a NUL byte in the first 8000 bytes of either side, or when a side is larger than 512 MiB. A binary entry has no hunks and zero line counts.
+- Patches use 3 lines of context, an inter-hunk context of 0, the Myers algorithm, the indent heuristic, and full object IDs. Blink passes each of these options explicitly.
+
+Isolation and determinism:
+
+- Blink computes the diff in a private evidence repository. It is a bare repository in a scratch directory outside the worktree, placed by the same rule as the FR-3 scratch index. Its object store reads the repository's objects through `objects/info/alternates`. It has no refs, no attributes, no replace refs, and no promisor remote. Blink removes it when the request finishes, on success and on failure.
+- Git runs in the evidence repository with `GIT_CONFIG_NOSYSTEM=1` and `GIT_ATTR_NOSYSTEM=1`, and with `HOME` and `XDG_CONFIG_HOME` pointing into the scratch directory. Repository, global, and system configuration cannot change the result. Neither can an attribute file in the worktree, in `$GIT_DIR/info`, in the global location, or inside either snapshot tree, nor a replace ref.
+- For the same `from`, `to`, `offset`, and `max_patch_bytes`, the same Git executable returns a byte-identical result, whatever the state of the working tree, the index, the configuration, and the other refs. Results from different Git versions can differ, because Git does not promise stable diff output across versions.
+- A missing object, as in a partial clone, fails the request with `-32603`. Blink never fetches objects for a diff.
+- A diff MUST NOT write the index, refs, objects, `HEAD`, configuration, or working-tree files of the repository. It writes only inside its scratch directory.
+
+Paging and limits:
+
+- Files are numbered from 0 in diff order. A page lists the files from index `offset` (default 0), at most 200 of them.
+- `max_patch_bytes` (default 65536, from 1024 through 1048576) is the page's patch budget. A hunk costs the bytes Git printed for its header line and its body lines, newline characters included, before any UTF-8 repair. Paths, other fields, and JSON escaping are not charged.
+- A hunk is included whole or not at all.
+- Text files receive their hunks in order. A text file is `full` when all its hunks fit in the budget that remains. The first text file that does not fit ends the patches of the page:
+  - If no hunk is charged to the page yet, the file is `truncated` and carries the longest prefix of its hunks that fits, possibly none.
+  - Otherwise the file is `deferred` and carries no hunks.
+- Every text file listed after that file is `deferred`. A binary file costs nothing, never ends the patches, and is `binary`.
+- A `truncated` file carries `patch_bytes`, the cost of its whole patch, when that cost is at most 1048576. The same page requested with `max_patch_bytes` set to `patch_bytes` returns that file `full`. When the whole patch costs more than 1048576, `patch_bytes` is absent and Blink cannot return the rest of that file's hunks.
+- `next_offset` is the index of the first `deferred` file on the page. With no `deferred` file, it is `offset + files.length` when that is less than `totals.files`, and absent otherwise. When present, it is greater than `offset`.
+- An `offset` at or beyond `totals.files` returns an empty `files` array and no `next_offset`.
+- `totals` always covers the whole diff, not only the page.
+- A result holds at most 200 file entries and at most `max_patch_bytes` of hunk text, before JSON escaping.
+
+Text:
+
+- Every string is UTF-8. When a path, an old path, a hunk section, or hunk text contains bytes that are not valid UTF-8, Blink replaces each invalid sequence with U+FFFD and sets `lossy: true` on that file entry. Line counts, ranges, budget charges, and object IDs come from the original bytes.
+- Hunk text keeps carriage returns and every other byte Git printed, apart from that UTF-8 repair.
+
+Integrity:
+
+- Blink reads each hunk body by the line counts in its header. It fails the request with `-32603` when a hunk body does not match its header, when the patch sections do not line up with the file entries, or when the hunk lines of a `full` file do not add up to its `additions` and `deletions`.
+
+Evidence and citations:
+
+- A citation of diff evidence is the tuple (`from`, `to`, `path`, `old_start`, `old_lines`, `new_start`, `new_lines`). Its text form is `<path> @@ -<old_start>,<old_lines> +<new_start>,<new_lines> @@`.
+- A citation is valid when the diff of `from` and `to` has a file whose `path` or `old_path` equals `path`, with a hunk that has exactly those four numbers. Because the diff is deterministic, anyone can check a citation again by repeating the diff with the same Git executable.
+- Review text that a host or agent writes MUST cite evidence this way. Review text is never part of a diff result or a diff tool result. This repository ships no review generator.
+
+Errors:
+
+| Condition | Code | Message |
+| --- | --- | --- |
+| Unknown param | `-32602` | `unknown param: <key>` |
+| `cwd`, `from`, or `to` missing | `-32602` | `missing required param: <key>` |
+| `cwd`, `from`, or `to` blank or not a string | `-32602` | `param must be a non-empty string: <key>` |
+| `from` or `to` not a snapshot identifier | `-32602` | `param must be a snapshot id: <key>` |
+| `offset` not an integer from 0 through 2147483647 | `-32602` | `param must be an integer between 0 and 2147483647: offset` |
+| `max_patch_bytes` not an integer from 1024 through 1048576 | `-32602` | `param must be an integer between 1024 and 1048576: max_patch_bytes` |
+| `from` or `to` has no snapshot in the namespace | `-32001` | `snapshot not found: <id>` |
+| Repository not resolved, item ref refused, no scratch directory outside the worktree, missing object, Git failure, or a failed integrity check | `-32603` | The operation's message |
+
 ## 7. Technical Architecture
 
 ```text
@@ -289,7 +366,7 @@ Pi extension ────┘                                                │
 | --- | --- |
 | `cmd/agent-snap` | User-facing CLI and process entrypoint. |
 | `internal/protocol` | Strict JSONL request parsing, parameter validation, dispatch, and JSON-RPC-style errors. |
-| `internal/snapshot` | Repository discovery, scratch-index snapshot construction, hidden-ref persistence, deduplication, listing, and lookup. |
+| `internal/snapshot` | Repository discovery, scratch-index snapshot construction, hidden-ref persistence, deduplication, listing, lookup, and diff. |
 | `packages/core` | Typed Node client, response validation, process lifecycle management, cancellation, and teardown. |
 | `packages/opencode` | OpenCode lifecycle integration and manual tools. |
 | `packages/pi` | Pi lifecycle integration, manual tools, and commands. |
@@ -384,15 +461,94 @@ Get:
 {"id":3,"method":"snapshot.get","params":{"cwd":"/path/to/repo","id":"20260814T120000.000000000Z-abc123def456"}}
 ```
 
+Diff:
+
+```json
+{"id":4,"method":"snapshot.diff","params":{"cwd":"/path/to/repo","from":"20261029T101500.123456789Z-1a2b3c4d5e6f","to":"20261029T104200.987654321Z-9f8e7d6c5b4a","offset":0,"max_patch_bytes":65536}}
+```
+
 Success responses contain `id` and `result`. Failure responses contain `id` and `error`:
 
 ```json
 {"id":2,"error":{"code":-32602,"message":"param must be an integer between 1 and 100: limit"}}
 ```
 
+### 8.4 Diff result object
+
+Returned by `snapshot.diff`. The example shows the first page of a three-file diff whose budget ran out at the third file.
+
+```json
+{
+  "from": {"id": "20261029T101500.123456789Z-1a2b3c4d5e6f", "commit": "1a2b3c4d5e6f..."},
+  "to": {"id": "20261029T104200.987654321Z-9f8e7d6c5b4a", "commit": "9f8e7d6c5b4a..."},
+  "offset": 0,
+  "next_offset": 2,
+  "totals": {"files": 3, "additions": 14, "deletions": 5},
+  "files": [
+    {
+      "status": "added", "path": "assets/logo.png", "new_mode": "100644", "new_oid": "23c62bf5...",
+      "additions": 0, "deletions": 0, "patch": "binary", "hunks": []
+    },
+    {
+      "status": "modified", "path": "src/server.go", "old_mode": "100644", "new_mode": "100644",
+      "old_oid": "83db48f8...", "new_oid": "8792505e...", "additions": 2, "deletions": 0, "patch": "full",
+      "hunks": [
+        {"old_start": 88, "old_lines": 6, "new_start": 88, "new_lines": 8, "section": "func dispatch(ctx context.Context, req *Request) (any, *Error) {",
+         "text": " \t\treturn listSnapshots(ctx, req.Params)\n \tcase \"snapshot.get\":\n \t\treturn getSnapshot(ctx, req.Params)\n+\tcase \"snapshot.diff\":\n+\t\treturn diffSnapshots(ctx, req.Params)\n \tdefault:\n \t\treturn nil, &Error{Code: CodeMethodNotFound, Message: \"method not found\"}\n \t}\n"}
+      ]
+    },
+    {
+      "status": "renamed", "path": "src/util.go", "old_path": "src/helpers.go", "similarity": 92,
+      "old_mode": "100644", "new_mode": "100644", "old_oid": "96cc5588...", "new_oid": "1c5a36f5...",
+      "additions": 12, "deletions": 5, "patch": "deferred", "hunks": []
+    }
+  ]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `from`, `to` | object | `{id, commit}`: the snapshot identifier and full commit ID of each side. |
+| `offset` | integer | Index of the first listed file, as requested. |
+| `next_offset` | integer, optional | Index to request next (FR-14). Absent when the page finishes the diff. |
+| `totals` | object | `{files, additions, deletions}` over the whole diff. Binary files add 0 lines. |
+| `files` | array | At most 200 file entries, starting at `offset`. |
+
+File entry:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `status` | `"added"`, `"deleted"`, `"modified"`, `"renamed"`, or `"type_changed"` | Kind of change. `modified` covers content and mode changes. |
+| `path` | string | Path in `to`, or in `from` for a deletion. |
+| `old_path` | string, optional | Path in `from`. Present only for `renamed`. |
+| `similarity` | integer, optional | Git's similarity score, 50 through 100. Present only for `renamed`. |
+| `old_mode`, `old_oid` | string, optional | Mode (six octal digits) and full object ID in `from`. Absent for `added`. |
+| `new_mode`, `new_oid` | string, optional | Mode and full object ID in `to`. Absent for `deleted`. For mode `160000` the ID is a submodule commit. |
+| `additions`, `deletions` | integer | Added and deleted lines of the whole file, even when its hunks are not on the page. 0 for `binary`. |
+| `patch` | `"full"`, `"truncated"`, `"deferred"`, or `"binary"` | Whether the page carries the file's hunks (FR-14). |
+| `patch_bytes` | integer, optional | Cost of the whole patch. Present only for `truncated`, when at most 1048576. |
+| `hunks` | array | The included hunks. Empty unless `patch` is `full` or `truncated`. A `full` patch is empty for a mode-only change, an exact rename, or an empty file. |
+| `lossy` | `true`, optional | Some bytes of a path or a hunk were not valid UTF-8 and were replaced with U+FFFD. |
+
+Hunk:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `old_start`, `old_lines`, `new_start`, `new_lines` | integer, at least 0 | The ranges from Git's hunk header. A count that Git omits is 1. |
+| `section` | string, optional | Text Git printed after the closing `@@` of the header. |
+| `text` | string | Body lines. Each line ends with `\n` and starts with a space, `+`, `-`, or `\`. |
+
+A client MUST reject a result that breaks any of these rules:
+
+- `old_path` and `similarity` are present exactly when `status` is `renamed`.
+- `old_mode` and `old_oid` are absent exactly when `status` is `added`. `new_mode` and `new_oid` are absent exactly when `status` is `deleted`.
+- `binary` has zero line counts and no hunks. `deferred` has no hunks. `patch_bytes` appears only on `truncated`.
+- `files.length` is at most 200. When `files` is not empty, `offset + files.length` is at most `totals.files`.
+- `next_offset`, when present, is greater than `offset` and at most `offset + files.length`.
+
 ## 9. Safety and Reliability Requirements
 
-- All Git commands run from the resolved repository and with inherited `GIT_*` variables removed.
+- All Git commands run from the resolved repository and with inherited `GIT_*` variables removed. The one exception is the FR-14 diff, which runs in a private evidence repository whose only link to the resolved repository is a read-only `objects/info/alternates` entry.
 - Ref writes must never dereference symbolic refs into normal repository refs.
 - A failed scratch-directory safety check must stop snapshot creation rather than create temporary state inside the worktree.
 - The Node client must terminate descendant processes on Unix and Windows according to platform-specific process-tree semantics.
@@ -414,18 +570,11 @@ Restore is intentionally excluded from the current executable and protocol. It m
 8. **Auditability:** the result identifies the source snapshot, safety backup, selected paths, and final outcome.
 9. **Testing:** integration tests cover clean repositories, dirty staged and unstaged repositories, untracked files, deletions, path-scoped restore, merge conflicts, linked worktrees, cancellation, and mid-operation failure.
 
-## 11. Diff and Intelligent Review Requirements (Future)
+## 11. Intelligent Review Requirements (Future)
 
-A future `snapshot.diff` capability should:
+Snapshot diff is implemented as FR-14 and is the evidence layer for review.
 
-- accept two explicit snapshot identifiers or commits within the same resolved worktree namespace;
-- produce a deterministic file-level summary and patch/content view;
-- distinguish additions, modifications, deletions, renames where Git detects them, and binary files;
-- support structured output for agent consumers and concise human-readable output for interactive clients;
-- never write repository state;
-- form the evidence layer for Blink's future intelligent-review experience.
-
-An intelligent review layer may prioritize risky changes, summarize scope, and flag likely regressions, but it must always link conclusions to the underlying snapshot diff rather than replace source evidence.
+An intelligent review layer may prioritize risky changes, summarize scope, and flag likely regressions. It must cite every conclusion with an FR-14 citation and must never replace the source evidence. This repository ships no review generator. The agent that calls the diff tool is the reviewer.
 
 ## 12. Quality Strategy
 
@@ -435,6 +584,7 @@ An intelligent review layer may prioritize risky changes, summarize scope, and f
 - Test snapshot creation in repositories with and without a `HEAD` commit.
 - Test ignored files, untracked files, staged and unstaged changes, deletions, deduplication, ref namespace isolation, symbolic-ref refusal, and concurrent creation.
 - Test lookup with empty history, malformed and path-like identifiers, identifiers from another worktree, SHA-1 and SHA-256 repositories, tampered item refs, and changed-path truncation.
+- Test diff with equal and identical snapshots, renames, type changes, symbolic links, submodules, binary files, non-UTF-8 bytes, carriage returns, and missing final newlines. Test every paging rule at its edges, isolation from hostile attributes, configuration, and replace refs, SHA-1 and SHA-256 repositories, linked worktrees, and that a diff writes nothing to the repository.
 - Test scratch-directory selection and cleanup, including a temporary directory configured inside the repository.
 - Test client cancellation, timeout, crash recovery, close barriers, response validation, and platform teardown decisions.
 - Test host lifecycle coalescing, busy/session-deleted cancellation, shutdown flush, and manual tools/commands.
