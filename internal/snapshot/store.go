@@ -21,6 +21,7 @@ const (
 	itemsSuffix       = "/items/"
 	latestSuffix      = "/latest"
 	messagePrefix     = "agent-snap: "
+	identityEmail     = "agent-snap@localhost"
 	addAttempts       = 5
 	changedFilesLimit = 1000
 )
@@ -29,6 +30,7 @@ var (
 	ErrInvalidID = errors.New("invalid snapshot id")
 	ErrNotFound  = errors.New("snapshot not found")
 	idPattern    = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}\.[0-9]{9}Z-[0-9a-f]{12}$`)
+	lookupEnv    = []string{"GIT_NO_REPLACE_OBJECTS=1"}
 )
 
 type Snapshot struct {
@@ -189,7 +191,7 @@ func (s *Store) Create(ctx context.Context, reason string) (Snapshot, error) {
 			return Snapshot{}, err
 		}
 		if committed {
-			changed, err := s.changedFiles(ctx, parent, commit)
+			changed, err := s.changedFiles(ctx, nil, parent, commit)
 			if err != nil {
 				return Snapshot{}, err
 			}
@@ -383,51 +385,40 @@ func (s *Store) snapshotForCommit(ctx context.Context, commit string, reused boo
 	return Snapshot{ID: fields[0], Commit: commit, Reason: strings.TrimPrefix(fields[1], messagePrefix), CreatedAt: created, Reused: reused}, nil
 }
 
-// Get resolves id inside this worktree's namespace only. A symbolic item ref
-// is refused rather than followed, and the ref must point at a commit with at
-// most one parent whose ID begins with the id's suffix, so a hand-edited ref
-// cannot pass off a branch commit or a foreign object as a snapshot.
+// Get resolves id inside this worktree's namespace only, and returns it only
+// when checkItem accepts the item ref.
 func (s *Store) Get(ctx context.Context, id string) (Detail, error) {
 	if !ValidID(id) {
 		return Detail{}, fmt.Errorf("%w: %q", ErrInvalidID, id)
 	}
 	ref := s.itemsRef() + id
-	if symref, err := s.isSymref(ctx, ref); err != nil {
-		return Detail{}, err
-	} else if symref {
-		return Detail{}, fmt.Errorf("snapshot ref %s is a symbolic ref; refusing to read it", ref)
-	}
-
-	format := "%(refname)%00%(objecttype)%00%(objectname)%00%(tree)%00%(parent)%00%(creatordate:iso-strict)%00%(contents)%00"
-	out, err := s.gitRaw(ctx, nil, "for-each-ref", "--format="+format, ref)
+	records, err := s.items(ctx, ref)
 	if err != nil {
 		return Detail{}, err
 	}
-	fields := strings.Split(strings.TrimSuffix(out, "\x00\n"), "\x00")
-	if len(fields) != 7 || fields[0] != ref {
+	var found *item
+	for i := range records {
+		if records[i].ref == ref {
+			found = &records[i]
+		}
+	}
+	if found == nil {
 		return Detail{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	objectType, commit, tree, parents, message := fields[1], fields[2], fields[3], strings.Fields(fields[4]), fields[6]
-	if objectType != "commit" {
-		return Detail{}, fmt.Errorf("snapshot ref %s points at a %s, not a commit", ref, objectType)
-	}
-	if !strings.HasPrefix(commit, id[len(id)-12:]) {
-		return Detail{}, fmt.Errorf("snapshot ref %s points at commit %s, which does not match its id", ref, commit)
-	}
-	if len(parents) > 1 {
-		return Detail{}, fmt.Errorf("snapshot commit %s has more than one parent", commit)
+	if err := checkItem(*found, id); err != nil {
+		return Detail{}, err
 	}
 
-	created, _ := time.Parse(time.RFC3339, fields[5])
-	detail := Detail{ID: id, Commit: commit, Reason: strings.TrimPrefix(message, messagePrefix), CreatedAt: created, Tree: tree}
-	if len(parents) == 1 {
+	created, _ := time.Parse(time.RFC3339, found.created)
+	detail := Detail{ID: id, Commit: found.commit, Reason: strings.TrimPrefix(found.message, messagePrefix), CreatedAt: created, Tree: found.tree}
+	if parents := strings.Fields(found.parents); len(parents) == 1 {
 		detail.Parent = parents[0]
 		if detail.ParentID, err = s.snapshotIDOf(ctx, detail.Parent); err != nil {
 			return Detail{}, err
 		}
 	}
 
-	changed, err := s.changedFiles(ctx, detail.Parent, commit)
+	changed, err := s.changedFiles(ctx, lookupEnv, detail.Parent, detail.Commit)
 	if err != nil {
 		return Detail{}, err
 	}
@@ -439,31 +430,81 @@ func (s *Store) Get(ctx context.Context, id string) (Detail, error) {
 	return detail, nil
 }
 
-// snapshotIDOf names the snapshot whose item ref points at commit. It skips
-// symbolic refs and ids that do not match the commit, the refs Get refuses,
-// so a reported parent_id always resolves through Get.
+// snapshotIDOf names the snapshot whose item ref points at commit, applying
+// checkItem so a reported parent_id always resolves through Get.
 func (s *Store) snapshotIDOf(ctx context.Context, commit string) (string, error) {
-	out, err := s.git(ctx, nil, "for-each-ref", "--points-at", commit, "--format=%(refname:strip=4)%00%(symref)", s.itemsRef())
+	records, err := s.items(ctx, "--points-at", commit, s.itemsRef())
 	if err != nil {
 		return "", err
 	}
-	for _, line := range strings.Split(out, "\n") {
-		id, symref, _ := strings.Cut(line, "\x00")
-		if symref == "" && ValidID(id) && strings.HasPrefix(commit, id[len(id)-12:]) {
+	for _, record := range records {
+		id := strings.TrimPrefix(record.ref, s.itemsRef())
+		if ValidID(id) && checkItem(record, id) == nil {
 			return id, nil
 		}
 	}
 	return "", nil
 }
 
-func (s *Store) changedFiles(ctx context.Context, parent, commit string) ([]string, error) {
+const itemFormat = "%(refname)%00%(symref)%00%(objecttype)%00%(objectname)%00%(tree)%00%(parent)%00" +
+	"%(authoremail)%00%(committeremail)%00%(creatordate:iso-strict)%00%(contents)%00"
+
+type item struct {
+	ref, symref, objectType, commit, tree, parents, authorEmail, committerEmail, created, message string
+}
+
+// items reads item refs for lookup. Replace objects are disabled so a
+// refs/replace entry cannot substitute a snapshot's tree, parents, or message,
+// and the symbolic-ref status comes from the same read as the object it
+// names. A record that does not parse is an error, never "not found".
+func (s *Store) items(ctx context.Context, args ...string) ([]item, error) {
+	out, err := s.gitRaw(ctx, lookupEnv, append([]string{"for-each-ref", "--format=" + itemFormat}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	var records []item
+	for _, record := range strings.Split(out, "\x00\n") {
+		if record == "" {
+			continue
+		}
+		f := strings.Split(record, "\x00")
+		if len(f) != 10 {
+			return nil, fmt.Errorf("read snapshot refs: unexpected for-each-ref record with %d fields", len(f))
+		}
+		records = append(records, item{f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9]})
+	}
+	return records, nil
+}
+
+// checkItem accepts only a ref Create could have written under id: a direct
+// ref to a single-parent commit whose ID begins with the id's suffix and that
+// carries the agent-snap message prefix and identity. Hand-edited refs to
+// branch commits, tags, or foreign objects are refused rather than reported.
+func checkItem(r item, id string) error {
+	email := "<" + identityEmail + ">"
+	switch {
+	case r.symref != "":
+		return fmt.Errorf("snapshot ref %s is a symbolic ref; refusing to read it", r.ref)
+	case r.objectType != "commit":
+		return fmt.Errorf("snapshot ref %s points at a %s, not a commit", r.ref, r.objectType)
+	case !strings.HasPrefix(r.commit, id[len(id)-12:]):
+		return fmt.Errorf("snapshot ref %s points at commit %s, which does not match its id", r.ref, r.commit)
+	case len(strings.Fields(r.parents)) > 1:
+		return fmt.Errorf("snapshot commit %s has more than one parent", r.commit)
+	case !strings.HasPrefix(r.message, messagePrefix) || r.authorEmail != email || r.committerEmail != email:
+		return fmt.Errorf("snapshot ref %s points at commit %s, which agent-snap did not write", r.ref, r.commit)
+	}
+	return nil
+}
+
+func (s *Store) changedFiles(ctx context.Context, env []string, parent, commit string) ([]string, error) {
 	args := []string{"diff-tree", "-z", "--no-commit-id", "--name-only", "-r"}
 	if parent == "" {
 		args = append(args, "--root", commit)
 	} else {
 		args = append(args, parent, commit)
 	}
-	out, err := s.gitRaw(ctx, nil, args...)
+	out, err := s.gitRaw(ctx, env, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -482,8 +523,8 @@ func (s *Store) changedFiles(ctx context.Context, parent, commit string) ([]stri
 func authorEnv() []string {
 	now := strconv.FormatInt(time.Now().Unix(), 10) + " +0000"
 	return []string{
-		"GIT_AUTHOR_NAME=agent-snap", "GIT_AUTHOR_EMAIL=agent-snap@localhost",
-		"GIT_COMMITTER_NAME=agent-snap", "GIT_COMMITTER_EMAIL=agent-snap@localhost",
+		"GIT_AUTHOR_NAME=agent-snap", "GIT_AUTHOR_EMAIL=" + identityEmail,
+		"GIT_COMMITTER_NAME=agent-snap", "GIT_COMMITTER_EMAIL=" + identityEmail,
 		"GIT_AUTHOR_DATE=" + now, "GIT_COMMITTER_DATE=" + now,
 	}
 }
@@ -529,14 +570,18 @@ func (s *Store) gitMaybe(ctx context.Context, extraEnv []string, args ...string)
 }
 
 // gitRaw is like git but never trims the output, so NUL-separated values
-// with leading/trailing whitespace are preserved verbatim.
+// with leading/trailing whitespace are preserved verbatim. It returns stdout
+// only: a warning Git prints to stderr, such as one about an unrelated broken
+// ref, must never be parsed as a path or a ref record.
 func (s *Store) gitRaw(ctx context.Context, extraEnv []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = s.repo
 	cmd.Env = append(sanitizedEnv(), extraEnv...)
-	out, err := cmd.CombinedOutput()
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, string(out))
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return string(out), nil
 }

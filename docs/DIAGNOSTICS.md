@@ -33,7 +33,7 @@ blob or working-tree payload to host logs.
 | `find git repository` | `cwd` is not inside a Git work tree | `cwd`, that Git is on `PATH` |
 | `no scratch directory found outside repository` | `TMPDIR` / temp dir resolves inside the repo | Point temp at a directory *outside* the worktree. Capture refuses to write a scratch index inside the repo. |
 | `snapshot ref … is a symbolic ref; refusing to update it` / `refusing to read it` | A hidden ref is a symlink into another ref | Do not retarget `refs/agent-snapshots/*`. Inspect the ref name only. |
-| `snapshot ref … points at a …, not a commit` / `does not match its id` / `has more than one parent` | An item ref was edited by hand | Lookup refuses tampered item refs. Delete the bad ref with `git update-ref -d`; do not repoint it. |
+| `snapshot ref … points at a …, not a commit` / `does not match its id` / `has more than one parent` / `which agent-snap did not write` | An item ref was edited by hand or repointed at a commit agent-snap did not create | Lookup refuses tampered item refs. Delete the bad ref with `git update-ref -d`; do not repoint it. |
 | `update refs` / CAS failure | Concurrent create lost the compare-and-swap | Retry is the client's job on the next create. Confirm the ref namespace is the worktree's. |
 | `git …` with object-format / git-dir errors | Broken Git dir or unsupported repo | Confirm SHA-1 or SHA-256 repo; inherited `GIT_*` must not redirect the repo. |
 | JSON-RPC `-32602` | Unknown key, missing `cwd`, bad `limit`, malformed snapshot `id` | Fix the request. The server does not coerce types. |

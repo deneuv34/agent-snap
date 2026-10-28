@@ -219,8 +219,9 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 
 - Lookup takes `cwd` and a snapshot identifier, and resolves the identifier only inside the worktree namespace derived from `cwd`. Identifiers from another worktree are not found.
 - An identifier MUST match `<YYYYMMDD>T<HHMMSS>.<nanoseconds>Z-<12 lowercase hex digits>` before any ref path is built from it.
-- Lookup MUST fail closed when the item ref is symbolic, does not point at a commit, points at a commit with more than one parent, or points at a commit whose ID does not begin with the identifier's 12-digit suffix.
-- Lookup MUST return the snapshot detail object defined in section 8.2. `changed_files` lists paths changed between the snapshot and its parent (or every path when there is no parent), is capped at 1000 entries, and sets `changed_files_truncated: true` when the cap is reached.
+- Lookup MUST fail closed when the item ref is symbolic, does not point at a commit, points at a commit with more than one parent, points at a commit whose ID does not begin with the identifier's 12-digit suffix, or points at a commit without the `agent-snap: ` message prefix and the fixed product author and committer identity. The same rules decide whether a parent is reported as a snapshot (`parent_id`).
+- Lookup MUST read objects with Git replace objects disabled, and MUST parse only Git's standard output, never its diagnostics. Unparseable Git output is an internal error, not "not found".
+- Lookup MUST return the snapshot detail object defined in section 8.2. `changed_files` lists paths changed between the snapshot and its parent (or every path when there is no parent), is capped at 1000 entries, and sets `changed_files_truncated: true` when more than 1000 paths changed.
 - Lookup MUST NOT write the index, refs, objects, `HEAD`, or working-tree files.
 
 ## 7. Technical Architecture
@@ -292,7 +293,7 @@ Returned by lookup (`snapshot.get`).
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `id`, `commit`, `reason`, `created_at` | | As in the snapshot object. |
+| `id`, `commit`, `reason`, `created_at` | | As in list results: `created_at` is the snapshot commit's UTC time, to the second. |
 | `tree` | string | Full Git tree object ID of the snapshot. |
 | `parent` | string, optional | Full ID of the parent commit: the previous checkpoint, or `HEAD` when the snapshot started the chain. Absent when the snapshot has no parent. |
 | `parent_id` | string, optional | Snapshot identifier of the parent when the parent is a snapshot in the same worktree namespace. |

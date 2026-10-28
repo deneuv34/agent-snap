@@ -228,12 +228,17 @@ func TestGetFailsClosedOnTamperedItemRefs(t *testing.T) {
 	git(t, dir, "update-ref", store.itemsRef()+idFor(merge), merge)
 	git(t, dir, "update-ref", store.itemsRef()+mismatched, snap.Commit)
 	git(t, dir, "update-ref", store.itemsRef()+nested+"/"+snap.Commit[:12], snap.Commit)
+	branchAlias := "20200101T000000.000000000Z-" + head[:12]
+	git(t, dir, "update-ref", store.itemsRef()+branchAlias, head)
+	git(t, dir, "tag", "-a", "-m", "tag", "snap-tag", snap.Commit)
+	tagAlias := "20200101T000000.000000000Z-" + snap.Commit[:12]
+	git(t, dir, "update-ref", store.itemsRef()+tagAlias, git(t, dir, "rev-parse", "snap-tag"))
 	writeFile(t, dir, "tracked.txt", "edited\n")
 	child := create(t, store, "child")
 
 	before := repoState(t, dir)
 	if got := get(t, store, snap.ID); got.Parent != head || got.ParentID != "" {
-		t.Errorf("a symbolic alias of HEAD must not be reported as the parent snapshot: %+v", got)
+		t.Errorf("an alias of HEAD must not be reported as the parent snapshot: %+v", got)
 	}
 	if got := get(t, store, child.ID); got.ParentID != snap.ID {
 		t.Errorf("parent_id must skip aliases Get refuses: got %q want %q", got.ParentID, snap.ID)
@@ -243,6 +248,8 @@ func TestGetFailsClosedOnTamperedItemRefs(t *testing.T) {
 		{"ref to a blob", idFor(blob), "not a commit"},
 		{"ref to a merge commit", idFor(merge), "more than one parent"},
 		{"id suffix that does not match the commit", mismatched, "does not match its id"},
+		{"direct ref to a branch commit", branchAlias, "agent-snap did not write"},
+		{"ref to an annotated tag of a snapshot", tagAlias, "not a commit"},
 	} {
 		_, err := store.Get(context.Background(), tc.id)
 		if err == nil || errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), tc.want) {
@@ -254,6 +261,54 @@ func TestGetFailsClosedOnTamperedItemRefs(t *testing.T) {
 	}
 	if after := repoState(t, dir); after != before {
 		t.Fatalf("lookup changed repository state:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestGetParsesOnlyGitStdout(t *testing.T) {
+	dir := testRepo(t)
+	store := newStore(t, dir)
+	writeFile(t, dir, "tracked.txt", "edited\n")
+	snap := create(t, store, "real")
+	gitDir := git(t, dir, "rev-parse", "--absolute-git-dir")
+	if _, err := os.Stat(filepath.Join(gitDir, filepath.FromSlash(store.itemsRef()+snap.ID))); err != nil {
+		t.Skipf("item refs are not loose files in this ref backend: %v", err)
+	}
+	writeFile(t, gitDir, filepath.FromSlash(store.itemsRef()+snap.ID+".bak"), "garbage\n")
+	probe := exec.Command("git", "for-each-ref", store.itemsRef())
+	probe.Dir = dir
+	probe.Env = sanitizedEnv()
+	var stderr strings.Builder
+	probe.Stderr = &stderr
+	_ = probe.Run()
+	if !strings.Contains(stderr.String(), "broken ref") {
+		t.Skipf("git did not warn about the broken ref: %q", stderr.String())
+	}
+
+	got := get(t, store, snap.ID)
+	if got.Commit != snap.Commit || !reflect.DeepEqual(got.ChangedFiles, []string{"tracked.txt"}) {
+		t.Fatalf("a warning about another ref must not change the lookup: %+v", got)
+	}
+}
+
+func TestGetIgnoresReplaceRefs(t *testing.T) {
+	dir := testRepo(t)
+	head := git(t, dir, "rev-parse", "HEAD")
+	store := newStore(t, dir)
+	writeFile(t, dir, "tracked.txt", "edited\n")
+	snap := create(t, store, "real")
+	tree := git(t, dir, "rev-parse", snap.Commit+"^{tree}")
+	forge := exec.Command("git", "commit-tree", git(t, dir, "rev-parse", "HEAD^{tree}"), "-m", messagePrefix+"forged")
+	forge.Dir = dir
+	forge.Env = append(sanitizedEnv(), authorEnv()...)
+	forged, err := forge.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "replace", snap.Commit, strings.TrimSpace(string(forged)))
+
+	got := get(t, store, snap.ID)
+	if got.Tree != tree || got.Parent != head || got.Reason != "real" || !reflect.DeepEqual(got.ChangedFiles, []string{"tracked.txt"}) {
+		t.Fatalf("lookup must read the snapshot commit, not its replacement: %+v", got)
 	}
 }
 
