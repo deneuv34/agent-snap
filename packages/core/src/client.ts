@@ -449,6 +449,12 @@ export class SnapClient {
     const reportRl = createInterface({ input: child.stdio[4] as Readable })
     this.#reportRl = reportRl
     reportRl.on("line", (line) => this.#onReport(child, line))
+    // Extra stdio fds are duplex sockets on Linux: when the guardian dies with
+    // an unread control command, the client's side resets with ECONNRESET.
+    // The exit handler below owns that failure, so the reset is only logged
+    // instead of escaping as an uncaught exception that crashes the host.
+    const control = child.stdio[3] as Writable
+    control.on("error", (err) => this.#log(`agent-snap control pipe error: ${err.message}`))
     child.on("error", (err: NodeJS.ErrnoException) => {
       const message = `agent-snap supervisor failed to start: ${err.message}`
       this.#log(message)
