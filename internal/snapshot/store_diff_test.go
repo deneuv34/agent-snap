@@ -10,9 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func blobOf(t *testing.T, dir, content string) string {
@@ -377,6 +379,43 @@ func TestDiffPagesAtMost200Files(t *testing.T) {
 		if len(past.Files) != 0 || past.Files == nil || past.NextOffset != 0 || past.Totals.Files != 201 || past.Offset != offset {
 			t.Fatalf("offset %d past the end: %+v", offset, past)
 		}
+	}
+}
+
+func TestDiffStopsAGitThatRunsUnderALauncher(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Git for Windows already runs git.exe under its cmd launcher")
+	}
+	dir := testRepo(t)
+	store := newStore(t, dir)
+	var entries []string
+	for i := 0; i < 50; i++ {
+		entries = append(entries, fileEntry(t, dir, "100644", fmt.Sprintf("f%03d", i), strings.Repeat(fmt.Sprintf("line %d\n", i), 2000)))
+	}
+	from := snapshotOfTree(t, dir, store, treeOf(t, dir))
+	to := snapshotOfTree(t, dir, store, treeOf(t, dir, entries...))
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := t.TempDir()
+	if err := os.WriteFile(filepath.Join(launcher, "git"), []byte("#!/bin/sh\n\""+real+"\" \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", launcher+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.Diff(context.Background(), from, to, DiffPage{Offset: 50})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("a page that ends before Git does must not wait on a Git that the kill does not reach")
 	}
 }
 

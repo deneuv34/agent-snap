@@ -211,9 +211,12 @@ func diffArgs(gitDir, fromTree, toTree string) []string {
 }
 
 // runDiff streams one diff-tree process through readDiff. When the page is
-// complete before Git finishes, the process is killed: everything the page
-// needs has been read, and the kill's exit status is expected. Missing
-// objects still fail, because numstat reads every blob before the patch.
+// complete before Git finishes, the pipe is closed and the process is killed:
+// everything the page needs has been read, and the exit status is expected.
+// Closing the pipe stops a Git that runs under a launcher the kill does not
+// reach, such as Git for Windows' cmd\git.exe, which would otherwise block on
+// a full pipe while Wait waits for its stderr. Missing objects still fail,
+// because numstat reads every blob before the patch.
 func runDiff(ctx context.Context, dir string, env, args []string, offset, budget int) (diffPage, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -231,6 +234,7 @@ func runDiff(ctx context.Context, dir string, env, args []string, offset, budget
 	}
 	page, complete, perr := readDiff(bufio.NewReaderSize(stdout, 64<<10), offset, budget)
 	if !complete {
+		stdout.Close()
 		cancel()
 	}
 	werr := cmd.Wait()
