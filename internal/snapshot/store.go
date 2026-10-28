@@ -202,7 +202,7 @@ func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snaps
 		reason = "manual"
 	}
 	if !ValidReason(reason) {
-		return Snapshot{}, fmt.Errorf("%w: its last paragraph reads as an origin paragraph", ErrInvalidReason)
+		return Snapshot{}, fmt.Errorf("%w: it contains a NUL byte or ends with an origin paragraph", ErrInvalidReason)
 	}
 	if err := checkOrigin(origin); err != nil {
 		return Snapshot{}, err

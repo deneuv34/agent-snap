@@ -60,6 +60,9 @@ func run(args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
+		if !snapshot.ValidReason(reason) {
+			return fmt.Errorf("%w: it contains a NUL byte or ends with an origin paragraph", snapshot.ErrInvalidReason)
+		}
 		store, err := snapshot.New(cwd)
 		if err != nil {
 			return err

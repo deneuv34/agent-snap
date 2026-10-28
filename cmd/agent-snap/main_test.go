@@ -100,9 +100,11 @@ func TestCLICreateAndList(t *testing.T) {
 func TestCLICreateRejectsAReasonThatReadsAsOrigin(t *testing.T) {
 	dir := cliRepo(t)
 	var out bytes.Buffer
-	err := run([]string{"create", "x\n\nAgent-Snap-Host: pi", "--cwd", dir}, &out)
-	if err == nil || !strings.Contains(err.Error(), "invalid snapshot reason") {
-		t.Fatalf("want an invalid reason error, got %v", err)
+	for _, cwd := range []string{dir, t.TempDir()} {
+		err := run([]string{"create", "x\n\nAgent-Snap-Host: pi", "--cwd", cwd}, &out)
+		if err == nil || !strings.Contains(err.Error(), "invalid snapshot reason") {
+			t.Fatalf("cwd %s: want an invalid reason error before the repository is resolved, got %v", cwd, err)
+		}
 	}
 	out.Reset()
 	if err := run([]string{"list", "--cwd", dir}, &out); err != nil {
