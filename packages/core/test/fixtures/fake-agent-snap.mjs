@@ -167,6 +167,24 @@ function handle(req) {
         respond(req, { ...detail(req.params?.id), ...(malformedDetails[mode] ?? {}) })
       }
       break
+    case "snapshot.diff":
+      if (mode === "diff-not-found") {
+        respond(req, null, { code: -32001, message: `snapshot not found: ${req.params?.from}` })
+      } else if (mode === "diff-method-not-found") {
+        respond(req, null, { code: -32601, message: "method not found" })
+      } else if (mode === "diff-slow") {
+        setTimeout(() => {
+          record({ event: "completed", method: req.method })
+          respond(req, diffResult(req.params))
+        }, 5000)
+      } else if (mode === "diff-scalar") {
+        respond(req, "just a string")
+      } else if (mode in malformedDiffs) {
+        respond(req, malformedDiffs[mode](diffResult(req.params)))
+      } else {
+        respond(req, diffResult(req.params))
+      }
+      break
     default:
       if (mode === "bad-error") {
         respond(req, null, "boom")
@@ -198,6 +216,112 @@ function detail(id) {
     parent_id: "20251231T000000.000000000Z-fedcba987654",
     changed_files: ["src/a.ts"],
   }
+}
+
+const diffHunk = {
+  old_start: 88,
+  old_lines: 6,
+  new_start: 88,
+  new_lines: 7,
+  section: "func dispatch() {",
+  text: " \tcase \"snapshot.get\":\n+\tcase \"snapshot.diff\":\n \tdefault:\n\\ No newline at end of file\n",
+}
+
+function diffResult(params) {
+  return {
+    from: { id: params?.from, commit: "1a2b3c4d5e6f0000000000000000000000000000" },
+    to: { id: params?.to, commit: "9f8e7d6c5b4a0000000000000000000000000000" },
+    offset: params?.offset ?? 0,
+    next_offset: (params?.offset ?? 0) + 2,
+    totals: { files: 9, additions: 14, deletions: 5 },
+    unexpected: "dropped",
+    files: [
+      {
+        status: "added", path: "assets/logo.png", new_mode: "100644", new_oid: "23c62bf50000",
+        additions: 0, deletions: 0, patch: "binary", hunks: [], unexpected: "dropped",
+      },
+      {
+        status: "modified", path: "src/server.go", old_mode: "100644", new_mode: "100644",
+        old_oid: "83db48f80000", new_oid: "8792505e0000", additions: 1, deletions: 0, patch: "full",
+        hunks: [{ ...diffHunk, unexpected: "dropped" }],
+      },
+      {
+        status: "renamed", path: "src/util.go", old_path: "src/helpers.go", similarity: 92,
+        old_mode: "100644", new_mode: "100644", old_oid: "96cc55880000", new_oid: "1c5a36f50000",
+        additions: 12, deletions: 5, patch: "deferred", hunks: [],
+      },
+    ],
+  }
+}
+
+const withFile = (index, change) => (result) => ({
+  ...result,
+  files: result.files.map((file, i) => (i === index ? { ...file, ...change } : file)),
+})
+
+const withHunk = (change) => withFile(1, { hunks: [{ ...diffHunk, ...change }] })
+
+const malformedDiffs = {
+  "diff-bad-from": (r) => ({ ...r, from: { id: "x" } }),
+  "diff-bad-to": (r) => ({ ...r, to: { id: 1, commit: "x" } }),
+  "diff-missing-offset": (r) => ({ ...r, offset: undefined }),
+  "diff-fractional-offset": (r) => ({ ...r, offset: 0.5 }),
+  "diff-negative-offset": (r) => ({ ...r, offset: -1 }),
+  "diff-unsafe-offset": (r) => ({ ...r, offset: 2 ** 53 }),
+  "diff-null-next-offset": (r) => ({ ...r, next_offset: null }),
+  "diff-next-offset-not-after-offset": (r) => ({ ...r, next_offset: r.offset }),
+  "diff-next-offset-past-page": (r) => ({ ...r, next_offset: r.offset + 4 }),
+  "diff-bad-totals": (r) => ({ ...r, totals: { files: 9, additions: "14", deletions: 5 } }),
+  "diff-missing-totals": (r) => ({ ...r, totals: undefined }),
+  "diff-page-past-totals": (r) => ({ ...r, totals: { ...r.totals, files: 2 } }),
+  "diff-files-not-array": (r) => ({ ...r, files: {} }),
+  "diff-too-many-files": (r) => ({
+    ...r,
+    totals: { ...r.totals, files: 1000 },
+    next_offset: undefined,
+    files: Array.from({ length: 201 }, () => r.files[0]),
+  }),
+  "diff-file-scalar": (r) => ({ ...r, next_offset: undefined, files: [7] }),
+  "diff-bad-status": withFile(1, { status: "copied" }),
+  "diff-bad-patch": withFile(1, { patch: "partial" }),
+  "diff-bad-path": withFile(1, { path: null }),
+  "diff-bad-mode": withFile(1, { new_mode: 100644 }),
+  "diff-null-oid": withFile(1, { old_oid: null }),
+  "diff-bad-additions": withFile(1, { additions: -1 }),
+  "diff-bad-deletions": withFile(1, { deletions: 1.5 }),
+  "diff-bad-lossy": withFile(1, { lossy: false }),
+  "diff-null-lossy": withFile(1, { lossy: null }),
+  "diff-renamed-without-old-path": withFile(2, { old_path: undefined }),
+  "diff-renamed-without-similarity": withFile(2, { similarity: undefined }),
+  "diff-similarity-too-low": withFile(2, { similarity: 49 }),
+  "diff-similarity-too-high": withFile(2, { similarity: 101 }),
+  "diff-similarity-fractional": withFile(2, { similarity: 92.5 }),
+  "diff-old-path-on-modified": withFile(1, { old_path: "src/old.go" }),
+  "diff-similarity-on-modified": withFile(1, { similarity: 90 }),
+  "diff-added-with-old-mode": withFile(0, { old_mode: "100644" }),
+  "diff-added-with-old-oid": withFile(0, { old_oid: "83db48f80000" }),
+  "diff-added-without-new-mode": withFile(0, { new_mode: undefined }),
+  "diff-modified-without-old-oid": withFile(1, { old_oid: undefined }),
+  "diff-modified-without-old-mode": withFile(1, { old_mode: undefined }),
+  "diff-deleted-with-new-oid": withFile(1, { status: "deleted" }),
+  "diff-modified-without-new-oid": withFile(1, { new_oid: undefined }),
+  "diff-binary-with-additions": withFile(0, { additions: 1 }),
+  "diff-binary-with-deletions": withFile(0, { deletions: 1 }),
+  "diff-binary-with-hunks": withFile(0, { hunks: [diffHunk] }),
+  "diff-deferred-with-hunks": withFile(2, { hunks: [diffHunk] }),
+  "diff-patch-bytes-on-full": withFile(1, { patch_bytes: 2048 }),
+  "diff-patch-bytes-on-deferred": withFile(2, { patch_bytes: 2048 }),
+  "diff-patch-bytes-fractional": withFile(1, { patch: "truncated", patch_bytes: 2048.5 }),
+  "diff-patch-bytes-over-limit": withFile(1, { patch: "truncated", patch_bytes: 1048577 }),
+  "diff-hunks-not-array": withFile(1, { hunks: "none" }),
+  "diff-hunk-scalar": withFile(1, { hunks: ["@@"] }),
+  "diff-hunk-bad-range": withHunk({ old_start: "88" }),
+  "diff-hunk-negative-lines": withHunk({ new_lines: -1 }),
+  "diff-hunk-bad-section": withHunk({ section: null }),
+  "diff-hunk-bad-text": withHunk({ text: 7 }),
+  "diff-hunk-text-without-newline": withHunk({ text: " tail" }),
+  "diff-hunk-text-bad-prefix": withHunk({ text: " ok\nbad\n" }),
+  "diff-hunk-text-empty-line": withHunk({ text: " ok\n\n" }),
 }
 
 function respond(req, result, error) {
