@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -33,10 +34,11 @@ type Response struct {
 }
 
 const (
-	CodeParseError     = -32700
-	CodeMethodNotFound = -32601
-	CodeInvalidParams  = -32602
-	CodeInternalError  = -32603
+	CodeParseError       = -32700
+	CodeMethodNotFound   = -32601
+	CodeInvalidParams    = -32602
+	CodeInternalError    = -32603
+	CodeSnapshotNotFound = -32001
 )
 
 func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
@@ -77,6 +79,8 @@ func dispatch(ctx context.Context, req *Request) (any, *Error) {
 		return createSnapshot(ctx, req.Params)
 	case "snapshot.list":
 		return listSnapshots(ctx, req.Params)
+	case "snapshot.get":
+		return getSnapshot(ctx, req.Params)
 	default:
 		return nil, &Error{Code: CodeMethodNotFound, Message: "method not found"}
 	}
@@ -186,6 +190,35 @@ func listSnapshots(ctx context.Context, params map[string]any) (any, *Error) {
 		return nil, &Error{Code: CodeInternalError, Message: err.Error()}
 	}
 	return map[string]any{"snapshots": items}, nil
+}
+
+func getSnapshot(ctx context.Context, params map[string]any) (any, *Error) {
+	if err := validateParams(params, "cwd", "id"); err != nil {
+		return nil, err
+	}
+	cwd, rerr := requireString(params, "cwd")
+	if rerr != nil {
+		return nil, rerr
+	}
+	id, rerr := requireString(params, "id")
+	if rerr != nil {
+		return nil, rerr
+	}
+	if !snapshot.ValidID(id) {
+		return nil, &Error{Code: CodeInvalidParams, Message: "param must be a snapshot id: id"}
+	}
+	store, err := snapshot.New(cwd)
+	if err != nil {
+		return nil, &Error{Code: CodeInternalError, Message: err.Error()}
+	}
+	detail, err := store.Get(ctx, id)
+	if errors.Is(err, snapshot.ErrNotFound) {
+		return nil, &Error{Code: CodeSnapshotNotFound, Message: err.Error()}
+	}
+	if err != nil {
+		return nil, &Error{Code: CodeInternalError, Message: err.Error()}
+	}
+	return detail, nil
 }
 
 func writeResponse(enc *json.Encoder, id json.RawMessage, result any, rerr *Error) error {
