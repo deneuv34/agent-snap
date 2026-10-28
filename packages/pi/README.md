@@ -11,9 +11,10 @@ The package declares `pi.extensions: ["dist/extension.js"]` in its
 - takes a coalesced (1.5 s burst window) snapshot at `agent_settled`,
 - flushes pending snapshots and shuts the Go subprocess down at
   `session_shutdown`,
-- registers `agent_snap_create(reason?, cwd?)` and
-  `agent_snap_list(cwd?, limit?)` tools,
-- registers `agent-snap-create` and `agent-snap-list` commands.
+- registers `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
+  and `agent_snap_get(id, cwd?)` tools,
+- registers `agent-snap-create`, `agent-snap-list`, and `agent-snap-get <id>`
+  commands.
 
 ## Install
 

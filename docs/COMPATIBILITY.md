@@ -23,6 +23,7 @@ Executable name: `agent-snap`.
 | --- | --- |
 | `create [reason] [--cwd <dir>]` | Create one snapshot and print a snapshot JSON object. `--reason` and a positional reason are mutually exclusive. |
 | `list [--cwd <dir>] [--limit <n>]` | Print `{"snapshots":[...]}` newest first. |
+| `get <id> [--cwd <dir>]` | Print the snapshot detail object. A missing snapshot fails with `snapshot not found: <id>`. |
 | `ping` | Print `{"status":"ok","version":"<version>"}`. |
 | `version` | Print the version string and a newline. |
 | `serve` | JSONL server on stdin/stdout. Takes no arguments. |
@@ -43,16 +44,22 @@ Request:
 ```
 
 Unknown keys on the request or in `params` are rejected. `cwd` is required and
-must be a non-empty string for `snapshot.create` and `snapshot.list`.
+must be a non-empty string for `snapshot.create`, `snapshot.list`, and
+`snapshot.get`.
 
 | Method | Params | Result |
 | --- | --- | --- |
 | `ping` | none | `{"status":"ok","version":"<version>"}` |
 | `snapshot.create` | `cwd`, `reason?` | snapshot object |
 | `snapshot.list` | `cwd`, `limit?` | `{"snapshots":[...]}` |
+| `snapshot.get` | `cwd`, `id` | snapshot detail object |
 
 `limit` is an integer from **1 through 100**. Omitted `limit` uses the store
 default of **20**, newest first.
+
+`id` must match `<YYYYMMDD>T<HHMMSS>.<9 digits>Z-<12 lowercase hex>`. It is
+checked before the repository is resolved, and it resolves only inside the
+`cwd` worktree's own namespace.
 
 ### Error codes
 
@@ -60,8 +67,9 @@ default of **20**, newest first.
 | --- | --- |
 | `-32700` | Parse error (malformed JSON or oversized line) |
 | `-32601` | Method not found |
-| `-32602` | Invalid params (unknown key, missing/blank `cwd`, bad types, bad `limit`) |
-| `-32603` | Internal error (repository resolution, Git, scratch index, ref update) |
+| `-32602` | Invalid params (unknown key, missing/blank `cwd`, bad types, bad `limit`, malformed snapshot `id`) |
+| `-32603` | Internal error (repository resolution, Git, scratch index, ref update, tampered snapshot ref) |
+| `-32001` | Snapshot not found: a well-formed `id` with no snapshot in this worktree |
 
 Error messages name the operation. They must not include working-tree file
 contents.
@@ -81,19 +89,33 @@ contents.
 `id`, `commit`, `reason`, and `created_at`. `changed_files` and `reused` are
 create metadata and are not guaranteed on list.
 
+### Snapshot detail object
+
+Returned by `snapshot.get` and `agent-snap get`.
+
+| Field | Type | When present |
+| --- | --- | --- |
+| `id`, `commit`, `reason`, `created_at` | as in the snapshot object | always |
+| `tree` | string | always |
+| `parent` | string | when the snapshot commit has a parent |
+| `parent_id` | string | when the parent is a snapshot in the same worktree |
+| `changed_files` | string array, at most 1000 entries | always (may be empty) |
+| `changed_files_truncated` | boolean | `true` when more than 1000 paths changed |
+
 ## Hidden Git refs
 
 Namespace: `refs/agent-snapshots/`. Callers never construct these paths; only
-`internal/snapshot.Store` owns them. Refs are per worktree. Capture and list
-never move `HEAD`, write the real index, or write the working tree.
+`internal/snapshot.Store` owns them. Refs are per worktree. Capture, list, and
+get never move `HEAD`, write the real index, or write the working tree; get
+also writes no refs or objects.
 
 ## TypeScript client (`@agent-snap/core`)
 
 Public surface:
 
 - `SnapClient` / `SnapClient.fromEnv()` / `SnapClient.defaultBin()`
-- `SnapLike` (`create`, `list`, `close`)
-- `SnapSnapshot`, `SnapListResult`, `PingResult`
+- `SnapLike` (`create`, `list`, `get`, `close`)
+- `SnapSnapshot`, `SnapSnapshotDetail`, `SnapListResult`, `PingResult`
 - `SnapRpcError` (JSON-RPC `code` + `message`)
 - `SnapProtocolError` (malformed child output)
 
@@ -116,6 +138,7 @@ Install: `{ "plugin": ["@agent-snap/opencode"] }` in `opencode.json`.
 | `session.deleted` | Cancels that session's work. |
 | `agent_snap_create(reason?, cwd?)` | Manual create. |
 | `agent_snap_list(cwd?, limit?)` | Manual list. |
+| `agent_snap_get(id, cwd?)` | Describe one snapshot. Read-only. |
 
 ## Pi extension (`@agent-snap/pi`)
 
@@ -126,8 +149,8 @@ Requires Pi Coding Agent `>= 0.84` and Node `>= 22.19`. Manifest key: `pi.extens
 | `session_start` | Awaited baseline (`session-start`). Failure is logged, not propagated. |
 | `agent_settled` | Coalesced snapshot, 1.5 s window. |
 | `session_shutdown` | Flush, then close the client. |
-| `agent_snap_create` / `agent_snap_list` | Tools. |
-| `agent-snap-create` / `agent-snap-list` | Commands. |
+| `agent_snap_create` / `agent_snap_list` / `agent_snap_get` | Tools. |
+| `agent-snap-create` / `agent-snap-list` / `agent-snap-get <id>` | Commands. |
 
 The packaged extension must expose `package.json` and `dist/` at the extension
 directory root. Pi does not recurse into wrapper `node_modules`.

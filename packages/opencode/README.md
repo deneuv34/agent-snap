@@ -11,8 +11,8 @@ OpenCode plugin for agent-snap. See the repository README for full details.
 - Events are rejected once the plugin starts closing; `dispose` is a shutdown
   barrier: flushes pending snapshots, aborts leftover work, and closes the Go
   subprocess.
-- Tools: `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`
-  — both honour the caller's abort signal.
+- Tools: `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
+  `agent_snap_get(id, cwd?)` — all honour the caller's abort signal.
 
 Enable in `opencode.json`:
 

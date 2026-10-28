@@ -11,16 +11,17 @@ branch`, and never collide with your real history.
 
 ## How it works
 
-1. A Go core (`cmd/agent-snap`) exposes `create` / `list` / `ping` as direct
-   JSON commands and a long-running JSONL `serve` mode on stdin/stdout.
+1. A Go core (`cmd/agent-snap`) exposes `create` / `list` / `get` / `ping` as
+   direct JSON commands and a long-running JSONL `serve` mode on stdin/stdout.
 2. Thin TypeScript adapters launch and reuse the Go subprocess:
    - `@agent-snap/opencode` — an OpenCode plugin (baseline at
      `session.created`, coalesced snapshot at `session.idle`, plus
-     `agent_snap_create` / `agent_snap_list` tools).
+     `agent_snap_create` / `agent_snap_list` / `agent_snap_get` tools).
    - `@agent-snap/pi` — a Pi Coding Agent extension (baseline at
      `session_start`, coalesced snapshot at `agent_settled`, cleanup at
-     `session_shutdown`, plus `agent_snap_create` / `agent_snap_list` tools
-     and `agent-snap-create` / `agent-snap-list` commands).
+     `session_shutdown`, plus `agent_snap_create` / `agent_snap_list` /
+     `agent_snap_get` tools and `agent-snap-create` / `agent-snap-list` /
+     `agent-snap-get` commands).
 3. Every create builds a tree from a **temporary index**
    (`GIT_INDEX_FILE` pointing at a scratch file), so the real index is never
    written. The commit is created with `git commit-tree` against hidden refs —
@@ -112,8 +113,8 @@ or copy the built package into `.opencode/plugins/`. The plugin:
 
 - snapshots the session directory when a session is created,
 - coalesces `session.idle` bursts (1.5 s window) into one settled snapshot,
-- exposes `agent_snap_create(reason?, cwd?)` and
-  `agent_snap_list(cwd?, limit?)` tools.
+- exposes `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
+  and `agent_snap_get(id, cwd?)` tools.
 
 Set `AGENT_SNAP_BIN` if the binary is not on `PATH`.
 
@@ -147,9 +148,10 @@ The extension:
 - takes a coalesced (1.5 s burst window) snapshot at `agent_settled`,
 - flushes pending snapshots and shuts the Go subprocess down at
   `session_shutdown`,
-- registers `agent_snap_create(reason?, cwd?)` and
-  `agent_snap_list(cwd?, limit?)` tools,
-- registers `agent-snap-create` and `agent-snap-list` commands.
+- registers `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
+  and `agent_snap_get(id, cwd?)` tools,
+- registers `agent-snap-create`, `agent-snap-list`, and `agent-snap-get <id>`
+  commands.
 
 Set `AGENT_SNAP_BIN` if the binary is not on `PATH`.
 
