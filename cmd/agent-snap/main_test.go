@@ -166,3 +166,68 @@ func TestCLIUnknownCommand(t *testing.T) {
 		t.Fatalf("expected unknown command error, got: %v", err)
 	}
 }
+
+func TestCLIDiff(t *testing.T) {
+	dir := cliRepo(t)
+	createID := func() string {
+		var out bytes.Buffer
+		if err := run([]string{"create", "--cwd", dir}, &out); err != nil {
+			t.Fatal(err)
+		}
+		var snap struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &snap); err != nil {
+			t.Fatal(err)
+		}
+		return snap.ID
+	}
+	from := createID()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	to := createID()
+	type page struct {
+		From       struct{ ID string } `json:"from"`
+		Offset     int                 `json:"offset"`
+		NextOffset *int                `json:"next_offset"`
+		Totals     struct{ Files, Additions, Deletions int }
+		Files      []struct {
+			Status, Path, Patch string
+			Hunks               []struct{ Text string }
+		}
+	}
+	diff := func(args ...string) page {
+		t.Helper()
+		var out bytes.Buffer
+		if err := run(append([]string{"diff", from, to, "--cwd", dir}, args...), &out); err != nil {
+			t.Fatal(err)
+		}
+		var p page
+		if err := json.Unmarshal(out.Bytes(), &p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	whole := diff()
+	if whole.From.ID != from || whole.NextOffset != nil || whole.Totals.Files != 2 || whole.Totals.Additions != 2 || whole.Totals.Deletions != 1 || len(whole.Files) != 2 {
+		t.Fatalf("unexpected diff: %+v", whole)
+	}
+	if f := whole.Files[0]; f.Status != "modified" || f.Path != "file.txt" || f.Patch != "full" || f.Hunks[0].Text != "-initial\n+changed\n" {
+		t.Fatalf("unexpected first file: %+v", f)
+	}
+	second := diff("--offset", "1", "--max-patch-bytes", "1024")
+	if second.Offset != 1 || len(second.Files) != 1 || second.Files[0].Path != "new.txt" || second.Files[0].Hunks[0].Text != "+new\n" {
+		t.Fatalf("unexpected second page: %+v", second)
+	}
+
+	missing := from[:len(from)-12] + "000000000000"
+	var out bytes.Buffer
+	if err := run([]string{"diff", missing, missing[:len(missing)-1] + "1", "--cwd", dir}, &out); err == nil || err.Error() != "snapshot not found: "+missing {
+		t.Fatalf("expected not found naming from, got: %v", err)
+	}
+}
