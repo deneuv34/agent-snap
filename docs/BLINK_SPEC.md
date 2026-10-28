@@ -339,6 +339,7 @@ An intelligent review layer may prioritize risky changes, summarize scope, and f
 ### Required validation commands
 
 ```sh
+test -z "$(gofmt -l .)"
 go test ./...
 go vet ./...
 npm run build

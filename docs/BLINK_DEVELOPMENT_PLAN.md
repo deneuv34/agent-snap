@@ -1,8 +1,26 @@
 # Blink Phase-by-Phase Development Plan
 
-**Status:** Proposed execution plan
+**Status:** Proposed execution plan — tracked on GitHub
 **Product:** Blink — Craft confidently. Review intelligently. Restore instantly.
 **Current codebase name:** `agent-snap`
+
+## GitHub tracker
+
+This document is the source of truth for **scope**. GitHub is the source of truth for **status**.
+
+Each phase has one milestone and one tracking issue. Work items and exit criteria live as checklists on that issue. Close the issue only when the phase exit criteria pass. Change scope here first, then update the matching issue so the two stay aligned.
+
+| Phase | Tracking issue | Milestone |
+| --- | --- | --- |
+| 0 — Baseline and Release Discipline | [#3](https://github.com/deneuv34/agent-snap/issues/3) | [Phase 0](https://github.com/deneuv34/agent-snap/milestone/1) |
+| 1 — Blink Identity and Backward-Compatible Distribution | [#1](https://github.com/deneuv34/agent-snap/issues/1) | [Phase 1](https://github.com/deneuv34/agent-snap/milestone/2) |
+| 2 — Snapshot Discovery and Evidence APIs | [#6](https://github.com/deneuv34/agent-snap/issues/6) | [Phase 2](https://github.com/deneuv34/agent-snap/milestone/3) |
+| 3 — Snapshot Diff and Intelligent Review | [#2](https://github.com/deneuv34/agent-snap/issues/2) | [Phase 3](https://github.com/deneuv34/agent-snap/milestone/4) |
+| 4 — Restore Design, Dry Run, and Safety Backup | [#4](https://github.com/deneuv34/agent-snap/issues/4) | [Phase 4](https://github.com/deneuv34/agent-snap/milestone/5) |
+| 5 — Confirmed Restore | [#5](https://github.com/deneuv34/agent-snap/issues/5) | [Phase 5](https://github.com/deneuv34/agent-snap/milestone/6) |
+| 6 — Retention, Observability, and Operational Maturity | [#7](https://github.com/deneuv34/agent-snap/issues/7) | [Phase 6](https://github.com/deneuv34/agent-snap/milestone/7) |
+
+Pull requests that implement a phase should mention that phase's tracking issue. Use `Fixes #N` only when the PR completes the whole phase. Filter issues with `label:type:phase` or `label:phase/N`.
 
 ## Planning Rules
 
@@ -14,14 +32,17 @@
 
 ## Phase 0 — Baseline and Release Discipline
 
+**GitHub:** [#3](https://github.com/deneuv34/agent-snap/issues/3) · [milestone](https://github.com/deneuv34/agent-snap/milestone/1)
+
 **Objective:** Establish a reproducible, trustworthy baseline before expanding product scope.
 
 ### Deliverables
 
 - Green local verification for Go core, TypeScript packages, smoke test, and package-install test.
-- A release checklist covering versioning, changelog, supported platforms, and binary/package publication.
+- A release checklist covering versioning, changelog, supported platforms, and binary/package publication ([docs/RELEASE.md](RELEASE.md), [CHANGELOG.md](../CHANGELOG.md)).
 - CI that runs the same verification gates on supported platforms.
-- A documented compatibility contract for the current CLI, JSONL methods, TypeScript client, OpenCode plugin, and Pi extension.
+- A documented compatibility contract for the current CLI, JSONL methods, TypeScript client, OpenCode plugin, and Pi extension ([docs/COMPATIBILITY.md](COMPATIBILITY.md)).
+- Operational diagnostics that do not expose repository contents ([docs/DIAGNOSTICS.md](DIAGNOSTICS.md)).
 
 ### Work items
 
@@ -33,6 +54,7 @@
 ### Exit criteria
 
 ```sh
+test -z "$(gofmt -l .)"
 go test ./...
 go vet ./...
 npm run build
@@ -46,6 +68,8 @@ AGENT_SNAP_BIN="$PWD/bin/agent-snap" npm run pack-check
 All commands pass on the supported platform matrix, and package artifacts install cleanly in a fresh directory.
 
 ## Phase 1 — Blink Identity and Backward-Compatible Distribution
+
+**GitHub:** [#1](https://github.com/deneuv34/agent-snap/issues/1) · [milestone](https://github.com/deneuv34/agent-snap/milestone/2)
 
 **Objective:** Introduce the Blink product identity without breaking existing users of `agent-snap`.
 
@@ -71,6 +95,8 @@ All commands pass on the supported platform matrix, and package artifacts instal
 
 ## Phase 2 — Snapshot Discovery and Evidence APIs
 
+**GitHub:** [#6](https://github.com/deneuv34/agent-snap/issues/6) · [milestone](https://github.com/deneuv34/agent-snap/milestone/3)
+
 **Objective:** Make the checkpoint timeline easy to inspect programmatically and interactively, while remaining read-only.
 
 ### Deliverables
@@ -94,6 +120,8 @@ All commands pass on the supported platform matrix, and package artifacts instal
 - Public result schemas are documented and runtime-validated.
 
 ## Phase 3 — Snapshot Diff and Intelligent Review
+
+**GitHub:** [#2](https://github.com/deneuv34/agent-snap/issues/2) · [milestone](https://github.com/deneuv34/agent-snap/milestone/4)
 
 **Objective:** Let developers review evidence-backed changes between checkpoints before considering restoration.
 
@@ -119,6 +147,8 @@ All commands pass on the supported platform matrix, and package artifacts instal
 
 ## Phase 4 — Restore Design, Dry Run, and Safety Backup
 
+**GitHub:** [#4](https://github.com/deneuv34/agent-snap/issues/4) · [milestone](https://github.com/deneuv34/agent-snap/milestone/5)
+
 **Objective:** Design and validate restore behaviour before Blink is allowed to write user files.
 
 ### Deliverables
@@ -143,6 +173,8 @@ All commands pass on the supported platform matrix, and package artifacts instal
 
 ## Phase 5 — Confirmed Restore
 
+**GitHub:** [#5](https://github.com/deneuv34/agent-snap/issues/5) · [milestone](https://github.com/deneuv34/agent-snap/milestone/6)
+
 **Objective:** Restore selected snapshot content only after an explicit, informed confirmation.
 
 ### Deliverables
@@ -166,6 +198,8 @@ All commands pass on the supported platform matrix, and package artifacts instal
 - The operation has a documented, tested rollback/recovery story.
 
 ## Phase 6 — Retention, Observability, and Operational Maturity
+
+**GitHub:** [#7](https://github.com/deneuv34/agent-snap/issues/7) · [milestone](https://github.com/deneuv34/agent-snap/milestone/7)
 
 **Objective:** Make Blink maintainable for long-lived repositories and teams.
 

@@ -19,6 +19,7 @@ Safety properties:
   snapshot;
 - on Unix the whole process group is signalled (SIGTERM, then SIGKILL after
   a grace period); on Windows the child tree is killed via `taskkill /T /F`
-  with a plain `child.kill` fallback if `taskkill` is unavailable;
+  and cleanup fails closed unless taskkill succeeds *and* the root exits
+  (see [docs/DIAGNOSTICS.md](../../docs/DIAGNOSTICS.md));
 - responses are runtime-validated before being handed to the host;
 - the client respawns the transport lazily after any crash or close.

@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -60,9 +60,19 @@ jobs:
         run: npm test
 
   smoke:
-    name: Smoke test (real git repo through the binary)
+    name: Smoke test (${{ matrix.os }})
     needs: go
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: agent-snap-ubuntu-latest
+            bin: agent-snap
+          - os: windows-latest
+            artifact: agent-snap-windows-latest
+            bin: agent-snap.exe
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -73,18 +83,20 @@ jobs:
           cache: npm
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: agent-snap-ubuntu-latest
+          name: ${{ matrix.artifact }}
           path: bin
-      - run: chmod +x bin/agent-snap
+      - name: make binary executable
+        if: runner.os != 'Windows'
+        run: chmod +x bin/${{ matrix.bin }}
       - run: npm ci
       - run: npm run build
       - name: smoke
         env:
-          AGENT_SNAP_BIN: ${{ github.workspace }}/bin/agent-snap
+          AGENT_SNAP_BIN: ${{ github.workspace }}/bin/${{ matrix.bin }}
         run: npm run smoke
       - name: integration tests against real binary
         env:
-          AGENT_SNAP_BIN: ${{ github.workspace }}/bin/agent-snap
+          AGENT_SNAP_BIN: ${{ github.workspace }}/bin/${{ matrix.bin }}
         run: node --import tsx --test packages/core/test/integration.test.ts packages/pi/test/integration.test.ts
 
   package:

@@ -39,6 +39,11 @@ branch`, and never collide with your real history.
   Pi Coding Agent)
 - git 2.30+
 
+Supported CI matrix, release artifacts, and publication steps:
+[docs/RELEASE.md](docs/RELEASE.md). Frozen CLI / JSONL / package contract:
+[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Failure diagnosis without
+repository contents: [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
+
 ## Install
 
 ```sh
@@ -150,7 +155,12 @@ Set `AGENT_SNAP_BIN` if the binary is not on `PATH`.
 
 ## Development
 
+These local gates match CI (`.github/workflows/ci.yml`). `gofmt` is required;
+CI also runs TypeScript tests on Linux, Windows, and macOS, and smoke on
+Linux and Windows.
+
 ```sh
+test -z "$(gofmt -l .)"
 go test ./... && go vet ./...
 npm install
 npm run build && npm run typecheck && npm test
