@@ -149,7 +149,7 @@ function handle(req) {
           reason: req.params?.reason ?? "manual",
           created_at: new Date().toISOString(),
           source: mode === "malformed-origin" ? 7 : req.params?.source,
-          host: req.params?.host,
+          host: mode === "malformed-origin-host" ? 7 : req.params?.host,
           changed_files: [],
           reused: false,
         })

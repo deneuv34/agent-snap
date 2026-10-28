@@ -121,13 +121,14 @@ test("malformed snapshot.get results surface SnapProtocolError", async () => {
   }
 })
 
-function originClient(mode: string, messages: string[]) {
+function originClient(mode: string, onLog: (message: string) => void = () => {}, timeoutMs?: number) {
   const log = join(mkdtempSync(join(tmpdir(), "agent-snap-origin-")), "log.jsonl")
   const c = new SnapClient({
     bin: process.execPath,
     serveArgs: [fixture, "serve"],
     env: { FAKE_AGENT_SNAP_MODE: mode, FAKE_AGENT_SNAP_LOG: log },
-    log: (message) => messages.push(message),
+    log: onLog,
+    timeoutMs,
   })
   const createParams = () =>
     readFileSync(log, "utf8")
@@ -140,7 +141,7 @@ function originClient(mode: string, messages: string[]) {
 }
 
 test("create sends source and host and returns the stored origin", async () => {
-  const { c, createParams } = originClient("", [])
+  const { c, createParams } = originClient("")
   try {
     const snap = await c.create("/repo", "before", undefined, { source: "tool", host: "pi" })
     assert.equal(snap.source, "tool")
@@ -159,7 +160,7 @@ test("create sends source and host and returns the stored origin", async () => {
 
 test("a 0.1.0 binary's unknown-param rejection is retried without origin and logged once", async () => {
   const messages: string[] = []
-  const { c, createParams } = originClient("v010", messages)
+  const { c, createParams } = originClient("v010", (message) => messages.push(message))
   try {
     const first = await c.create("/repo", "session-start", undefined, { source: "session-start", host: "pi" })
     const second = await c.create("/repo", undefined, undefined, { host: "pi" })
@@ -179,7 +180,7 @@ test("a 0.1.0 binary's unknown-param rejection is retried without origin and log
 })
 
 test("the 0.1.0 retry refuses a reason a newer reader would take as origin", async () => {
-  const { c, createParams } = originClient("v010", [])
+  const { c, createParams } = originClient("v010")
   try {
     await assert.rejects(
       () => c.create("/repo", "x\n\nAgent-Snap-Source: session-start", undefined, { source: "tool" }),
@@ -191,12 +192,38 @@ test("the 0.1.0 retry refuses a reason a newer reader would take as origin", asy
   assert.deepEqual(createParams(), [{ cwd: "/repo", reason: "x\n\nAgent-Snap-Source: session-start", source: "tool" }])
 })
 
+test("an abort before the 0.1.0 retry rejects without sending it", async () => {
+  const controller = new AbortController()
+  const { c, createParams } = originClient("v010", (message) => {
+    if (message.includes("does not accept snapshot origin")) controller.abort()
+  })
+  try {
+    await assert.rejects(
+      () => c.create("/repo", "r", controller.signal, { source: "tool" }),
+      (err: unknown) => (err as Error).name === "AbortError",
+    )
+  } finally {
+    await c.close()
+  }
+  assert.equal(createParams().length, 1, "the retry must honour the caller's signal")
+})
+
+test("a create that times out is not retried without origin", async () => {
+  const { c, createParams } = originClient("slow-create", () => {}, 300)
+  try {
+    await assert.rejects(() => c.create("/repo", "r", undefined, { source: "tool" }), /timed out/)
+  } finally {
+    await c.close()
+  }
+  assert.equal(createParams().length, 1)
+})
+
 test("create errors other than the 0.1.0 rejection are not retried", async () => {
   for (const [mode, code, message] of [
     ["invalid-origin", -32602, "param must be an origin value: source"],
     ["internal-unknown-param", -32603, "unknown param: source"],
   ] as const) {
-    const { c, createParams } = originClient(mode, [])
+    const { c, createParams } = originClient(mode)
     try {
       await assert.rejects(
         () => c.create("/repo", "r", undefined, { source: "tool" }),
@@ -486,7 +513,7 @@ test("non-object or garbage child output is rejected or ignored safely", async (
 })
 
 test("null, array, and scalar results surface SnapProtocolError", async () => {
-  for (const mode of ["null-result", "array-result", "scalar-result", "malformed-snapshot", "malformed-origin"]) {
+  for (const mode of ["null-result", "array-result", "scalar-result", "malformed-snapshot", "malformed-origin", "malformed-origin-host"]) {
     const c = client({ FAKE_AGENT_SNAP_MODE: mode })
     try {
       await assert.rejects(
