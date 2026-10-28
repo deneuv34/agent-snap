@@ -1,6 +1,8 @@
 import { tool } from "@opencode-ai/plugin"
 import type { Hooks } from "@opencode-ai/plugin"
-import { createCoalescedScheduler, type SnapLike, type SnapSnapshot, type SnapSnapshotDetail } from "@agent-snap/core"
+import { createCoalescedScheduler, type SnapLike, type SnapOrigin, type SnapSnapshot, type SnapSnapshotDetail } from "@agent-snap/core"
+
+const HOST = "opencode"
 
 function formatCreated(snap: SnapSnapshot): string {
   const reused = snap.reused === true ? " (working tree unchanged — reused previous snapshot)" : ""
@@ -11,15 +13,23 @@ function formatCreated(snap: SnapSnapshot): string {
 function formatList(items: SnapSnapshot[]): string {
   if (items.length === 0) return "No snapshots yet"
   return items
-    .map((item, index) => `${index + 1}. ${item.id} — ${item.reason} — ${item.created_at}${item.reused === true ? " (reused)" : ""}`)
+    .map((item, index) => {
+      const origin = formatOrigin(item)
+      return `${index + 1}. ${item.id} — ${item.reason} — ${item.created_at}${origin === "" ? "" : ` — ${origin}`}${item.reused === true ? " (reused)" : ""}`
+    })
     .join("\n")
+}
+
+function formatOrigin(snap: SnapOrigin): string {
+  return [snap.source, snap.host === undefined ? undefined : `via ${snap.host}`].filter((part) => part !== undefined).join(" ")
 }
 
 function formatDetail(snap: SnapSnapshotDetail): string {
   const parent = snap.parent === undefined ? "none" : `${snap.parent} (${snap.parent_id === undefined ? "commit" : `snapshot ${snap.parent_id}`})`
   const heading = snap.changed_files_truncated === true ? `changed files (first ${snap.changed_files.length})` : "changed files"
   const changed = snap.changed_files.length > 0 ? `${heading}:\n${snap.changed_files.map((f) => `  ${f}`).join("\n")}` : `${heading}: none`
-  return `Snapshot ${snap.id}\ncommit: ${snap.commit}\ntree: ${snap.tree}\nreason: ${snap.reason}\ncreated: ${snap.created_at}\nparent: ${parent}\n${changed}`
+  const origin = formatOrigin(snap)
+  return `Snapshot ${snap.id}\ncommit: ${snap.commit}\ntree: ${snap.tree}\nreason: ${snap.reason}\n${origin === "" ? "" : `origin: ${origin}\n`}created: ${snap.created_at}\nparent: ${parent}\n${changed}`
 }
 
 export interface AgentSnapDeps {
@@ -45,7 +55,7 @@ export function createAgentSnapPlugin(deps: AgentSnapDeps): Hooks {
 
   const baseline = async (dir: string, signal?: AbortSignal): Promise<void> => {
     try {
-      const snap = await client.create(dir, "session-start", signal)
+      const snap = await client.create(dir, "session-start", signal, { source: "session-start", host: HOST })
       log(`baseline snapshot ${snap.id} for ${dir}`)
     } catch (err) {
       if (signal?.aborted) return
@@ -62,7 +72,7 @@ export function createAgentSnapPlugin(deps: AgentSnapDeps): Hooks {
 
   const takeIdleSnapshot = async (sessionID: string, dir: string, signal: AbortSignal): Promise<void> => {
     try {
-      const snap = await client.create(dir, "session-idle", signal)
+      const snap = await client.create(dir, "session-idle", signal, { source: "session-idle", host: HOST })
       log(`idle snapshot ${snap.id} for ${dir}`)
     } catch (err) {
       if (signal.aborted) {
@@ -118,7 +128,7 @@ export function createAgentSnapPlugin(deps: AgentSnapDeps): Hooks {
         async execute(args, ctx) {
           if (closing) throw new Error("agent-snap plugin is closing")
           const cwd = args.cwd ?? ctx.directory
-          const snap = await client.create(cwd, args.reason ?? "manual", ctx.abort)
+          const snap = await client.create(cwd, args.reason ?? "manual", ctx.abort, { source: "tool", host: HOST })
           return formatCreated(snap)
         },
       }),

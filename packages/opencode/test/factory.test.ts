@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import type { SnapLike, SnapSnapshot, SnapSnapshotDetail } from "@agent-snap/core"
+import type { SnapLike, SnapOrigin, SnapSnapshot, SnapSnapshotDetail } from "@agent-snap/core"
 import { createAgentSnapPlugin } from "../src/factory.js"
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -22,6 +22,7 @@ interface CreateCall {
   cwd: string
   reason?: string
   signal?: AbortSignal
+  origin?: SnapOrigin
 }
 
 function fakeClient() {
@@ -29,8 +30,8 @@ function fakeClient() {
   const gates: Deferred[] = []
   let closed = false
   const client: SnapLike = {
-    async create(cwd, reason, signal) {
-      creates.push({ cwd, reason, signal })
+    async create(cwd, reason, signal, origin) {
+      creates.push({ cwd, reason, signal, origin })
       const gate = deferred()
       gates.push(gate)
       await new Promise<void>((resolve, reject) => {
@@ -173,8 +174,8 @@ test("takes a baseline snapshot when a session is created", async () => {
     await plugin.event?.({ event: createdEvent("s1", "/repo") })
     await sleep(10)
     assert.deepEqual(
-      { cwd: creates[0]?.cwd, reason: creates[0]?.reason },
-      { cwd: "/repo", reason: "session-start" },
+      { cwd: creates[0]?.cwd, reason: creates[0]?.reason, origin: creates[0]?.origin },
+      { cwd: "/repo", reason: "session-start", origin: { source: "session-start", host: "opencode" } },
     )
   } finally {
     releaseAll(gates)
@@ -193,8 +194,8 @@ test("coalesces idle events into one snapshot of the settled tree", async () => 
     await sleep(100)
     assert.equal(creates.length, 2, "exactly one idle snapshot")
     assert.deepEqual(
-      { cwd: creates[1]?.cwd, reason: creates[1]?.reason },
-      { cwd: "/repo", reason: "session-idle" },
+      { cwd: creates[1]?.cwd, reason: creates[1]?.reason, origin: creates[1]?.origin },
+      { cwd: "/repo", reason: "session-idle", origin: { source: "session-idle", host: "opencode" } },
     )
   } finally {
     releaseAll(gates)
@@ -322,6 +323,56 @@ test("dispose is a shutdown barrier: flushes idle and waits for in-flight work",
   assert.equal(disposed, true)
   assert.equal(closed(), true, "dispose must close the client")
   assert.equal(creates.length, 2)
+})
+
+test("agent_snap_create sends the tool source and the opencode host", async () => {
+  const { client, creates, gates } = fakeClient()
+  const plugin = createAgentSnapPlugin({ client, directory: "/fallback" })
+  try {
+    const pending = plugin.tool?.agent_snap_create.execute({ reason: "before" }, { directory: "/repo", abort: new AbortController().signal } as never)
+    await sleep(10)
+    releaseAll(gates)
+    await pending
+    assert.deepEqual(
+      { cwd: creates[0]?.cwd, reason: creates[0]?.reason, origin: creates[0]?.origin },
+      { cwd: "/repo", reason: "before", origin: { source: "tool", host: "opencode" } },
+    )
+  } finally {
+    releaseAll(gates)
+    await plugin.dispose?.()
+  }
+})
+
+test("list and get show a stored origin and omit an absent one", async () => {
+  const items: SnapSnapshot[] = [
+    { id: "b", commit: "c2", reason: "edit", created_at: "t2", source: "tool", host: "pi" },
+    { id: "a", commit: "c1", reason: "legacy", created_at: "t1" },
+    { id: "z", commit: "c0", reason: "cli", created_at: "t0", source: "cli" },
+  ]
+  const client: SnapLike = {
+    async create() {
+      throw new Error("unexpected create")
+    },
+    async list() {
+      return items
+    },
+    async get() {
+      return { ...detail, source: "session-idle", host: "opencode" }
+    },
+    async close() {},
+  }
+  const plugin = createAgentSnapPlugin({ client, directory: "/repo" })
+  const ctx = { directory: "/repo", abort: new AbortController().signal } as never
+  try {
+    assert.equal(
+      await plugin.tool?.agent_snap_list.execute({}, ctx),
+      "1. b — edit — t2 — tool via pi\n2. a — legacy — t1\n3. z — cli — t0 — cli",
+    )
+    const text = String(await plugin.tool?.agent_snap_get.execute({ id: detail.id }, ctx))
+    assert.ok(text.includes("\nreason: edit\norigin: session-idle via opencode\ncreated: "), text)
+  } finally {
+    await plugin.dispose?.()
+  }
 })
 
 test("tools pass the abort signal and reject while closing", async () => {

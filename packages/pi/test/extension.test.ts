@@ -135,9 +135,14 @@ test(
 
       const entries = readFakeLog(log)
       const creates = entries.filter((entry) => entry.event === "request" && entry.method === "snapshot.create")
-      const reasons = creates.map((entry) => (entry as { params?: { reason?: string } }).params?.reason)
-      assert.ok(reasons.includes("session-start"), `baseline missing: ${JSON.stringify(reasons)}`)
-      assert.equal(reasons.filter((reason) => reason === "agent-settled").length, 1, `settled snapshots must coalesce: ${JSON.stringify(reasons)}`)
+      assert.deepEqual(
+        creates.map((entry) => entry.params),
+        [
+          { cwd: dir, reason: "session-start", source: "session-start", host: "pi" },
+          { cwd: dir, reason: "agent-settled", source: "agent-settled", host: "pi" },
+        ],
+        "one baseline and one coalesced settled snapshot, each with its source and the pi host",
+      )
     } finally {
       if (previous === undefined) delete process.env.AGENT_SNAP_BIN
       else process.env.AGENT_SNAP_BIN = previous
@@ -147,6 +152,44 @@ test(
   },
 )
 
+test(
+  "the create tool and command send their own source and the pi host",
+  { skip: process.platform === "win32" ? "fake binary wrapper is POSIX-only" : false },
+  async () => {
+    const { dir, log, wrapper } = makeFakeBinary()
+    const previous = process.env.AGENT_SNAP_BIN
+    process.env.AGENT_SNAP_BIN = wrapper
+    process.env.FAKE_AGENT_SNAP_LOG = log
+    try {
+      const extension = await load()
+      const tool = extension.tools.get("agent_snap_create") as {
+        definition: { execute: (...args: unknown[]) => Promise<{ details: { snapshot: { source?: string; host?: string } } }> }
+      }
+      const command = extension.commands.get("agent-snap-create") as { handler: (args: string, ctx: unknown) => Promise<void> }
+      const sessionShutdown = extension.handlers.get("session_shutdown")?.[0]
+      const ctx = fakeCtx(dir)
+
+      const result = await tool.definition.execute("call-1", {}, undefined, undefined, ctx)
+      await command.handler(" before refactor ", ctx)
+      await sessionShutdown?.({ type: "session_shutdown", reason: "quit" }, ctx)
+
+      assert.deepEqual(result.details.snapshot.source, "tool")
+      assert.deepEqual(result.details.snapshot.host, "pi")
+      const creates = readFakeLog(log).filter((entry) => entry.event === "request" && entry.method === "snapshot.create")
+      assert.deepEqual(
+        creates.map((entry) => entry.params),
+        [
+          { cwd: dir, reason: "manual", source: "tool", host: "pi" },
+          { cwd: dir, reason: "before refactor", source: "command", host: "pi" },
+        ],
+      )
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_SNAP_BIN
+      else process.env.AGENT_SNAP_BIN = previous
+      delete process.env.FAKE_AGENT_SNAP_LOG
+    }
+  },
+)
 
 function makeFakeBinary() {
   const dir = mkdtempSync(join(tmpdir(), "agent-snap-pi-fake-"))
