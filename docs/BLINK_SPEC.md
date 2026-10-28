@@ -39,6 +39,7 @@ Normal Git commits are not sufficient for this purpose: committing affects the u
 - Create a snapshot of a Git working tree.
 - List snapshots for a repository, newest first.
 - Look up one snapshot by identifier and inspect its commit, tree, parent, and changed paths.
+- Record which host integration and which event or action asked for each snapshot.
 - Expose a CLI and a long-running JSONL protocol server.
 - Provide a type-safe TypeScript client for the Go core.
 - Integrate automatic and manual snapshot creation with OpenCode and Pi Coding Agent.
@@ -124,6 +125,7 @@ This workflow is a product requirement for the restore release, not an MVP behav
 - `.gitignore` MUST be honoured.
 - The operation MUST support repositories with and without an existing `HEAD` commit.
 - If no nonblank reason is supplied, the stored reason is `manual`.
+- The operation MAY receive origin values (`source`, `host`) and stores them as defined in FR-13.
 - New snapshot commits MUST use the latest Blink snapshot as their parent when one exists; otherwise, they MAY use the current `HEAD` as parent.
 - The operation MUST return the snapshot object defined in section 8.
 
@@ -161,7 +163,7 @@ This workflow is a product requirement for the restore release, not an MVP behav
 - The default list limit is 20.
 - JSONL callers may request an integer limit from 1 through 100; the CLI requires a positive integer.
 - Results MUST be sorted newest first by snapshot identifier.
-- Listed entries include identifier, commit, reason, and creation time. `changed_files` and `reused` are creation-result metadata and are not guaranteed on list results.
+- Listed entries include identifier, commit, reason, and creation time, plus `source` and `host` when the snapshot stores them. `changed_files` and `reused` are creation-result metadata and are not guaranteed on list results.
 
 ### FR-8: Core CLI
 
@@ -169,7 +171,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 
 | Command | Required behaviour |
 | --- | --- |
-| `create [reason] [--cwd <dir>]` | Create one snapshot and print JSON. `--reason` and positional reason are mutually exclusive. |
+| `create [reason] [--cwd <dir>]` | Create one snapshot with source `cli` and no host, and print JSON. `--reason` and positional reason are mutually exclusive. |
 | `list [--cwd <dir>] [--limit <n>]` | List snapshots and print JSON. |
 | `get <id> [--cwd <dir>]` | Print the snapshot detail object for one snapshot as JSON. |
 | `ping` | Print protocol status and version JSON. |
@@ -185,7 +187,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - Supported methods are `ping`, `snapshot.create`, `snapshot.list`, and `snapshot.get`.
 - Unknown methods return code `-32601`.
 - Malformed JSON returns `-32700`; invalid parameters return `-32602`; internal operation failures return `-32603`; a well-formed snapshot identifier with no snapshot in the worktree namespace returns `-32001`.
-- Parameter validation MUST reject unknown keys, missing `cwd`, blank `cwd`, malformed types, invalid list limits, and malformed snapshot identifiers.
+- Parameter validation MUST reject unknown keys, missing `cwd`, blank `cwd`, malformed types, invalid list limits, malformed snapshot identifiers, invalid origin values, and reasons that end with an origin paragraph (FR-13).
 
 ### FR-10: TypeScript client
 
@@ -196,6 +198,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - Timeout or cancellation MUST start teardown of the spawned process tree, preventing a timed-out request from later producing an unobserved checkpoint.
 - After a crash or close, the client MAY spawn a fresh transport lazily for a subsequent request.
 - `close()` MUST prevent a replacement transport from being created until close completes.
+- When a create that carries origin values is rejected with `-32602` and the message `unknown param: source` or `unknown param: host`, which is how a 0.1.0 binary answers, the client MUST retry that create once without origin values, under the same signal, and log that origin was dropped. The binary rejected the first request before resolving the repository, so the retry cannot duplicate a checkpoint. A plugin upgraded ahead of its binary therefore keeps taking snapshots.
 
 ### FR-11: Agent-host integrations
 
@@ -207,6 +210,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - `session.deleted` cancels work for that session and removes session state.
 - During disposal, reject new events, flush pending snapshots, abort remaining work, and close the core client.
 - Expose `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`, and `agent_snap_get(id, cwd?)` with caller cancellation support.
+- Send host `opencode` on every create, with source `session-start` (`session.created`), `session-idle` (`session.idle`), or `tool` (`agent_snap_create`).
 
 #### Pi Coding Agent
 
@@ -214,6 +218,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - At `agent_settled`, create an `agent-settled` snapshot through the same 1.5-second coalescing policy.
 - At `session_shutdown`, flush queued work, dispose the scheduler, await tracked baselines, and close the client.
 - Expose `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`, `agent_snap_get(id, cwd?)`, `agent-snap-create`, `agent-snap-list`, and `agent-snap-get <id>`.
+- Send host `pi` on every create, with source `session-start` (`session_start`), `agent-settled` (`agent_settled`), `tool` (`agent_snap_create`), or `command` (`agent-snap-create`).
 
 ### FR-12: Snapshot lookup
 
@@ -223,6 +228,28 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - Lookup MUST read objects with Git replace objects disabled, and MUST parse only Git's standard output, never its diagnostics. Unparseable Git output is an internal error, not "not found".
 - Lookup MUST return the snapshot detail object defined in section 8.2. `changed_files` lists paths changed between the snapshot and its parent (or every path when there is no parent), is capped at 1000 entries, and sets `changed_files_truncated: true` when more than 1000 paths changed.
 - Lookup MUST NOT write the index, refs, objects, `HEAD`, or working-tree files.
+
+### FR-13: Snapshot origin
+
+- `snapshot.create` accepts two optional origin values. `source` names the event or action that asked for the snapshot. `host` names the integration that sent the request.
+- An origin value MUST be 1 to 64 characters of lowercase ASCII letters and digits in hyphen-separated words, starting with a letter: `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`. Any other value, including a blank string, is invalid.
+- Origin values are reported by the caller. They are provenance hints for display and filtering, not authenticated facts.
+- Origin values MUST NOT carry session, user, machine, or path identifiers. Session identifiers are not stored.
+- When a new snapshot has at least one origin value, its commit message ends with an origin paragraph: a blank line, then `Agent-Snap-Source: <source>` and `Agent-Snap-Host: <host>`, in that order, each only when supplied. Without origin values the message is the 0.1.0 form, `agent-snap: <reason>`.
+- A reader treats the final paragraph of the message as origin only when every line in it is `Agent-Snap-<Key>: <value>`, where `<Key>` is one or more capitalized ASCII words joined by hyphens, `<value>` is a valid origin value, and no key repeats. Keys other than `Source` and `Host` are ignored, so a later release can add keys with origin-value syntax without a schema version. Any other final paragraph is part of the reason.
+- Blink writes and parses the origin paragraph itself. It MUST NOT depend on Git's trailer parsing or trailer configuration.
+- A reason whose final paragraph would be read as origin is invalid, so no reason Blink stores can be read back as origin.
+- Deduplication ignores origin. A reused snapshot reports the origin stored on it, not the origin of the request that reused it.
+- Create, list, and lookup results include `source` and `host` when the snapshot stores them, and omit them otherwise. Snapshots written by 0.1.0 have no origin.
+- A 0.1.0 reader shows a newer snapshot's origin paragraph as part of its reason. Nothing else about the snapshot changes for that reader.
+
+Values this repository sends:
+
+| Caller | `host` | `source` |
+| --- | --- | --- |
+| CLI `create` | none | `cli` |
+| OpenCode plugin | `opencode` | `session-start`, `session-idle`, `tool` |
+| Pi extension | `pi` | `session-start`, `agent-settled`, `tool`, `command` |
 
 ## 7. Technical Architecture
 
@@ -248,7 +275,16 @@ Pi extension ────┘                                                │
 
 A Blink snapshot is a Git commit containing the snapshot tree. It is intentionally not attached to a normal branch. Its item ref preserves discoverability and its worktree-specific `latest` ref establishes the checkpoint chain.
 
-The commit message is `agent-snap: <reason>`. Commit author and committer identity are fixed to the local product identity (`agent-snap <agent-snap@localhost>` in the current implementation), and timestamps are in UTC.
+The commit message is `agent-snap: <reason>`, followed by the origin paragraph from FR-13 when the snapshot has origin values:
+
+```text
+agent-snap: before-refactor
+
+Agent-Snap-Source: tool
+Agent-Snap-Host: pi
+```
+
+Commit author and committer identity are fixed to the local product identity (`agent-snap <agent-snap@localhost>` in the current implementation), and timestamps are in UTC.
 
 ## 8. Data Contracts
 
@@ -260,6 +296,8 @@ The commit message is `agent-snap: <reason>`. Commit author and committer identi
   "commit": "abc123def456...",
   "reason": "before-refactor",
   "created_at": "2026-08-14T12:00:00Z",
+  "source": "tool",
+  "host": "pi",
   "changed_files": ["src/main.go"],
   "reused": false
 }
@@ -269,8 +307,10 @@ The commit message is `agent-snap: <reason>`. Commit author and committer identi
 | --- | --- | --- |
 | `id` | string | Timestamp plus the first 12 characters of the commit ID; unique checkpoint reference within its worktree namespace. |
 | `commit` | string | Full Git commit object ID. |
-| `reason` | string | Caller-supplied or default checkpoint reason. |
+| `reason` | string | Caller-supplied or default checkpoint reason, without the origin paragraph. |
 | `created_at` | RFC 3339 timestamp | Creation time of the snapshot. |
+| `source` | string, optional | Stored origin `source` (FR-13). Absent when the snapshot stores none. |
+| `host` | string, optional | Stored origin `host` (FR-13). Absent when the snapshot stores none. |
 | `changed_files` | string array, optional | Paths changed between the new snapshot and its parent; supplied for a newly created snapshot. |
 | `reused` | boolean, optional | `true` if the current tree equals the latest checkpoint and Blink reused that checkpoint. |
 
@@ -294,6 +334,7 @@ Returned by lookup (`snapshot.get`).
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `id`, `commit`, `reason`, `created_at` | | As in list results: `created_at` is the snapshot commit's UTC time, to the second. |
+| `source`, `host` | string, optional | As in the snapshot object. |
 | `tree` | string | Full Git tree object ID of the snapshot. |
 | `parent` | string, optional | Full ID of the parent commit: the previous checkpoint, or `HEAD` when the snapshot started the chain. Absent when the snapshot has no parent. |
 | `parent_id` | string, optional | Snapshot identifier of the parent when the parent is a snapshot in the same worktree namespace. |
@@ -305,7 +346,7 @@ Returned by lookup (`snapshot.get`).
 Create:
 
 ```json
-{"id":1,"method":"snapshot.create","params":{"cwd":"/path/to/repo","reason":"before refactor"}}
+{"id":1,"method":"snapshot.create","params":{"cwd":"/path/to/repo","reason":"before refactor","source":"tool","host":"pi"}}
 ```
 
 List:
