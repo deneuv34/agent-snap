@@ -22,7 +22,7 @@ func TestCreateRejectsSymbolicSnapshotRefs(t *testing.T) {
 	// An attacker (or accident) points our latest ref at a real branch.
 	git(t, dir, "symbolic-ref", store.latestRef(), "refs/heads/main")
 
-	if _, err := store.Create(context.Background(), "must-refuse"); err == nil || !strings.Contains(err.Error(), "symbolic") {
+	if _, err := store.Create(context.Background(), "must-refuse", Origin{}); err == nil || !strings.Contains(err.Error(), "symbolic") {
 		t.Fatalf("create must refuse a symbolic snapshot ref, got: %v", err)
 	}
 	if got := git(t, dir, "rev-parse", "HEAD"); got != headBefore {
@@ -34,7 +34,7 @@ func TestCreateRejectsSymbolicSnapshotRefs(t *testing.T) {
 
 	// After removing the symref, creates work again.
 	git(t, dir, "update-ref", "--no-deref", "-d", store.latestRef())
-	if _, err := store.Create(context.Background(), "after-cleanup"); err != nil {
+	if _, err := store.Create(context.Background(), "after-cleanup", Origin{}); err != nil {
 		t.Fatalf("create after removing symref: %v", err)
 	}
 	if got := git(t, dir, "rev-parse", "refs/heads/main"); got != headBefore {
@@ -58,7 +58,7 @@ func TestScratchIndexNeverInsideRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := store.Create(context.Background(), "no-self-capture")
+	snap, err := store.Create(context.Background(), "no-self-capture", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,14 +102,14 @@ func TestSha256Repositories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := store.Create(context.Background(), "sha256-one")
+	first, err := store.Create(context.Background(), "sha256-one", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(first.Commit) != 64 {
 		t.Fatalf("expected 64-char sha256 commit, got %d chars: %s", len(first.Commit), first.Commit)
 	}
-	second, err := store.Create(context.Background(), "sha256-two")
+	second, err := store.Create(context.Background(), "sha256-two", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestSha256Repositories(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	third, err := store.Create(context.Background(), "sha256-three")
+	third, err := store.Create(context.Background(), "sha256-three", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestRootSnapshotListsAllFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := store.Create(context.Background(), "root")
+	snap, err := store.Create(context.Background(), "root", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestChangedFilesPreserveLeadingWhitespaceAndReasonTerminalNewlines(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := store.Create(context.Background(), reason)
+	snap, err := store.Create(context.Background(), reason, Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestRepoPathWithTrailingWhitespace(t *testing.T) {
 	if gotRepo != wantRepo {
 		t.Fatalf("repo path mangled: got %q want %q", store.Repo(), dir)
 	}
-	snap, err := store.Create(context.Background(), "trailing-space-repo")
+	snap, err := store.Create(context.Background(), "trailing-space-repo", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}

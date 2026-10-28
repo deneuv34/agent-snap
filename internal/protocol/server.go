@@ -159,7 +159,7 @@ func createSnapshot(ctx context.Context, params map[string]any) (any, *Error) {
 	if err != nil {
 		return nil, &Error{Code: CodeInternalError, Message: err.Error()}
 	}
-	snap, err := store.Create(ctx, reason)
+	snap, err := store.Create(ctx, reason, snapshot.Origin{})
 	if err != nil {
 		return nil, &Error{Code: CodeInternalError, Message: err.Error()}
 	}

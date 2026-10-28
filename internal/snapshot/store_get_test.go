@@ -36,7 +36,7 @@ func newStore(t *testing.T, dir string) *Store {
 
 func create(t *testing.T, store *Store, reason string) Snapshot {
 	t.Helper()
-	snap, err := store.Create(context.Background(), reason)
+	snap, err := store.Create(context.Background(), reason, Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}

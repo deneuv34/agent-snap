@@ -64,7 +64,7 @@ func run(args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		snap, err := store.Create(context.Background(), reason)
+		snap, err := store.Create(context.Background(), reason, snapshot.Origin{})
 		if err != nil {
 			return err
 		}

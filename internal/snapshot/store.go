@@ -24,34 +24,46 @@ const (
 	identityEmail     = "agent-snap@localhost"
 	addAttempts       = 5
 	changedFilesLimit = 1000
+	originLimit       = 64
 )
 
 var (
-	ErrInvalidID = errors.New("invalid snapshot id")
-	ErrNotFound  = errors.New("snapshot not found")
-	idPattern    = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}\.[0-9]{9}Z-[0-9a-f]{12}$`)
-	lookupEnv    = []string{"GIT_NO_REPLACE_OBJECTS=1"}
+	ErrInvalidID     = errors.New("invalid snapshot id")
+	ErrInvalidReason = errors.New("invalid snapshot reason")
+	ErrInvalidOrigin = errors.New("invalid snapshot origin")
+	ErrNotFound      = errors.New("snapshot not found")
+	idPattern        = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}\.[0-9]{9}Z-[0-9a-f]{12}$`)
+	originPattern    = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
+	originLine       = regexp.MustCompile(`^Agent-Snap-([A-Z][a-z0-9]*(?:-[A-Z][a-z0-9]*)*): (.*)$`)
+	lookupEnv        = []string{"GIT_NO_REPLACE_OBJECTS=1"}
 )
 
+type Origin struct {
+	Source string `json:"source,omitempty"`
+	Host   string `json:"host,omitempty"`
+}
+
 type Snapshot struct {
-	ID           string    `json:"id"`
-	Commit       string    `json:"commit"`
-	Reason       string    `json:"reason"`
-	CreatedAt    time.Time `json:"created_at"`
-	ChangedFiles []string  `json:"changed_files,omitempty"`
-	Reused       bool      `json:"reused,omitempty"`
+	ID        string    `json:"id"`
+	Commit    string    `json:"commit"`
+	Reason    string    `json:"reason"`
+	CreatedAt time.Time `json:"created_at"`
+	Origin
+	ChangedFiles []string `json:"changed_files,omitempty"`
+	Reused       bool     `json:"reused,omitempty"`
 }
 
 type Detail struct {
-	ID                    string    `json:"id"`
-	Commit                string    `json:"commit"`
-	Reason                string    `json:"reason"`
-	CreatedAt             time.Time `json:"created_at"`
-	Tree                  string    `json:"tree"`
-	Parent                string    `json:"parent,omitempty"`
-	ParentID              string    `json:"parent_id,omitempty"`
-	ChangedFiles          []string  `json:"changed_files"`
-	ChangedFilesTruncated bool      `json:"changed_files_truncated,omitempty"`
+	ID        string    `json:"id"`
+	Commit    string    `json:"commit"`
+	Reason    string    `json:"reason"`
+	CreatedAt time.Time `json:"created_at"`
+	Origin
+	Tree                  string   `json:"tree"`
+	Parent                string   `json:"parent,omitempty"`
+	ParentID              string   `json:"parent_id,omitempty"`
+	ChangedFiles          []string `json:"changed_files"`
+	ChangedFilesTruncated bool     `json:"changed_files_truncated,omitempty"`
 }
 
 // ValidID reports whether id has the shape Create mints. Get checks it before
@@ -59,6 +71,76 @@ type Detail struct {
 // worktree's items namespace or smuggle a for-each-ref pattern.
 func ValidID(id string) bool {
 	return idPattern.MatchString(id)
+}
+
+// ValidOrigin reports whether value may be stored as an origin source or host.
+func ValidOrigin(value string) bool {
+	return len(value) <= originLimit && originPattern.MatchString(value)
+}
+
+// ValidReason reports whether reason reads back unchanged. A reason whose last
+// paragraph parses as an origin paragraph would be read as origin, so Create
+// refuses it.
+func ValidReason(reason string) bool {
+	_, _, ok := splitOrigin(reason)
+	return !ok
+}
+
+func checkOrigin(origin Origin) error {
+	for _, value := range []string{origin.Source, origin.Host} {
+		if value != "" && !ValidOrigin(value) {
+			return fmt.Errorf("%w: %q", ErrInvalidOrigin, value)
+		}
+	}
+	return nil
+}
+
+func commitMessage(reason string, origin Origin) string {
+	message := messagePrefix + reason
+	if origin == (Origin{}) {
+		return message
+	}
+	message += "\n"
+	if origin.Source != "" {
+		message += "\nAgent-Snap-Source: " + origin.Source
+	}
+	if origin.Host != "" {
+		message += "\nAgent-Snap-Host: " + origin.Host
+	}
+	return message
+}
+
+func parseMessage(message string) (string, Origin) {
+	reason, origin, _ := splitOrigin(strings.TrimPrefix(message, messagePrefix))
+	return reason, origin
+}
+
+// splitOrigin separates a trailing origin paragraph from the reason. Blink
+// parses the paragraph itself because Git's trailer parsing follows the
+// user's trailer.* configuration. Unknown keys are skipped so keys a later
+// release adds stay out of the reason; a repeated key, an invalid value, or
+// any other line makes the paragraph part of the reason.
+func splitOrigin(body string) (string, Origin, bool) {
+	cut := strings.LastIndex(body, "\n\n")
+	if cut < 0 {
+		return body, Origin{}, false
+	}
+	var origin Origin
+	seen := map[string]bool{}
+	for _, line := range strings.Split(body[cut+2:], "\n") {
+		m := originLine.FindStringSubmatch(line)
+		if m == nil || seen[m[1]] || !ValidOrigin(m[2]) {
+			return body, Origin{}, false
+		}
+		seen[m[1]] = true
+		switch m[1] {
+		case "Source":
+			origin.Source = m[2]
+		case "Host":
+			origin.Host = m[2]
+		}
+	}
+	return body[:cut], origin, true
 }
 
 type Store struct {
@@ -111,9 +193,15 @@ func (s *Store) latestRef() string {
 	return refsPrefix + s.ns + latestSuffix
 }
 
-func (s *Store) Create(ctx context.Context, reason string) (Snapshot, error) {
+func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snapshot, error) {
 	if strings.TrimSpace(reason) == "" {
 		reason = "manual"
+	}
+	if !ValidReason(reason) {
+		return Snapshot{}, fmt.Errorf("%w: its last paragraph reads as an origin paragraph", ErrInvalidReason)
+	}
+	if err := checkOrigin(origin); err != nil {
+		return Snapshot{}, err
 	}
 
 	tmpDir, cleanup, err := createScratchIndex(s.repo)
@@ -175,7 +263,7 @@ func (s *Store) Create(ctx context.Context, reason string) (Snapshot, error) {
 			args = append(args, "-p", parent)
 		}
 		args = append(args, "-F", "-")
-		commit, err := s.gitStdin(ctx, append(scratchEnv, authorEnv()...), messagePrefix+reason, args...)
+		commit, err := s.gitStdin(ctx, append(scratchEnv, authorEnv()...), commitMessage(reason, origin), args...)
 		if err != nil {
 			return Snapshot{}, err
 		}
@@ -195,7 +283,7 @@ func (s *Store) Create(ctx context.Context, reason string) (Snapshot, error) {
 			if err != nil {
 				return Snapshot{}, err
 			}
-			return Snapshot{ID: id, Commit: commit, Reason: reason, CreatedAt: now, ChangedFiles: changed}, nil
+			return Snapshot{ID: id, Commit: commit, Reason: reason, CreatedAt: now, Origin: origin, ChangedFiles: changed}, nil
 		}
 	}
 }
@@ -353,10 +441,8 @@ func (s *Store) List(ctx context.Context, limit int) ([]Snapshot, error) {
 			continue
 		}
 		created, _ := time.Parse(time.RFC3339, fields[3])
-		items = append(items, Snapshot{
-			ID: fields[0], Commit: fields[1],
-			Reason: strings.TrimPrefix(fields[2], messagePrefix), CreatedAt: created,
-		})
+		reason, origin := parseMessage(fields[2])
+		items = append(items, Snapshot{ID: fields[0], Commit: fields[1], Reason: reason, CreatedAt: created, Origin: origin})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].ID > items[j].ID })
 	if len(items) > limit {
@@ -382,7 +468,8 @@ func (s *Store) snapshotForCommit(ctx context.Context, commit string, reused boo
 		return Snapshot{}, errors.New("snapshot ref not found")
 	}
 	created, _ := time.Parse(time.RFC3339, fields[2])
-	return Snapshot{ID: fields[0], Commit: commit, Reason: strings.TrimPrefix(fields[1], messagePrefix), CreatedAt: created, Reused: reused}, nil
+	reason, origin := parseMessage(fields[1])
+	return Snapshot{ID: fields[0], Commit: commit, Reason: reason, CreatedAt: created, Origin: origin, Reused: reused}, nil
 }
 
 // Get resolves id inside this worktree's namespace only, and returns it only
@@ -410,7 +497,8 @@ func (s *Store) Get(ctx context.Context, id string) (Detail, error) {
 	}
 
 	created, _ := time.Parse(time.RFC3339, found.created)
-	detail := Detail{ID: id, Commit: found.commit, Reason: strings.TrimPrefix(found.message, messagePrefix), CreatedAt: created, Tree: found.tree}
+	reason, origin := parseMessage(found.message)
+	detail := Detail{ID: id, Commit: found.commit, Reason: reason, CreatedAt: created, Origin: origin, Tree: found.tree}
 	if parents := strings.Fields(found.parents); len(parents) == 1 {
 		detail.Parent = parents[0]
 		if detail.ParentID, err = s.snapshotIDOf(ctx, detail.Parent); err != nil {

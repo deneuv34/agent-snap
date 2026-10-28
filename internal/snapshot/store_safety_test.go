@@ -23,7 +23,7 @@ func TestCreateWorksInRepoWithoutCommits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := store.Create(context.Background(), "first-snapshot")
+	snap, err := store.Create(context.Background(), "first-snapshot", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestCreateWorksInRepoWithoutCommits(t *testing.T) {
 		t.Fatalf("content not captured: %q", got)
 	}
 
-	second, err := store.Create(context.Background(), "second-snapshot")
+	second, err := store.Create(context.Background(), "second-snapshot", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestCreateIgnoresInheritedGitRepositoryEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New must resolve repoA despite inherited git env: %v", err)
 	}
-	snap, err := store.Create(context.Background(), "env-test")
+	snap, err := store.Create(context.Background(), "env-test", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestCreateKeepsIndexInPrivateDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := store.Create(context.Background(), "private-index")
+	snap, err := store.Create(context.Background(), "private-index", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,13 +207,13 @@ func TestListPreservesReasonWithSpecialChars(t *testing.T) {
 		t.Fatal(err)
 	}
 	reason := "checkpoint | after pipe\nsecond line & more"
-	if _, err := store.Create(context.Background(), reason); err != nil {
+	if _, err := store.Create(context.Background(), reason, Origin{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(context.Background(), "second"); err != nil {
+	if _, err := store.Create(context.Background(), "second", Origin{}); err != nil {
 		t.Fatal(err)
 	}
 	items, err := store.List(context.Background(), 10)
@@ -244,7 +244,7 @@ func TestChangedFilesPreserveUnusualNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := store.Create(context.Background(), "weird-names")
+	snap, err := store.Create(context.Background(), "weird-names", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,11 +275,11 @@ func TestLinkedWorktreesHaveIndependentSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapMain, err := storeMain.Create(context.Background(), "main-snap")
+	snapMain, err := storeMain.Create(context.Background(), "main-snap", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapLinked, err := storeLinked.Create(context.Background(), "linked-snap")
+	snapLinked, err := storeLinked.Create(context.Background(), "linked-snap", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +329,7 @@ func TestConcurrentCreatesKeepLinearChain(t *testing.T) {
 				errs[i] = err
 				return
 			}
-			snap, err := stores[i].Create(context.Background(), fmt.Sprintf("concurrent-%d", i))
+			snap, err := stores[i].Create(context.Background(), fmt.Sprintf("concurrent-%d", i), Origin{})
 			if err != nil {
 				errs[i] = err
 				return
@@ -379,7 +379,7 @@ func TestCommitRefsRejectsStaleLatestValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := store.Create(context.Background(), "one")
+	snap, err := store.Create(context.Background(), "one", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +446,7 @@ func TestCreateRetriesAConcurrentObjectWriteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := s.Create(context.Background(), "race")
+	snap, err := s.Create(context.Background(), "race", Origin{})
 	if err != nil {
 		t.Fatalf("create should survive a transient object write failure: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestCreateGivesUpOnAPersistentObjectWriteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Create(context.Background(), "race"); err == nil || !strings.Contains(err.Error(), "failed to insert into database") {
+	if _, err := s.Create(context.Background(), "race", Origin{}); err == nil || !strings.Contains(err.Error(), "failed to insert into database") {
 		t.Fatalf("create error = %v, want the object write failure", err)
 	}
 	if got := adds(); got != addAttempts {
@@ -486,7 +486,7 @@ func TestCreateDoesNotRetryOtherAddFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Create(context.Background(), "locked"); err == nil {
+	if _, err := s.Create(context.Background(), "locked", Origin{}); err == nil {
 		t.Fatal("create should fail")
 	}
 	if got := adds(); got != 1 {

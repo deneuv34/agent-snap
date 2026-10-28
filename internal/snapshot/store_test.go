@@ -53,7 +53,7 @@ func TestCreateCapturesWorkingTreeWithoutChangingHeadOrIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, err := store.Create(context.Background(), "turn-end")
+	snap, err := store.Create(context.Background(), "turn-end", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,11 +81,11 @@ func TestCreateDeduplicatesUnchangedTreeAndListReturnsNewestFirst(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := store.Create(context.Background(), "baseline")
+	first, err := store.Create(context.Background(), "baseline", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := store.Create(context.Background(), "idle")
+	second, err := store.Create(context.Background(), "idle", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestCreateDeduplicatesUnchangedTreeAndListReturnsNewestFirst(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	third, err := store.Create(context.Background(), "after-edit")
+	third, err := store.Create(context.Background(), "after-edit", Origin{})
 	if err != nil {
 		t.Fatal(err)
 	}
