@@ -53,12 +53,63 @@ test("the official Pi loader loads the built extension and registers tools, hand
   const extension = await load()
   assert.ok(extension.tools.has("agent_snap_create"), "missing create tool")
   assert.ok(extension.tools.has("agent_snap_list"), "missing list tool")
+  assert.ok(extension.tools.has("agent_snap_get"), "missing get tool")
   assert.ok(extension.handlers.has("session_start"), "missing session_start baseline handler")
   assert.ok(extension.handlers.has("agent_settled"), "missing agent_settled handler")
   assert.ok(extension.handlers.has("session_shutdown"), "missing session_shutdown cleanup handler")
   assert.ok(extension.commands.has("agent-snap-create"), "missing create command")
   assert.ok(extension.commands.has("agent-snap-list"), "missing list command")
+  assert.ok(extension.commands.has("agent-snap-get"), "missing get command")
 })
+
+test(
+  "the get tool and command describe a snapshot through the official loader",
+  { skip: process.platform === "win32" ? "fake binary wrapper is POSIX-only" : false },
+  async () => {
+    const { dir, log, wrapper } = makeFakeBinary()
+    const previous = process.env.AGENT_SNAP_BIN
+    process.env.AGENT_SNAP_BIN = wrapper
+    process.env.FAKE_AGENT_SNAP_LOG = log
+    const id = "20260101T000000.000000000Z-0123456789ab"
+    try {
+      const extension = await load()
+      const tool = extension.tools.get("agent_snap_get") as {
+        definition: { execute: (...args: unknown[]) => Promise<{ content: Array<{ text: string }> }> }
+      }
+      const command = extension.commands.get("agent-snap-get") as { handler: (args: string, ctx: unknown) => Promise<void> }
+      const sessionShutdown = extension.handlers.get("session_shutdown")?.[0]
+      const notes: string[] = []
+      const base = fakeCtx(dir)
+      const ctx = { ...base, ui: { ...base.ui, notify: (message: string) => notes.push(message) } }
+
+      const result = await tool.definition.execute("call-1", { id }, undefined, undefined, ctx)
+      await command.handler(` ${id} `, ctx)
+      await sessionShutdown?.({ type: "session_shutdown", reason: "quit" }, ctx)
+
+      const text = result.content[0]?.text ?? ""
+      assert.equal(
+        text,
+        `Snapshot ${id}\ncommit: 0123456789ab0000000000000000000000000000\ntree: 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n` +
+          "reason: manual\ncreated: 2026-01-01T00:00:00Z\n" +
+          "parent: fedcba9876540000000000000000000000000000 (snapshot 20251231T000000.000000000Z-fedcba987654)\n" +
+          "changed files:\n  src/a.ts",
+      )
+      assert.deepEqual(notes, [text])
+      const gets = readFakeLog(log).filter((entry) => entry.event === "request" && entry.method === "snapshot.get")
+      assert.deepEqual(
+        gets.map((entry) => entry.params),
+        [
+          { cwd: dir, id },
+          { cwd: dir, id },
+        ],
+      )
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_SNAP_BIN
+      else process.env.AGENT_SNAP_BIN = previous
+      delete process.env.FAKE_AGENT_SNAP_LOG
+    }
+  },
+)
 
 test(
   "lifecycle through the official loader with a recording fake binary",

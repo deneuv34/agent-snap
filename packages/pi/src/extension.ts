@@ -1,6 +1,6 @@
 import { Type } from "@earendil-works/pi-ai"
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { createCoalescedScheduler, SnapClient, type SnapLike, type SnapSnapshot } from "@agent-snap/core"
+import { createCoalescedScheduler, SnapClient, type SnapLike, type SnapSnapshot, type SnapSnapshotDetail } from "@agent-snap/core"
 
 const IDLE_COALESCE_MS = 1500
 
@@ -15,6 +15,13 @@ function formatList(items: SnapSnapshot[]): string {
   return items
     .map((item, index) => `${index + 1}. ${item.id} — ${item.reason} — ${item.created_at}${item.reused === true ? " (reused)" : ""}`)
     .join("\n")
+}
+
+function formatDetail(snap: SnapSnapshotDetail): string {
+  const parent = snap.parent === undefined ? "none" : `${snap.parent} (${snap.parent_id === undefined ? "commit" : `snapshot ${snap.parent_id}`})`
+  const heading = snap.changed_files_truncated === true ? `changed files (first ${snap.changed_files.length})` : "changed files"
+  const changed = snap.changed_files.length > 0 ? `${heading}:\n${snap.changed_files.map((f) => `  ${f}`).join("\n")}` : `${heading}: none`
+  return `Snapshot ${snap.id}\ncommit: ${snap.commit}\ntree: ${snap.tree}\nreason: ${snap.reason}\ncreated: ${snap.created_at}\nparent: ${parent}\n${changed}`
 }
 
 export interface AgentSnapExtensionDeps {
@@ -82,6 +89,26 @@ export function createAgentSnapExtension(deps: AgentSnapExtensionDeps): (pi: Ext
     },
   })
 
+  const getTool = defineTool({
+    name: "agent_snap_get",
+    label: "Agent Snap: Describe snapshot",
+    description:
+      "Describe one agent-snap snapshot by id: its commit, tree, parent, and the files changed since its parent. Read-only. Snapshot ids come from agent_snap_list or agent_snap_create.",
+    promptSnippet: "agent_snap_get(id, cwd?) - describe one agent-snap snapshot: commit, tree, parent, changed files",
+    parameters: Type.Object({
+      id: Type.String({ description: "Snapshot id from agent_snap_list or agent_snap_create" }),
+      cwd: Type.Optional(Type.String({ description: "Repository directory; defaults to the session directory" })),
+    }),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const cwd = params.cwd ?? ctx.cwd
+      const snapshot = await client.get(cwd, params.id, signal)
+      return {
+        content: [{ type: "text", text: formatDetail(snapshot) }],
+        details: { snapshot },
+      }
+    },
+  })
+
   return function agentSnapExtension(pi: ExtensionAPI): void {
     pi.on("session_start", async (_event, ctx) => {
       // Barrier: the session does not proceed until the baseline snapshot
@@ -116,6 +143,7 @@ export function createAgentSnapExtension(deps: AgentSnapExtensionDeps): (pi: Ext
 
     pi.registerTool(createTool)
     pi.registerTool(listTool)
+    pi.registerTool(getTool)
 
     pi.registerCommand("agent-snap-create", {
       description: "Create an agent-snap snapshot of the working tree (optional reason as argument)",
@@ -131,6 +159,14 @@ export function createAgentSnapExtension(deps: AgentSnapExtensionDeps): (pi: Ext
       handler: async (_args, ctx) => {
         const snapshots = await client.list(ctx.cwd, 20)
         ctx.ui.notify(formatList(snapshots).split("\n").slice(0, 5).join("\n"), "info")
+      },
+    })
+
+    pi.registerCommand("agent-snap-get", {
+      description: "Describe one agent-snap snapshot by id (id as argument)",
+      handler: async (args, ctx) => {
+        const snapshot = await client.get(ctx.cwd, args.trim())
+        ctx.ui.notify(formatDetail(snapshot).split("\n").slice(0, 12).join("\n"), "info")
       },
     })
   }

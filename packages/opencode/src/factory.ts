@@ -1,6 +1,6 @@
 import { tool } from "@opencode-ai/plugin"
 import type { Hooks } from "@opencode-ai/plugin"
-import { createCoalescedScheduler, type SnapLike, type SnapSnapshot } from "@agent-snap/core"
+import { createCoalescedScheduler, type SnapLike, type SnapSnapshot, type SnapSnapshotDetail } from "@agent-snap/core"
 
 function formatCreated(snap: SnapSnapshot): string {
   const reused = snap.reused === true ? " (working tree unchanged — reused previous snapshot)" : ""
@@ -13,6 +13,13 @@ function formatList(items: SnapSnapshot[]): string {
   return items
     .map((item, index) => `${index + 1}. ${item.id} — ${item.reason} — ${item.created_at}${item.reused === true ? " (reused)" : ""}`)
     .join("\n")
+}
+
+function formatDetail(snap: SnapSnapshotDetail): string {
+  const parent = snap.parent === undefined ? "none" : `${snap.parent} (${snap.parent_id === undefined ? "commit" : `snapshot ${snap.parent_id}`})`
+  const heading = snap.changed_files_truncated === true ? `changed files (first ${snap.changed_files.length})` : "changed files"
+  const changed = snap.changed_files.length > 0 ? `${heading}:\n${snap.changed_files.map((f) => `  ${f}`).join("\n")}` : `${heading}: none`
+  return `Snapshot ${snap.id}\ncommit: ${snap.commit}\ntree: ${snap.tree}\nreason: ${snap.reason}\ncreated: ${snap.created_at}\nparent: ${parent}\n${changed}`
 }
 
 export interface AgentSnapDeps {
@@ -125,6 +132,19 @@ export function createAgentSnapPlugin(deps: AgentSnapDeps): Hooks {
           if (closing) throw new Error("agent-snap plugin is closing")
           const items = await client.list(args.cwd ?? ctx.directory, args.limit ?? 20, ctx.abort)
           return formatList(items)
+        },
+      }),
+      agent_snap_get: tool({
+        description:
+          "Describe one agent-snap snapshot by id: its commit, tree, parent, and the files changed since its parent. Read-only. Snapshot ids come from agent_snap_list or agent_snap_create.",
+        args: {
+          id: tool.schema.string().describe("Snapshot id from agent_snap_list or agent_snap_create"),
+          cwd: tool.schema.string().describe("Repository directory; defaults to the session directory").optional(),
+        },
+        async execute(args, ctx) {
+          if (closing) throw new Error("agent-snap plugin is closing")
+          const snap = await client.get(args.cwd ?? ctx.directory, args.id, ctx.abort)
+          return formatDetail(snap)
         },
       }),
     },

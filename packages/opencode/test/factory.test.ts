@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import type { SnapLike, SnapSnapshot } from "@agent-snap/core"
+import type { SnapLike, SnapSnapshot, SnapSnapshotDetail } from "@agent-snap/core"
 import { createAgentSnapPlugin } from "../src/factory.js"
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -57,11 +57,43 @@ function fakeClient() {
     async list() {
       return []
     },
+    async get() {
+      throw new Error("unexpected get")
+    },
     async close() {
       closed = true
     },
   }
   return { client, creates, gates, closed: () => closed }
+}
+
+function detailClient(detail: SnapSnapshotDetail) {
+  const gets: Array<{ cwd: string; id: string; signal?: AbortSignal }> = []
+  const client: SnapLike = {
+    async create() {
+      throw new Error("unexpected create")
+    },
+    async list() {
+      return []
+    },
+    async get(cwd, id, signal) {
+      gets.push({ cwd, id, signal })
+      return detail
+    },
+    async close() {},
+  }
+  return { client, gets }
+}
+
+const detail: SnapSnapshotDetail = {
+  id: "20261028T120000.000000000Z-0123456789ab",
+  commit: "0123456789ab",
+  reason: "edit",
+  created_at: "2026-10-28T12:00:00Z",
+  tree: "4b825dc642cb",
+  parent: "fedcba987654",
+  parent_id: "20261028T115500.000000000Z-fedcba987654",
+  changed_files: ["src/a.ts", "src/b.ts"],
 }
 
 function releaseAll(gates: Deferred[]) {
@@ -85,12 +117,53 @@ function deletedEvent(id: string) {
   return { type: "session.deleted", properties: { info: { id } } } as never
 }
 
-test("exposes create and list tools", async () => {
+test("exposes create, list, and get tools", async () => {
   const { client } = fakeClient()
   const plugin = createAgentSnapPlugin({ client, directory: "/repo" })
   assert.ok(plugin.tool?.agent_snap_create)
   assert.ok(plugin.tool?.agent_snap_list)
+  assert.ok(plugin.tool?.agent_snap_get)
   await plugin.dispose?.()
+})
+
+test("agent_snap_get describes a snapshot and passes cwd, id, and the abort signal", async () => {
+  const { client, gets } = detailClient(detail)
+  const plugin = createAgentSnapPlugin({ client, directory: "/fallback" })
+  const abort = new AbortController().signal
+  try {
+    const text = await plugin.tool?.agent_snap_get.execute({ id: detail.id }, { directory: "/repo", abort } as never)
+    assert.equal(
+      text,
+      "Snapshot 20261028T120000.000000000Z-0123456789ab\ncommit: 0123456789ab\ntree: 4b825dc642cb\nreason: edit\n" +
+        "created: 2026-10-28T12:00:00Z\nparent: fedcba987654 (snapshot 20261028T115500.000000000Z-fedcba987654)\n" +
+        "changed files:\n  src/a.ts\n  src/b.ts",
+    )
+    await plugin.tool?.agent_snap_get.execute({ id: detail.id, cwd: "/other" }, { directory: "/repo", abort } as never)
+    assert.deepEqual(gets, [
+      { cwd: "/repo", id: detail.id, signal: abort },
+      { cwd: "/other", id: detail.id, signal: abort },
+    ])
+  } finally {
+    await plugin.dispose?.()
+  }
+})
+
+test("agent_snap_get labels commit parents, root snapshots, empty and truncated file lists", async () => {
+  const cases: Array<[Partial<SnapSnapshotDetail>, string]> = [
+    [{ parent_id: undefined }, "parent: fedcba987654 (commit)\nchanged files:\n  src/a.ts\n  src/b.ts"],
+    [{ parent: undefined, parent_id: undefined, changed_files: [] }, "parent: none\nchanged files: none"],
+    [{ changed_files: ["a"], changed_files_truncated: true }, "changed files (first 1):\n  a"],
+  ]
+  for (const [overrides, tail] of cases) {
+    const { client } = detailClient({ ...detail, ...overrides })
+    const plugin = createAgentSnapPlugin({ client, directory: "/repo" })
+    try {
+      const text = await plugin.tool?.agent_snap_get.execute({ id: detail.id }, { directory: "/repo", abort: new AbortController().signal } as never)
+      assert.ok(String(text).endsWith(tail), `expected ${JSON.stringify(text)} to end with ${JSON.stringify(tail)}`)
+    } finally {
+      await plugin.dispose?.()
+    }
+  }
 })
 
 test("takes a baseline snapshot when a session is created", async () => {
@@ -217,6 +290,9 @@ test("a rejected baseline is logged and never unhandled", async () => {
     async list() {
       return []
     },
+    async get() {
+      throw new Error("unexpected get")
+    },
     async close() {},
   }
   const plugin = createAgentSnapPlugin({ client, directory: "/fallback", log: (m) => logs.push(m) })
@@ -263,6 +339,10 @@ test("tools pass the abort signal and reject while closing", async () => {
   await plugin.dispose?.()
   await assert.rejects(
     () => plugin.tool?.agent_snap_list.execute({}, { directory: "/repo", abort: new AbortController().signal } as never),
+    /closing/,
+  )
+  await assert.rejects(
+    () => plugin.tool?.agent_snap_get.execute({ id: detail.id }, { directory: "/repo", abort: new AbortController().signal } as never),
     /closing/,
   )
 })
