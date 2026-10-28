@@ -131,6 +131,17 @@ func optionalString(params map[string]any, key string) (string, bool, *Error) {
 	return value, true, nil
 }
 
+func optionalOrigin(params map[string]any, key string) (string, *Error) {
+	value, present, rerr := optionalString(params, key)
+	if rerr != nil {
+		return "", rerr
+	}
+	if present && !snapshot.ValidOrigin(value) {
+		return "", &Error{Code: CodeInvalidParams, Message: "param must be an origin value: " + key}
+	}
+	return value, nil
+}
+
 func optionalLimit(params map[string]any) (int, *Error) {
 	raw, ok := params["limit"]
 	if !ok {
@@ -144,7 +155,7 @@ func optionalLimit(params map[string]any) (int, *Error) {
 }
 
 func createSnapshot(ctx context.Context, params map[string]any) (any, *Error) {
-	if err := validateParams(params, "cwd", "reason"); err != nil {
+	if err := validateParams(params, "cwd", "reason", "source", "host"); err != nil {
 		return nil, err
 	}
 	cwd, rerr := requireString(params, "cwd")
@@ -155,11 +166,25 @@ func createSnapshot(ctx context.Context, params map[string]any) (any, *Error) {
 	if rerr != nil {
 		return nil, rerr
 	}
+	if !snapshot.ValidReason(reason) {
+		return nil, &Error{Code: CodeInvalidParams, Message: "param must not contain a NUL byte or end with an origin paragraph: reason"}
+	}
+	source, rerr := optionalOrigin(params, "source")
+	if rerr != nil {
+		return nil, rerr
+	}
+	host, rerr := optionalOrigin(params, "host")
+	if rerr != nil {
+		return nil, rerr
+	}
 	store, err := snapshot.New(cwd)
 	if err != nil {
 		return nil, &Error{Code: CodeInternalError, Message: err.Error()}
 	}
-	snap, err := store.Create(ctx, reason, snapshot.Origin{})
+	snap, err := store.Create(ctx, reason, snapshot.Origin{Source: source, Host: host})
+	if errors.Is(err, snapshot.ErrInvalidReason) || errors.Is(err, snapshot.ErrInvalidOrigin) {
+		return nil, &Error{Code: CodeInvalidParams, Message: err.Error()}
+	}
 	if err != nil {
 		return nil, &Error{Code: CodeInternalError, Message: err.Error()}
 	}
