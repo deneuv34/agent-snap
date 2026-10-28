@@ -140,12 +140,43 @@ function handle(req) {
     case "snapshot.list":
       respond(req, { snapshots: [] })
       break
+    case "snapshot.get":
+      if (mode === "detail-not-found") {
+        respond(req, null, { code: -32001, message: `snapshot not found: ${req.params?.id}` })
+      } else if (mode === "detail-scalar") {
+        respond(req, "just a string")
+      } else {
+        respond(req, { ...detail(req.params?.id), ...(malformedDetails[mode] ?? {}) })
+      }
+      break
     default:
       if (mode === "bad-error") {
         respond(req, null, "boom")
       } else {
         respond(req, null, { code: -32601, message: "method not found" })
       }
+  }
+}
+
+const malformedDetails = {
+  "detail-missing-tree": { tree: undefined },
+  "detail-missing-changed-files": { changed_files: undefined },
+  "detail-bad-changed-files": { changed_files: [1] },
+  "detail-bad-parent": { parent: 7 },
+  "detail-bad-parent-id": { parent_id: null },
+  "detail-bad-truncated": { changed_files_truncated: "yes" },
+}
+
+function detail(id) {
+  return {
+    id,
+    commit: "0123456789ab0000000000000000000000000000",
+    reason: "manual",
+    created_at: "2026-01-01T00:00:00Z",
+    tree: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+    parent: "fedcba9876540000000000000000000000000000",
+    parent_id: "20251231T000000.000000000Z-fedcba987654",
+    changed_files: ["src/a.ts"],
   }
 }
 

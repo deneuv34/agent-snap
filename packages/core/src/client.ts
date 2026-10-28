@@ -10,7 +10,7 @@ import {
   windowsTreeCompletionDecision,
   type GroupState,
 } from "./teardown.js"
-import type { PingResult, SnapListResult, SnapSnapshot } from "./types.js"
+import type { PingResult, SnapListResult, SnapSnapshot, SnapSnapshotDetail } from "./types.js"
 
 type SnapChild = ChildProcessByStdio<Writable, Readable, null>
 
@@ -188,6 +188,40 @@ function validateSnapshot(result: unknown): SnapSnapshot {
   return { id, commit, reason, created_at, changed_files: changed_files as string[] | undefined, reused: reused as boolean | undefined }
 }
 
+function validateDetail(result: unknown): SnapSnapshotDetail {
+  if (!isRecord(result)) throw new SnapProtocolError("snapshot.get result must be an object")
+  const { id, commit, reason, created_at, tree, parent, parent_id, changed_files, changed_files_truncated } = result
+  if (
+    typeof id !== "string" ||
+    typeof commit !== "string" ||
+    typeof reason !== "string" ||
+    typeof created_at !== "string" ||
+    typeof tree !== "string"
+  ) {
+    throw new SnapProtocolError("snapshot.get result is missing string fields")
+  }
+  if ((parent !== undefined && typeof parent !== "string") || (parent_id !== undefined && typeof parent_id !== "string")) {
+    throw new SnapProtocolError("snapshot.get result has a malformed parent")
+  }
+  if (!isStringArray(changed_files)) {
+    throw new SnapProtocolError("snapshot.get result has malformed changed_files")
+  }
+  if (changed_files_truncated !== undefined && typeof changed_files_truncated !== "boolean") {
+    throw new SnapProtocolError("snapshot.get result has malformed changed_files_truncated flag")
+  }
+  return {
+    id,
+    commit,
+    reason,
+    created_at,
+    tree,
+    parent: parent as string | undefined,
+    parent_id: parent_id as string | undefined,
+    changed_files,
+    changed_files_truncated: changed_files_truncated as boolean | undefined,
+  }
+}
+
 function validateResult(method: string, result: unknown): unknown {
   switch (method) {
     case "ping": {
@@ -205,6 +239,8 @@ function validateResult(method: string, result: unknown): unknown {
       const snapshots = result.snapshots.map((entry) => validateSnapshot(entry))
       return { snapshots } as SnapListResult
     }
+    case "snapshot.get":
+      return validateDetail(result)
     default:
       return result
   }
@@ -283,6 +319,10 @@ export class SnapClient {
     if (limit !== undefined && limit > 0) params.limit = limit
     const result = await this.request<SnapListResult>("snapshot.list", params, { signal })
     return result.snapshots ?? []
+  }
+
+  async get(cwd: string, id: string, signal?: AbortSignal): Promise<SnapSnapshotDetail> {
+    return this.request<SnapSnapshotDetail>("snapshot.get", { cwd, id }, { signal })
   }
 
   /**

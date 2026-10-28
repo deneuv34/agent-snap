@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { SnapClient } from "../src/index.js"
+import { SnapClient, SnapRpcError } from "../src/index.js"
 
 const bin = process.env.AGENT_SNAP_BIN?.trim()
 
@@ -106,6 +106,24 @@ test(
       const items = await client.list(dir, 10)
       assert.equal(items.length, 1)
       assert.equal(items[0]?.commit, snap.commit)
+
+      const detail = await client.get(dir, snap.id)
+      assert.equal(detail.commit, snap.commit)
+      assert.equal(detail.tree, git(dir, ["rev-parse", `${snap.commit}^{tree}`]))
+      assert.equal(detail.parent, git(dir, ["rev-parse", "HEAD"]))
+      assert.equal(detail.parent_id, undefined)
+      assert.deepEqual(detail.changed_files, ["file.txt"])
+
+      const missing = `${snap.id.slice(0, -12)}000000000000`
+      await assert.rejects(
+        () => client.get(dir, missing),
+        (err: unknown) => err instanceof SnapRpcError && err.code === -32001,
+      )
+      await assert.rejects(
+        () => client.get(dir, "../latest"),
+        (err: unknown) => err instanceof SnapRpcError && err.code === -32602,
+      )
+      assert.equal(git(dir, ["status", "--porcelain"]), "M file.txt")
     } finally {
       await client.close()
     }

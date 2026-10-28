@@ -52,6 +52,71 @@ test("list returns an array", async () => {
   }
 })
 
+const snapshotID = "20260101T000000.000000000Z-0123456789ab"
+
+test("get sends exactly cwd and id and returns a typed detail", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-get-")), "log.jsonl")
+  const c = client({ FAKE_AGENT_SNAP_LOG: log })
+  try {
+    const detail = await c.get("/some/repo", snapshotID)
+    assert.deepEqual(detail, {
+      id: snapshotID,
+      commit: "0123456789ab0000000000000000000000000000",
+      reason: "manual",
+      created_at: "2026-01-01T00:00:00Z",
+      tree: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+      parent: "fedcba9876540000000000000000000000000000",
+      parent_id: "20251231T000000.000000000Z-fedcba987654",
+      changed_files: ["src/a.ts"],
+      changed_files_truncated: undefined,
+    })
+  } finally {
+    await c.close()
+  }
+  const requests = readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { event: string; method: string; params: unknown })
+    .filter((entry) => entry.event === "request")
+    .map(({ method, params }) => ({ method, params }))
+  assert.deepEqual(requests, [{ method: "snapshot.get", params: { cwd: "/some/repo", id: snapshotID } }])
+})
+
+test("a missing snapshot surfaces SnapRpcError -32001 with the server message", async () => {
+  const c = client({ FAKE_AGENT_SNAP_MODE: "detail-not-found" })
+  try {
+    await assert.rejects(
+      () => c.get("/repo", snapshotID),
+      (err: unknown) => err instanceof SnapRpcError && err.code === -32001 && err.message === `snapshot not found: ${snapshotID}`,
+    )
+  } finally {
+    await c.close()
+  }
+})
+
+test("malformed snapshot.get results surface SnapProtocolError", async () => {
+  for (const mode of [
+    "detail-scalar",
+    "detail-missing-tree",
+    "detail-missing-changed-files",
+    "detail-bad-changed-files",
+    "detail-bad-parent",
+    "detail-bad-parent-id",
+    "detail-bad-truncated",
+  ]) {
+    const c = client({ FAKE_AGENT_SNAP_MODE: mode })
+    try {
+      await assert.rejects(
+        () => c.get("/repo", snapshotID),
+        (err: unknown) => err instanceof SnapProtocolError,
+        `mode ${mode} must produce a SnapProtocolError`,
+      )
+    } finally {
+      await c.close()
+    }
+  }
+})
+
 test("unknown method surfaces a SnapRpcError with the wire code", async () => {
   const c = client()
   try {
