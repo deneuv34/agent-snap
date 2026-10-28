@@ -31,7 +31,8 @@ jobs:
       - name: go test
         run: go test ./... -count=1
       - name: build binary
-        run: go build -o bin/agent-snap ./cmd/agent-snap
+        shell: bash
+        run: go build -o "bin/agent-snap$(go env GOEXE)" ./cmd/agent-snap
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: agent-snap-${{ matrix.os }}
