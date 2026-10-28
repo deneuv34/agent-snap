@@ -34,7 +34,7 @@ var (
 	ErrNotFound      = errors.New("snapshot not found")
 	idPattern        = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}\.[0-9]{9}Z-[0-9a-f]{12}$`)
 	originPattern    = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
-	originLine       = regexp.MustCompile(`^Agent-Snap-([A-Z][a-z0-9]*(?:-[A-Z][a-z0-9]*)*): (.*)$`)
+	originLine       = regexp.MustCompile(`^Agent-Snap-([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*): ([!-~](?:[ -~]{0,253}[!-~])?)$`)
 	lookupEnv        = []string{"GIT_NO_REPLACE_OBJECTS=1"}
 )
 
@@ -78,12 +78,12 @@ func ValidOrigin(value string) bool {
 	return len(value) <= originLimit && originPattern.MatchString(value)
 }
 
-// ValidReason reports whether reason reads back unchanged. A reason whose last
-// paragraph parses as an origin paragraph would be read as origin, so Create
-// refuses it.
+// ValidReason reports whether reason reads back unchanged. Git refuses a NUL
+// in a commit message, and a reason whose last paragraph parses as an origin
+// paragraph would be read as origin, so Create refuses both.
 func ValidReason(reason string) bool {
 	_, _, ok := splitOrigin(reason)
-	return !ok
+	return !ok && !strings.Contains(reason, "\x00")
 }
 
 func checkOrigin(origin Origin) error {
@@ -117,9 +117,10 @@ func parseMessage(message string) (string, Origin) {
 
 // splitOrigin separates a trailing origin paragraph from the reason. Blink
 // parses the paragraph itself because Git's trailer parsing follows the
-// user's trailer.* configuration. Unknown keys are skipped so keys a later
-// release adds stay out of the reason; a repeated key, an invalid value, or
-// any other line makes the paragraph part of the reason.
+// user's trailer.* configuration. The line grammar is deliberately wider than
+// an origin value and must never be widened again: a reason stored today that
+// a wider reader took as origin would be cut short. Unknown keys are skipped,
+// and Source or Host is reported only when its value is a valid origin value.
 func splitOrigin(body string) (string, Origin, bool) {
 	cut := strings.LastIndex(body, "\n\n")
 	if cut < 0 {
@@ -129,10 +130,13 @@ func splitOrigin(body string) (string, Origin, bool) {
 	seen := map[string]bool{}
 	for _, line := range strings.Split(body[cut+2:], "\n") {
 		m := originLine.FindStringSubmatch(line)
-		if m == nil || seen[m[1]] || !ValidOrigin(m[2]) {
+		if m == nil || seen[m[1]] {
 			return body, Origin{}, false
 		}
 		seen[m[1]] = true
+		if !ValidOrigin(m[2]) {
+			continue
+		}
 		switch m[1] {
 		case "Source":
 			origin.Source = m[2]

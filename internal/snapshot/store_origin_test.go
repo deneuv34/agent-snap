@@ -132,8 +132,11 @@ func TestReasonsRoundTripAroundTheOriginParagraph(t *testing.T) {
 		"x\n\n",
 		"line one\nline two",
 		"x\n\nnot an origin line",
-		"x\n\nAgent-Snap-Source: Not A Token",
 		"x\n\nagent-snap-source: tool",
+		"x\n\nAgent-Snap-Source:  leading space",
+		"x\n\nAgent-Snap-Source: trailing space ",
+		"x\n\nAgent-Snap-Source: tööl",
+		"x\n\nAgent-Snap-: tool",
 		"x\n\nAgent-Snap-Source:tool",
 		"x\r\n\r\nAgent-Snap-Source: tool",
 		"x\n\nAgent-Snap-Source: tool\nfree text",
@@ -158,15 +161,20 @@ func TestReasonsRoundTripAroundTheOriginParagraph(t *testing.T) {
 	}
 }
 
-func TestCreateRejectsReasonsThatReadAsOrigin(t *testing.T) {
+func TestCreateRejectsReasonsThatCannotReadBackUnchanged(t *testing.T) {
 	dir := testRepo(t)
 	store := newStore(t, dir)
+	create(t, store, "existing")
 	before := repoState(t, dir)
 	for _, reason := range []string{
 		"x\n\nAgent-Snap-Source: tool",
 		"\n\nAgent-Snap-Host: pi",
 		"x\n\nAgent-Snap-Source: tool\nAgent-Snap-Host: pi",
 		"x\n\nAgent-Snap-Future-Key: v2",
+		"x\n\nAgent-Snap-Source: Not A Token",
+		"x\n\nAgent-Snap-Ticket: ABC-1",
+		"x\n\nAgent-Snap-URL2: https://example.com/a?b=c",
+		"a\x00b",
 	} {
 		if ValidReason(reason) {
 			t.Errorf("ValidReason(%q) = true", reason)
@@ -178,7 +186,7 @@ func TestCreateRejectsReasonsThatReadAsOrigin(t *testing.T) {
 		}
 	}
 	if after := repoState(t, dir); after != before {
-		t.Fatalf("a rejected create changed repository state:\nbefore:\n%s\nafter:\n%s", before, after)
+		t.Fatalf("a rejected create on an unchanged tree must not reuse or write anything:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 
@@ -217,7 +225,9 @@ func TestReadersParseOnlyAWellFormedOriginParagraph(t *testing.T) {
 		{"future key is skipped", "agent-snap: r\n\nAgent-Snap-Source: tool\nAgent-Snap-Model: m1\nAgent-Snap-Host: pi", "r", Origin{Source: "tool", Host: "pi"}},
 		{"keys in any order", "agent-snap: r\n\nAgent-Snap-Host: pi\nAgent-Snap-Source: tool", "r", Origin{Source: "tool", Host: "pi"}},
 		{"repeated key", "agent-snap: r\n\nAgent-Snap-Source: tool\nAgent-Snap-Source: cli", "r\n\nAgent-Snap-Source: tool\nAgent-Snap-Source: cli", Origin{}},
-		{"invalid value", "agent-snap: r\n\nAgent-Snap-Source: Tool", "r\n\nAgent-Snap-Source: Tool", Origin{}},
+		{"invalid source value is not reported", "agent-snap: r\n\nAgent-Snap-Source: Tool\nAgent-Snap-Host: pi", "r", Origin{Host: "pi"}},
+		{"future key with a wide value", "agent-snap: r\n\nAgent-Snap-Ticket: ABC-1 / 2.1\nAgent-Snap-URL2: x\nAgent-Snap-Source: tool", "r", Origin{Source: "tool"}},
+		{"value with a trailing space", "agent-snap: r\n\nAgent-Snap-Source: tool ", "r\n\nAgent-Snap-Source: tool ", Origin{}},
 		{"foreign line", "agent-snap: r\n\nAgent-Snap-Source: tool\nSigned-off-by: someone", "r\n\nAgent-Snap-Source: tool\nSigned-off-by: someone", Origin{}},
 		{"trailing newline", "agent-snap: r\n\nAgent-Snap-Source: tool\n", "r\n\nAgent-Snap-Source: tool\n", Origin{}},
 	} {
