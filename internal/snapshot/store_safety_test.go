@@ -403,3 +403,93 @@ func TestCommitRefsRejectsStaleLatestValue(t *testing.T) {
 		t.Fatal("CAS with the correct expected value must commit")
 	}
 }
+
+const objectWriteRace = "error: unable to write file .git/objects/55/e687c00476c4aad5715d303a59a01499616bec: Permission denied\nerror: changed.txt: failed to insert into database\nfatal: adding files failed"
+
+// fakeAddFailures puts a git wrapper first on PATH that fails the first
+// `failures` invocations of `git add` with stderr, then defers to real git.
+// It returns how many times `git add` ran.
+func fakeAddFailures(t *testing.T, failures int, stderr string) func() int {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the git wrapper is a POSIX shell script")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "adds")
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = add ]; then\n  n=$(( $(cat %q 2>/dev/null || echo 0) + 1 ))\n  echo \"$n\" > %q\n  if [ \"$n\" -le %d ]; then printf '%%s\\n' %q >&2; exit 128; fi\nfi\nexec %q \"$@\"\n", counter, counter, failures, stderr, realGit)
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return func() int {
+		raw, err := os.ReadFile(counter)
+		if err != nil {
+			return 0
+		}
+		n := 0
+		fmt.Sscan(string(raw), &n)
+		return n
+	}
+}
+
+func TestCreateRetriesAConcurrentObjectWriteFailure(t *testing.T) {
+	dir := testRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "changed.txt"), []byte("after the race\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adds := fakeAddFailures(t, 2, objectWriteRace)
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := s.Create(context.Background(), "race")
+	if err != nil {
+		t.Fatalf("create should survive a transient object write failure: %v", err)
+	}
+	if got := adds(); got != 3 {
+		t.Fatalf("git add ran %d times, want 3", got)
+	}
+	if got := git(t, dir, "show", snap.Commit+":changed.txt"); got != "after the race" {
+		t.Fatalf("snapshot content = %q", got)
+	}
+}
+
+func TestCreateGivesUpOnAPersistentObjectWriteFailure(t *testing.T) {
+	dir := testRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "changed.txt"), []byte("never stored\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adds := fakeAddFailures(t, 1000, objectWriteRace)
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(context.Background(), "race"); err == nil || !strings.Contains(err.Error(), "failed to insert into database") {
+		t.Fatalf("create error = %v, want the object write failure", err)
+	}
+	if got := adds(); got != addAttempts {
+		t.Fatalf("git add ran %d times, want %d", got, addAttempts)
+	}
+	if items, err := s.List(context.Background(), 10); err != nil || len(items) != 0 {
+		t.Fatalf("a failed create must publish no snapshot: %v %+v", err, items)
+	}
+}
+
+func TestCreateDoesNotRetryOtherAddFailures(t *testing.T) {
+	dir := testRepo(t)
+	adds := fakeAddFailures(t, 1000, "fatal: Unable to create '.git/index.lock': File exists.")
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(context.Background(), "locked"); err == nil {
+		t.Fatal("create should fail")
+	}
+	if got := adds(); got != 1 {
+		t.Fatalf("git add ran %d times, want 1", got)
+	}
+}

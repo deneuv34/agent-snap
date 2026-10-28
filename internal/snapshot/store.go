@@ -19,6 +19,7 @@ const (
 	refsPrefix   = "refs/agent-snapshots/"
 	itemsSuffix  = "/items/"
 	latestSuffix = "/latest"
+	addAttempts  = 5
 )
 
 type Snapshot struct {
@@ -106,7 +107,7 @@ func (s *Store) Create(ctx context.Context, reason string) (Snapshot, error) {
 	} else if _, err := s.git(ctx, scratchEnv, "read-tree", "--empty"); err != nil {
 		return Snapshot{}, err
 	}
-	if _, err := s.git(ctx, scratchEnv, "add", "-A", "--", "."); err != nil {
+	if err := s.addAll(ctx, scratchEnv); err != nil {
 		return Snapshot{}, err
 	}
 	tree, err := s.git(ctx, scratchEnv, "write-tree")
@@ -166,6 +167,31 @@ func (s *Store) Create(ctx context.Context, reason string) (Snapshot, error) {
 			}
 			return Snapshot{ID: id, Commit: commit, Reason: reason, CreatedAt: now, ChangedFiles: changed}, nil
 		}
+	}
+}
+
+// addAll stages the working tree into the scratch index. Concurrent creates in
+// one repository write the same loose objects, and Git for Windows can lose
+// that race with "Permission denied" while another process finalizes the same
+// object. Only the scratch index is touched, and a retry finds the finished
+// object instead of writing it, so the object-write failure is retried with
+// backoff. Every other failure returns at once.
+func (s *Store) addAll(ctx context.Context, env []string) error {
+	delay := 25 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		out, err := s.gitMaybe(ctx, env, "add", "-A", "--", ".")
+		if err == nil {
+			return nil
+		}
+		if attempt == addAttempts || !strings.Contains(out, "failed to insert into database") {
+			return fmt.Errorf("git add -A -- .: %w: %s", err, out)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("git add -A -- .: %w", ctx.Err())
+		case <-time.After(delay):
+		}
+		delay *= 2
 	}
 }
 
