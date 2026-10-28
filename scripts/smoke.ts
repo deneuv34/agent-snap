@@ -52,6 +52,7 @@ async function runChecks(dir: string): Promise<void> {
   // 1. Direct CLI: create + list + get.
   const created = runJson(["create", "smoke-direct", "--cwd", dir]) as SnapSnapshot
   if (!created.id || !created.commit) fail(`direct create returned unexpected JSON: ${JSON.stringify(created)}`)
+  if (created.source !== "cli" || created.host !== undefined) fail(`direct create must record source cli and no host: ${JSON.stringify(created)}`)
 
   const listed = runJson(["list", "--cwd", dir, "--limit", "10"]) as { snapshots: SnapSnapshot[] }
   if (listed.snapshots.length !== 1 || listed.snapshots[0]?.id !== created.id) {
@@ -62,33 +63,40 @@ async function runChecks(dir: string): Promise<void> {
   if (detail.commit !== created.commit || detail.parent !== headBefore || detail.tree !== git(dir, ["rev-parse", `${created.commit}^{tree}`])) {
     fail(`direct get mismatch: ${JSON.stringify(detail)}`)
   }
+  if (detail.reason !== "smoke-direct" || detail.source !== "cli") fail(`direct get origin mismatch: ${JSON.stringify(detail)}`)
 
   // 2. JSONL serve mode through the binary.
   const input =
     [
       JSON.stringify({ id: 1, method: "ping" }),
-      JSON.stringify({ id: 2, method: "snapshot.create", params: { cwd: dir, reason: "smoke-jsonl" } }),
+      JSON.stringify({ id: 2, method: "snapshot.create", params: { cwd: dir, reason: "smoke-jsonl", source: "tool", host: "smoke" } }),
       JSON.stringify({ id: 3, method: "snapshot.list", params: { cwd: dir, limit: 10 } }),
       JSON.stringify({ id: 4, method: "snapshot.get", params: { cwd: dir, id: created.id } }),
+      JSON.stringify({ id: 5, method: "snapshot.create", params: { cwd: dir, reason: "x\n\nAgent-Snap-Source: tool" } }),
     ].join("\n") + "\n"
   const proc = spawnSync(bin, ["serve"], { input, encoding: "utf8" })
   if (proc.status !== 0) fail(`serve mode exited with ${proc.status}: ${proc.stderr}`)
   const lines = proc.stdout.trim().split("\n")
-  if (lines.length !== 4) fail(`serve mode returned ${lines.length} lines: ${proc.stdout}`)
+  if (lines.length !== 5) fail(`serve mode returned ${lines.length} lines: ${proc.stdout}`)
   const ping = JSON.parse(lines[0] ?? "{}") as { result?: { status?: string } }
   if (ping.result?.status !== "ok") fail(`ping failed: ${lines[0]}`)
   const jsonlSnap = (JSON.parse(lines[1] ?? "{}") as { result?: SnapSnapshot }).result
   if (jsonlSnap?.reused !== true) fail(`expected unchanged tree reuse via JSONL, got: ${lines[1]}`)
+  if (jsonlSnap.source !== "cli" || jsonlSnap.host !== undefined) fail(`a reused snapshot must report its stored origin: ${lines[1]}`)
   const jsonlList = (JSON.parse(lines[2] ?? "{}") as { result?: { snapshots?: SnapSnapshot[] } }).result
   if (jsonlList?.snapshots?.length !== 1) fail(`list via JSONL mismatch: ${lines[2]}`)
   const jsonlDetail = (JSON.parse(lines[3] ?? "{}") as { result?: SnapSnapshotDetail }).result
   if (jsonlDetail?.commit !== created.commit) fail(`get via JSONL mismatch: ${lines[3]}`)
+  const forged = JSON.parse(lines[4] ?? "{}") as { error?: { code?: number; message?: string } }
+  if (forged.error?.code !== -32602 || forged.error.message !== "param must not contain a NUL byte or end with an origin paragraph: reason") {
+    fail(`a reason that reads as origin must be rejected: ${lines[4]}`)
+  }
 
   // 3. TypeScript client against serve mode.
   writeFileSync(join(dir, "file.txt"), "changed\n")
   const client = SnapClient.fromEnv({ AGENT_SNAP_BIN: bin })
   try {
-    const snap = await client.create(dir, "smoke-client")
+    const snap = await client.create(dir, "smoke-client", undefined, { source: "tool", host: "smoke" })
     if (!snap.changed_files?.includes("file.txt")) {
       fail(`expected changed_files to include file.txt: ${JSON.stringify(snap)}`)
     }
@@ -99,6 +107,9 @@ async function runChecks(dir: string): Promise<void> {
     const described = await client.get(dir, snap.id)
     if (described.parent_id !== created.id || described.changed_files.join(",") !== "file.txt") {
       fail(`expected the client snapshot to chain onto ${created.id}: ${JSON.stringify(described)}`)
+    }
+    if (snap.source !== "tool" || described.reason !== "smoke-client" || described.source !== "tool" || described.host !== "smoke") {
+      fail(`client origin did not round-trip: ${JSON.stringify({ snap, described })}`)
     }
   } finally {
     await client.close()
