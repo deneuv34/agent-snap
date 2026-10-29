@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `SnapClient` now works in Bun hosts on Linux and macOS. In a compiled Bun
+  host, `process.execPath` is the host's own CLI, so the supervisor never
+  started and every request failed with `agent-snap supervisor exited
+  (code=1, signal=none)`. The OpenCode CLI rejects `--eval` the same way. On
+  plain Bun, every `close()` took about 6 s and ended in a SIGKILL, because
+  Bun's `net.Socket` never reads the supervisor's control pipe. A host
+  executable that re-runs its own entrypoint now fails closed instead of
+  starting copies of itself.
 - Read-only snapshot lookup (Phase 2): JSONL `snapshot.get`, CLI
   `agent-snap get <id>`, `SnapClient.get`, the OpenCode and Pi
   `agent_snap_get` tools, and the Pi `agent-snap-get` command. Lookup
