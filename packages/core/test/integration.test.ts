@@ -131,6 +131,105 @@ test(
 )
 
 test(
+  "SnapClient pages a real snapshot diff and fails closed on bad selections",
+  { skip: bin === undefined ? "AGENT_SNAP_BIN not set" : false },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-snap-diff-it-"))
+    const client = SnapClient.fromEnv({ AGENT_SNAP_BIN: bin })
+    try {
+      git(dir, ["init", "-b", "main"])
+      writeFileSync(join(dir, "file.txt"), "initial\n")
+      git(dir, ["add", "file.txt"])
+      git(dir, ["commit", "-m", "initial"])
+      writeFileSync(join(dir, "file.txt"), "before\n")
+      const first = await client.create(dir, "before")
+
+      const bigLines = Array.from({ length: 400 }, (_, index) => `line ${index}\n`)
+      writeFileSync(join(dir, "file.txt"), "after\n")
+      writeFileSync(join(dir, "big.txt"), bigLines.join(""))
+      writeFileSync(join(dir, "new.txt"), "new\n")
+      writeFileSync(join(dir, "bin.dat"), Buffer.from([0, 1, 2, 3]))
+      const second = await client.create(dir, "after")
+      const statusBefore = git(dir, ["status", "--porcelain"])
+
+      const page = await client.diff(dir, first.id, second.id, { maxPatchBytes: 1024 })
+      assert.equal(page.from.id, first.id)
+      assert.equal(page.from.commit, first.commit)
+      assert.equal(page.to.id, second.id)
+      assert.equal(page.offset, 0)
+      assert.equal(page.next_offset, 2)
+      assert.equal(page.totals.files, 4)
+      assert.equal(page.totals.additions, 402)
+      assert.equal(page.totals.deletions, 1)
+      assert.deepEqual(
+        page.files.map((file) => [file.path, file.status, file.patch]),
+        [
+          ["big.txt", "added", "truncated"],
+          ["bin.dat", "added", "binary"],
+          ["file.txt", "modified", "deferred"],
+          ["new.txt", "added", "deferred"],
+        ],
+      )
+      const big = page.files[0]
+      assert.ok(big !== undefined && big.patch_bytes !== undefined && big.patch_bytes > 1024)
+
+      const whole = await client.diff(dir, first.id, second.id, { maxPatchBytes: big.patch_bytes })
+      assert.equal(whole.offset, 0)
+      assert.equal(whole.next_offset, 2)
+      assert.equal(whole.totals.files, 4)
+      assert.deepEqual(
+        whole.files.map((file) => [file.path, file.patch]),
+        [
+          ["big.txt", "full"],
+          ["bin.dat", "binary"],
+          ["file.txt", "deferred"],
+          ["new.txt", "deferred"],
+        ],
+      )
+      assert.equal(whole.files[0]?.hunks.map((hunk) => hunk.text).join(""), bigLines.map((line) => `+${line}`).join(""))
+
+      const rest = await client.diff(dir, first.id, second.id, { offset: 2 })
+      assert.equal(rest.next_offset, undefined)
+      assert.deepEqual(
+        rest.files.map((file) => [file.path, file.patch]),
+        [
+          ["file.txt", "full"],
+          ["new.txt", "full"],
+        ],
+      )
+      assert.deepEqual(rest.files[0]?.hunks[0]?.text, "-before\n+after\n")
+
+      const beyond = await client.diff(dir, first.id, second.id, { offset: 4 })
+      assert.deepEqual(beyond.files, [])
+      assert.equal(beyond.next_offset, undefined)
+      assert.equal(beyond.totals.files, 4)
+
+      const same = await client.diff(dir, first.id, first.id)
+      assert.deepEqual(same.files, [])
+      assert.deepEqual(same.totals, { files: 0, additions: 0, deletions: 0 })
+
+      const missing = `${second.id.slice(0, -12)}000000000000`
+      await assert.rejects(
+        () => client.diff(dir, missing, second.id),
+        (err: unknown) => err instanceof SnapRpcError && err.code === -32001,
+      )
+      await assert.rejects(
+        () => client.diff(dir, "../latest", second.id),
+        (err: unknown) => err instanceof SnapRpcError && err.code === -32602,
+      )
+      await assert.rejects(
+        () => client.diff(dir, first.id, second.id, { maxPatchBytes: 1023 }),
+        (err: unknown) => err instanceof SnapRpcError && err.code === -32602,
+      )
+      assert.equal(git(dir, ["status", "--porcelain"]), statusBefore)
+    } finally {
+      await client.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
   "timeout kills the whole git process tree, including filter children",
   { skip: bin === undefined ? "AGENT_SNAP_BIN not set" : process.platform === "win32" ? "process-tree kill not implemented on win32" : false },
   async () => {

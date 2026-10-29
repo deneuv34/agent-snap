@@ -12,9 +12,10 @@ The package declares `pi.extensions: ["dist/extension.js"]` in its
 - flushes pending snapshots and shuts the Go subprocess down at
   `session_shutdown`,
 - registers `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
-  and `agent_snap_get(id, cwd?)` tools,
-- registers `agent-snap-create`, `agent-snap-list`, and `agent-snap-get <id>`
-  commands,
+  `agent_snap_get(id, cwd?)`, and
+  `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)` tools,
+- registers `agent-snap-create`, `agent-snap-list`, `agent-snap-get <id>`, and
+  `agent-snap-diff <from> <to>` commands,
 - records host `pi` and source `session-start`, `agent-settled`, `tool`, or
   `command` on each snapshot. No session identifier is stored.
 

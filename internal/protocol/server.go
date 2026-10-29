@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 
 	"github.com/deneuv34/agent-snap/internal/snapshot"
@@ -81,6 +82,8 @@ func dispatch(ctx context.Context, req *Request) (any, *Error) {
 		return listSnapshots(ctx, req.Params)
 	case "snapshot.get":
 		return getSnapshot(ctx, req.Params)
+	case "snapshot.diff":
+		return diffSnapshots(ctx, req.Params)
 	default:
 		return nil, &Error{Code: CodeMethodNotFound, Message: "method not found"}
 	}
@@ -142,16 +145,27 @@ func optionalOrigin(params map[string]any, key string) (string, *Error) {
 	return value, nil
 }
 
-func optionalLimit(params map[string]any) (int, *Error) {
-	raw, ok := params["limit"]
+func optionalInt(params map[string]any, key string, min, max int) (int, *Error) {
+	raw, ok := params[key]
 	if !ok {
 		return 0, nil
 	}
 	value, ok := raw.(float64)
-	if !ok || value != float64(int(value)) || int(value) < 1 || int(value) > 100 {
-		return 0, &Error{Code: CodeInvalidParams, Message: "param must be an integer between 1 and 100: limit"}
+	if !ok || value != math.Trunc(value) || value < float64(min) || value > float64(max) {
+		return 0, &Error{Code: CodeInvalidParams, Message: fmt.Sprintf("param must be an integer between %d and %d: %s", min, max, key)}
 	}
 	return int(value), nil
+}
+
+func requireSnapshotID(params map[string]any, key string) (string, *Error) {
+	id, rerr := requireString(params, key)
+	if rerr != nil {
+		return "", rerr
+	}
+	if !snapshot.ValidID(id) {
+		return "", &Error{Code: CodeInvalidParams, Message: "param must be a snapshot id: " + key}
+	}
+	return id, nil
 }
 
 func createSnapshot(ctx context.Context, params map[string]any) (any, *Error) {
@@ -199,7 +213,7 @@ func listSnapshots(ctx context.Context, params map[string]any) (any, *Error) {
 	if rerr != nil {
 		return nil, rerr
 	}
-	limit, rerr := optionalLimit(params)
+	limit, rerr := optionalInt(params, "limit", 1, 100)
 	if rerr != nil {
 		return nil, rerr
 	}
@@ -225,12 +239,9 @@ func getSnapshot(ctx context.Context, params map[string]any) (any, *Error) {
 	if rerr != nil {
 		return nil, rerr
 	}
-	id, rerr := requireString(params, "id")
+	id, rerr := requireSnapshotID(params, "id")
 	if rerr != nil {
 		return nil, rerr
-	}
-	if !snapshot.ValidID(id) {
-		return nil, &Error{Code: CodeInvalidParams, Message: "param must be a snapshot id: id"}
 	}
 	store, err := snapshot.New(cwd)
 	if err != nil {
@@ -244,6 +255,44 @@ func getSnapshot(ctx context.Context, params map[string]any) (any, *Error) {
 		return nil, &Error{Code: CodeInternalError, Message: err.Error()}
 	}
 	return detail, nil
+}
+
+func diffSnapshots(ctx context.Context, params map[string]any) (any, *Error) {
+	if err := validateParams(params, "cwd", "from", "to", "offset", "max_patch_bytes"); err != nil {
+		return nil, err
+	}
+	cwd, rerr := requireString(params, "cwd")
+	if rerr != nil {
+		return nil, rerr
+	}
+	from, rerr := requireSnapshotID(params, "from")
+	if rerr != nil {
+		return nil, rerr
+	}
+	to, rerr := requireSnapshotID(params, "to")
+	if rerr != nil {
+		return nil, rerr
+	}
+	offset, rerr := optionalInt(params, "offset", 0, snapshot.DiffMaxOffset)
+	if rerr != nil {
+		return nil, rerr
+	}
+	maxPatchBytes, rerr := optionalInt(params, "max_patch_bytes", snapshot.DiffMinPatchBytes, snapshot.DiffMaxPatchBytes)
+	if rerr != nil {
+		return nil, rerr
+	}
+	store, err := snapshot.New(cwd)
+	if err != nil {
+		return nil, &Error{Code: CodeInternalError, Message: err.Error()}
+	}
+	diff, err := store.Diff(ctx, from, to, snapshot.DiffPage{Offset: offset, MaxPatchBytes: maxPatchBytes})
+	if errors.Is(err, snapshot.ErrNotFound) {
+		return nil, &Error{Code: CodeSnapshotNotFound, Message: err.Error()}
+	}
+	if err != nil {
+		return nil, &Error{Code: CodeInternalError, Message: err.Error()}
+	}
+	return diff, nil
 }
 
 func writeResponse(enc *json.Encoder, id json.RawMessage, result any, rerr *Error) error {

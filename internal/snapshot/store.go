@@ -479,24 +479,8 @@ func (s *Store) snapshotForCommit(ctx context.Context, commit string, reused boo
 // Get resolves id inside this worktree's namespace only, and returns it only
 // when checkItem accepts the item ref.
 func (s *Store) Get(ctx context.Context, id string) (Detail, error) {
-	if !ValidID(id) {
-		return Detail{}, fmt.Errorf("%w: %q", ErrInvalidID, id)
-	}
-	ref := s.itemsRef() + id
-	records, err := s.items(ctx, ref)
+	found, err := s.lookup(ctx, id)
 	if err != nil {
-		return Detail{}, err
-	}
-	var found *item
-	for i := range records {
-		if records[i].ref == ref {
-			found = &records[i]
-		}
-	}
-	if found == nil {
-		return Detail{}, fmt.Errorf("%w: %s", ErrNotFound, id)
-	}
-	if err := checkItem(*found, id); err != nil {
 		return Detail{}, err
 	}
 
@@ -520,6 +504,26 @@ func (s *Store) Get(ctx context.Context, id string) (Detail, error) {
 	}
 	detail.ChangedFiles = changed
 	return detail, nil
+}
+
+func (s *Store) lookup(ctx context.Context, id string) (item, error) {
+	if !ValidID(id) {
+		return item{}, fmt.Errorf("%w: %q", ErrInvalidID, id)
+	}
+	ref := s.itemsRef() + id
+	records, err := s.items(ctx, ref)
+	if err != nil {
+		return item{}, err
+	}
+	for _, record := range records {
+		if record.ref == ref {
+			if err := checkItem(record, id); err != nil {
+				return item{}, err
+			}
+			return record, nil
+		}
+	}
+	return item{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 }
 
 // snapshotIDOf names the snapshot whose item ref points at commit, applying
