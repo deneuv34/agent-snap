@@ -11,17 +11,18 @@ branch`, and never collide with your real history.
 
 ## How it works
 
-1. A Go core (`cmd/agent-snap`) exposes `create` / `list` / `get` / `ping` as
+1. A Go core (`cmd/agent-snap`) exposes `create` / `list` / `get` / `diff` / `ping` as
    direct JSON commands and a long-running JSONL `serve` mode on stdin/stdout.
 2. Thin TypeScript adapters launch and reuse the Go subprocess:
    - `@agent-snap/opencode` — an OpenCode plugin (baseline at
      `session.created`, coalesced snapshot at `session.idle`, plus
-     `agent_snap_create` / `agent_snap_list` / `agent_snap_get` tools).
+     `agent_snap_create` / `agent_snap_list` / `agent_snap_get` /
+     `agent_snap_diff` tools).
    - `@agent-snap/pi` — a Pi Coding Agent extension (baseline at
      `session_start`, coalesced snapshot at `agent_settled`, cleanup at
      `session_shutdown`, plus `agent_snap_create` / `agent_snap_list` /
-     `agent_snap_get` tools and `agent-snap-create` / `agent-snap-list` /
-     `agent-snap-get` commands).
+     `agent_snap_get` / `agent_snap_diff` tools and `agent-snap-create` /
+     `agent-snap-list` / `agent-snap-get` / `agent-snap-diff` commands).
 3. Every create builds a tree from a **temporary index**
    (`GIT_INDEX_FILE` pointing at a scratch file), so the real index is never
    written. The commit is created with `git commit-tree` against hidden refs —
@@ -63,6 +64,7 @@ bun run build
 ```sh
 agent-snap create "before big refactor" --cwd /path/to/repo   # prints snapshot JSON
 agent-snap list --cwd /path/to/repo --limit 10                # prints {"snapshots": [...]}
+agent-snap diff <from-id> <to-id> --cwd /path/to/repo         # prints one diff page
 agent-snap ping                                               # {"status":"ok","version":...}
 agent-snap version
 agent-snap serve                                              # JSONL server on stdin/stdout
@@ -99,6 +101,7 @@ Methods:
 | `snapshot.create`| `cwd`, `reason?`, `source?`, `host?` | snapshot object (see above)       |
 | `snapshot.list`  | `cwd`, `limit?`               | `{"snapshots":[...]}` (newest first)     |
 | `snapshot.get`   | `cwd`, `id`                   | snapshot detail object                   |
+| `snapshot.diff`  | `cwd`, `from`, `to`, `offset?`, `max_patch_bytes?` | one diff page            |
 
 Error codes: `-32700` parse error, `-32601` method not found,
 `-32602` invalid params, `-32603` internal error, `-32001` snapshot not found.
@@ -110,6 +113,14 @@ list, and get when present. The CLI records `source: cli`; the OpenCode and Pi
 integrations record their own host and event. Origin is reported by the
 caller, so treat it as a label, not evidence. No session identifiers are
 stored. See FR-13 in [`docs/BLINK_SPEC.md`](docs/BLINK_SPEC.md).
+
+`snapshot.diff` returns the changed files and hunks between two snapshots of
+the same worktree, one page at a time: at most 200 files and 64 KiB of hunks
+by default. Each file says whether its hunks are on the page (`full`,
+`truncated`, `deferred`, or `binary`), and `next_offset` names the next page.
+The same pair gives the same result with the same Git, because the diff runs
+in a scratch repository that ignores Git attributes and configuration. See
+FR-14 in [`docs/BLINK_SPEC.md`](docs/BLINK_SPEC.md).
 
 ## Adapters
 
@@ -125,7 +136,8 @@ or copy the built package into `.opencode/plugins/`. The plugin:
 - snapshots the session directory when a session is created,
 - coalesces `session.idle` bursts (1.5 s window) into one settled snapshot,
 - exposes `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
-  and `agent_snap_get(id, cwd?)` tools,
+  `agent_snap_get(id, cwd?)`, and
+  `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)` tools,
 - records host `opencode` and source `session-start`, `session-idle`, or
   `tool` on each snapshot.
 
@@ -162,9 +174,10 @@ The extension:
 - flushes pending snapshots and shuts the Go subprocess down at
   `session_shutdown`,
 - registers `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
-  and `agent_snap_get(id, cwd?)` tools,
-- registers `agent-snap-create`, `agent-snap-list`, and `agent-snap-get <id>`
-  commands,
+  `agent_snap_get(id, cwd?)`, and
+  `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)` tools,
+- registers `agent-snap-create`, `agent-snap-list`, `agent-snap-get <id>`, and
+  `agent-snap-diff <from> <to>` commands,
 - records host `pi` and source `session-start`, `agent-settled`, `tool`, or
   `command` on each snapshot.
 
@@ -195,7 +208,9 @@ AGENT_SNAP_BIN="$PWD/bin/agent-snap" bun run pack-check    # bun pm pack, npm in
   the scratch `GIT_INDEX_FILE`), never writes to the working tree.
 - Inherited git-repository environment (`GIT_DIR`, `GIT_WORK_TREE`,
   `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, …) is stripped from every git
-  invocation, so commands are pinned to the resolved repository.
+  invocation, so commands are pinned to the resolved repository. A diff runs
+  in a scratch bare repository outside the worktree that only reads the
+  repository's objects, so attributes and configuration cannot change it.
 - Commits are written to hidden refs only; no history rewrite, no branch
   updates.
 - `git add -A` honors `.gitignore`; the snapshot tree is what the agent would
@@ -212,7 +227,6 @@ AGENT_SNAP_BIN="$PWD/bin/agent-snap" bun run pack-check    # bun pm pack, npm in
   vs. unstaged preservation, conflict handling, dry-run). Planned as a
   separate, fully safety-tested release.
 - Snapshot garbage collection / retention policy.
-- `snapshot.diff` between two snapshots.
 
 ## License
 

@@ -10,7 +10,20 @@ import {
   windowsTreeCompletionDecision,
   type GroupState,
 } from "./teardown.js"
-import type { PingResult, SnapListResult, SnapOrigin, SnapSnapshot, SnapSnapshotDetail } from "./types.js"
+import type {
+  PingResult,
+  SnapDiff,
+  SnapDiffFile,
+  SnapDiffHunk,
+  SnapDiffPage,
+  SnapDiffPatch,
+  SnapDiffSide,
+  SnapDiffStatus,
+  SnapListResult,
+  SnapOrigin,
+  SnapSnapshot,
+  SnapSnapshotDetail,
+} from "./types.js"
 
 type SnapChild = ChildProcessByStdio<Writable, Readable, null>
 
@@ -258,6 +271,146 @@ function validateDetail(result: unknown): SnapSnapshotDetail {
   }
 }
 
+const MAX_DIFF_FILES = 200
+const MAX_PATCH_BYTES_REPORTED = 1_048_576
+const DIFF_STATUSES: readonly string[] = ["added", "deleted", "modified", "renamed", "type_changed"]
+const DIFF_PATCHES: readonly string[] = ["full", "truncated", "deferred", "binary"]
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+}
+
+function validateDiffSide(side: unknown, name: string): SnapDiffSide {
+  if (!isRecord(side) || typeof side.id !== "string" || typeof side.commit !== "string") {
+    throw new SnapProtocolError(`snapshot.diff result has a malformed ${name}`)
+  }
+  return { id: side.id, commit: side.commit }
+}
+
+function hasDiffBodyLines(text: string): boolean {
+  let start = 0
+  while (start < text.length) {
+    const end = text.indexOf("\n", start)
+    if (end === -1 || end === start || !" +-\\".includes(text[start] as string)) return false
+    start = end + 1
+  }
+  return true
+}
+
+function validateDiffHunk(hunk: unknown): SnapDiffHunk {
+  if (!isRecord(hunk)) throw new SnapProtocolError("snapshot.diff result has a malformed hunk")
+  const { old_start, old_lines, new_start, new_lines, section, text } = hunk
+  if (!isCount(old_start) || !isCount(old_lines) || !isCount(new_start) || !isCount(new_lines)) {
+    throw new SnapProtocolError("snapshot.diff result has a malformed hunk range")
+  }
+  if (!isOptionalString(section)) throw new SnapProtocolError("snapshot.diff result has a malformed hunk section")
+  if (typeof text !== "string" || !hasDiffBodyLines(text)) {
+    throw new SnapProtocolError("snapshot.diff result has malformed hunk text")
+  }
+  return { old_start, old_lines, new_start, new_lines, section, text }
+}
+
+function validateDiffFile(file: unknown): SnapDiffFile {
+  if (!isRecord(file)) throw new SnapProtocolError("snapshot.diff result has a malformed file entry")
+  const { status, path, old_path, similarity, old_mode, new_mode, old_oid, new_oid, additions, deletions, patch, patch_bytes, hunks, lossy } = file
+  if (typeof status !== "string" || !DIFF_STATUSES.includes(status)) {
+    throw new SnapProtocolError("snapshot.diff result has a malformed file status")
+  }
+  if (typeof patch !== "string" || !DIFF_PATCHES.includes(patch)) {
+    throw new SnapProtocolError("snapshot.diff result has a malformed patch kind")
+  }
+  if (typeof path !== "string" || !isOptionalString(old_path)) {
+    throw new SnapProtocolError("snapshot.diff result has a malformed file path")
+  }
+  if (!isOptionalString(old_mode) || !isOptionalString(new_mode) || !isOptionalString(old_oid) || !isOptionalString(new_oid)) {
+    throw new SnapProtocolError("snapshot.diff result has a malformed mode or object ID")
+  }
+  if (!isCount(additions) || !isCount(deletions)) {
+    throw new SnapProtocolError("snapshot.diff result has malformed line counts")
+  }
+  if (similarity !== undefined && (!isCount(similarity) || similarity < 50 || similarity > 100)) {
+    throw new SnapProtocolError("snapshot.diff result has a malformed similarity")
+  }
+  if (patch_bytes !== undefined && !isCount(patch_bytes)) {
+    throw new SnapProtocolError("snapshot.diff result has a malformed patch_bytes")
+  }
+  if (lossy !== undefined && lossy !== true) {
+    throw new SnapProtocolError("snapshot.diff result has a malformed lossy flag")
+  }
+  if (!Array.isArray(hunks)) throw new SnapProtocolError("snapshot.diff result has malformed hunks")
+
+  const renamed = status === "renamed"
+  if ((old_path !== undefined) !== renamed || (similarity !== undefined) !== renamed) {
+    throw new SnapProtocolError("snapshot.diff old_path and similarity must be present exactly for renamed files")
+  }
+  const added = status === "added"
+  if ((old_mode === undefined) !== added || (old_oid === undefined) !== added) {
+    throw new SnapProtocolError("snapshot.diff old_mode and old_oid must be absent exactly for added files")
+  }
+  const deleted = status === "deleted"
+  if ((new_mode === undefined) !== deleted || (new_oid === undefined) !== deleted) {
+    throw new SnapProtocolError("snapshot.diff new_mode and new_oid must be absent exactly for deleted files")
+  }
+  if (patch === "binary" && (additions !== 0 || deletions !== 0 || hunks.length !== 0)) {
+    throw new SnapProtocolError("snapshot.diff binary file must have zero line counts and no hunks")
+  }
+  if (patch === "deferred" && hunks.length !== 0) {
+    throw new SnapProtocolError("snapshot.diff deferred file must have no hunks")
+  }
+  if (patch_bytes !== undefined && patch !== "truncated") {
+    throw new SnapProtocolError("snapshot.diff patch_bytes is allowed only on truncated files")
+  }
+  if (patch_bytes !== undefined && patch_bytes > MAX_PATCH_BYTES_REPORTED) {
+    throw new SnapProtocolError("snapshot.diff patch_bytes exceeds the reportable limit")
+  }
+  return {
+    status: status as SnapDiffStatus,
+    path,
+    old_path,
+    similarity,
+    old_mode,
+    new_mode,
+    old_oid,
+    new_oid,
+    additions,
+    deletions,
+    patch: patch as SnapDiffPatch,
+    patch_bytes,
+    hunks: hunks.map((hunk) => validateDiffHunk(hunk)),
+    lossy,
+  }
+}
+
+function validateDiff(result: unknown): SnapDiff {
+  if (!isRecord(result)) throw new SnapProtocolError("snapshot.diff result must be an object")
+  const { from, to, offset, next_offset, totals, files } = result
+  const fromSide = validateDiffSide(from, "from")
+  const toSide = validateDiffSide(to, "to")
+  if (!isCount(offset) || (next_offset !== undefined && !isCount(next_offset))) {
+    throw new SnapProtocolError("snapshot.diff result has a malformed offset")
+  }
+  if (!isRecord(totals) || !isCount(totals.files) || !isCount(totals.additions) || !isCount(totals.deletions)) {
+    throw new SnapProtocolError("snapshot.diff result has malformed totals")
+  }
+  if (!Array.isArray(files) || files.length > MAX_DIFF_FILES) {
+    throw new SnapProtocolError("snapshot.diff result has malformed files")
+  }
+  if (files.length > 0 && offset + files.length > totals.files) {
+    throw new SnapProtocolError("snapshot.diff page extends past totals.files")
+  }
+  if (next_offset !== undefined && (next_offset <= offset || next_offset > offset + files.length)) {
+    throw new SnapProtocolError("snapshot.diff next_offset is outside the page")
+  }
+  return {
+    from: fromSide,
+    to: toSide,
+    offset,
+    next_offset,
+    totals: { files: totals.files, additions: totals.additions, deletions: totals.deletions },
+    files: files.map((file) => validateDiffFile(file)),
+  }
+}
+
 function validateResult(method: string, result: unknown): unknown {
   switch (method) {
     case "ping": {
@@ -277,6 +430,8 @@ function validateResult(method: string, result: unknown): unknown {
     }
     case "snapshot.get":
       return validateDetail(result)
+    case "snapshot.diff":
+      return validateDiff(result)
     default:
       return result
   }
@@ -380,6 +535,13 @@ export class SnapClient {
 
   async get(cwd: string, id: string, signal?: AbortSignal): Promise<SnapSnapshotDetail> {
     return this.request<SnapSnapshotDetail>("snapshot.get", { cwd, id }, { signal })
+  }
+
+  async diff(cwd: string, from: string, to: string, page?: SnapDiffPage, signal?: AbortSignal): Promise<SnapDiff> {
+    const params: Record<string, unknown> = { cwd, from, to }
+    if (page?.offset !== undefined) params.offset = page.offset
+    if (page?.maxPatchBytes !== undefined) params.max_patch_bytes = page.maxPatchBytes
+    return this.request<SnapDiff>("snapshot.diff", params, { signal })
   }
 
   /**

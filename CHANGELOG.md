@@ -14,6 +14,17 @@
   `bun.lock` replaces `package-lock.json`. `bun run test:node` runs the core
   and Pi tests on Node, and pack-check runs its consumer check on Node and
   Bun. Published packages and their runtime floors are unchanged.
+- Read-only snapshot diff (Phase 3): JSONL `snapshot.diff`, CLI
+  `agent-snap diff <from> <to>`, `SnapClient.diff`, the OpenCode and Pi
+  `agent_snap_diff` tools, and the Pi `agent-snap-diff` command. A diff pages
+  through the changed files and hunks between two snapshots of one worktree,
+  at most 200 files and 64 KiB of hunks per page by default (`offset`,
+  `max_patch_bytes` from 1 KiB to 1 MiB). It runs in a private scratch
+  repository that reads the real objects, so Git attributes and configuration
+  cannot hide or reshape a change, and the same pair gives the same result
+  with the same Git.
+- `SnapLike` gains a required `diff` method. Custom `SnapLike`
+  implementations must add it.
 - Read-only snapshot lookup (Phase 2): JSONL `snapshot.get`, CLI
   `agent-snap get <id>`, `SnapClient.get`, the OpenCode and Pi
   `agent_snap_get` tools, and the Pi `agent-snap-get` command. Lookup

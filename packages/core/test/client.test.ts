@@ -121,6 +121,152 @@ test("malformed snapshot.get results surface SnapProtocolError", async () => {
   }
 })
 
+const fromID = "20260101T000000.000000000Z-1a2b3c4d5e6f"
+const toID = "20260102T000000.000000000Z-9f8e7d6c5b4a"
+
+function requestsOf(log: string) {
+  return readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { event: string; method: string; params: unknown })
+    .filter((entry) => entry.event === "request")
+    .map(({ method, params }) => ({ method, params }))
+}
+
+test("diff sends exactly cwd, from, and to when no page is given", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-diff-")), "log.jsonl")
+  const c = client({ FAKE_AGENT_SNAP_LOG: log })
+  try {
+    await c.diff("/some/repo", fromID, toID)
+    await c.diff("/some/repo", fromID, toID, {})
+  } finally {
+    await c.close()
+  }
+  const params = { cwd: "/some/repo", from: fromID, to: toID }
+  assert.deepEqual(requestsOf(log), [
+    { method: "snapshot.diff", params },
+    { method: "snapshot.diff", params },
+  ])
+})
+
+test("diff sends offset and max_patch_bytes only when given", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-diff-")), "log.jsonl")
+  const c = client({ FAKE_AGENT_SNAP_LOG: log })
+  try {
+    await c.diff("/r", fromID, toID, { offset: 0 })
+    await c.diff("/r", fromID, toID, { maxPatchBytes: 2048 })
+    await c.diff("/r", fromID, toID, { offset: 3, maxPatchBytes: 1024 })
+  } finally {
+    await c.close()
+  }
+  const base = { cwd: "/r", from: fromID, to: toID }
+  assert.deepEqual(requestsOf(log), [
+    { method: "snapshot.diff", params: { ...base, offset: 0 } },
+    { method: "snapshot.diff", params: { ...base, max_patch_bytes: 2048 } },
+    { method: "snapshot.diff", params: { ...base, offset: 3, max_patch_bytes: 1024 } },
+  ])
+})
+
+test("diff returns the validated page without unknown keys", async () => {
+  const c = client()
+  try {
+    const diff = await c.diff("/repo", fromID, toID, { offset: 4 })
+    assert.deepEqual(JSON.parse(JSON.stringify(diff)), {
+      from: { id: fromID, commit: "1a2b3c4d5e6f0000000000000000000000000000" },
+      to: { id: toID, commit: "9f8e7d6c5b4a0000000000000000000000000000" },
+      offset: 4,
+      next_offset: 6,
+      totals: { files: 9, additions: 14, deletions: 5 },
+      files: [
+        {
+          status: "added", path: "assets/logo.png", new_mode: "100644", new_oid: "23c62bf50000",
+          additions: 0, deletions: 0, patch: "binary", hunks: [],
+        },
+        {
+          status: "modified", path: "src/server.go", old_mode: "100644", new_mode: "100644",
+          old_oid: "83db48f80000", new_oid: "8792505e0000", additions: 1, deletions: 0, patch: "full",
+          hunks: [
+            {
+              old_start: 88, old_lines: 6, new_start: 88, new_lines: 7, section: "func dispatch() {",
+              text: " \tcase \"snapshot.get\":\n+\tcase \"snapshot.diff\":\n \tdefault:\n\\ No newline at end of file\n",
+            },
+          ],
+        },
+        {
+          status: "renamed", path: "src/util.go", old_path: "src/helpers.go", similarity: 92,
+          old_mode: "100644", new_mode: "100644", old_oid: "96cc55880000", new_oid: "1c5a36f50000",
+          additions: 12, deletions: 5, patch: "deferred", hunks: [],
+        },
+      ],
+    })
+  } finally {
+    await c.close()
+  }
+})
+
+test("a missing diff snapshot surfaces SnapRpcError -32001 with the server message", async () => {
+  const c = client({ FAKE_AGENT_SNAP_MODE: "diff-not-found" })
+  try {
+    await assert.rejects(
+      () => c.diff("/repo", fromID, toID),
+      (err: unknown) => err instanceof SnapRpcError && err.code === -32001 && err.message === `snapshot not found: ${fromID}`,
+    )
+  } finally {
+    await c.close()
+  }
+})
+
+test("an old binary's method-not-found surfaces as a plain SnapRpcError", async () => {
+  const c = client({ FAKE_AGENT_SNAP_MODE: "diff-method-not-found" })
+  try {
+    await assert.rejects(
+      () => c.diff("/repo", fromID, toID),
+      (err: unknown) => err instanceof SnapRpcError && err.code === -32601,
+    )
+  } finally {
+    await c.close()
+  }
+})
+
+test("malformed snapshot.diff results surface SnapProtocolError", async () => {
+  const source = readFileSync(fixture, "utf8")
+  const modes = ["diff-scalar", ...[...source.matchAll(/^  "(diff-[a-z-]+)": /gm)].map((match) => match[1] as string)]
+  assert.ok(modes.length > 40, `expected the fixture to define the malformed diff modes, found ${modes.length}`)
+  await Promise.all(
+    modes.map(async (mode) => {
+      const c = client({ FAKE_AGENT_SNAP_MODE: mode })
+      try {
+        await assert.rejects(
+          () => c.diff("/repo", fromID, toID),
+          (err: unknown) => err instanceof SnapProtocolError,
+          `mode ${mode} must produce a SnapProtocolError`,
+        )
+      } finally {
+        await c.close()
+      }
+    }),
+  )
+})
+
+test("aborting a diff tears down the transport and rejects with AbortError", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-diff-abort-")), "fake.log")
+  const c = client({ FAKE_AGENT_SNAP_MODE: "diff-slow", FAKE_AGENT_SNAP_LOG: log })
+  const controller = new AbortController()
+  try {
+    const pending = c.diff("/repo", fromID, toID, undefined, controller.signal)
+    setTimeout(() => controller.abort(), 150)
+    await assert.rejects(() => pending, (err: unknown) => (err as Error).name === "AbortError")
+    assert.equal(c.pid, undefined, "abort must start teardown of the transport")
+  } finally {
+    await c.close()
+  }
+  const entries = readFileSync(log, "utf8")
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as { event: string })
+  assert.ok(!entries.some((entry) => entry.event === "completed"), "aborted diff must never complete")
+})
+
 function originClient(mode: string, onLog: (message: string) => void = () => {}, timeoutMs?: number) {
   const log = join(mkdtempSync(join(tmpdir(), "agent-snap-origin-")), "log.jsonl")
   const c = new SnapClient({

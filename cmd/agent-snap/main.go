@@ -19,6 +19,8 @@ Usage:
   agent-snap create [reason] [--cwd <dir>]     create a snapshot, print JSON
   agent-snap list [--cwd <dir>] [--limit <n>]  list snapshots, print JSON
   agent-snap get <id> [--cwd <dir>]            show one snapshot, print JSON
+  agent-snap diff <from> <to> [--cwd <dir>] [--offset <n>] [--max-patch-bytes <n>]
+                                               show one page of the diff between two snapshots, print JSON
   agent-snap ping                              print protocol version info
   agent-snap serve                             JSONL request/response server on stdin/stdout
   agent-snap version                           print version
@@ -100,6 +102,20 @@ func run(args []string, stdout io.Writer) error {
 			return err
 		}
 		return printJSON(stdout, detail)
+	case "diff":
+		cwd, from, to, page, err := diffFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		store, err := snapshot.New(cwd)
+		if err != nil {
+			return err
+		}
+		diff, err := store.Diff(context.Background(), from, to, page)
+		if err != nil {
+			return err
+		}
+		return printJSON(stdout, diff)
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", args[0], usage)
 	}
@@ -197,6 +213,58 @@ func getFlags(args []string) (cwd, id string, err error) {
 		return "", "", fmt.Errorf("invalid snapshot id %q", positional[0])
 	}
 	return cwd, positional[0], nil
+}
+
+func diffFlags(args []string) (cwd, from, to string, page snapshot.DiffPage, err error) {
+	cwd, err = os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--cwd", "--offset", "--max-patch-bytes":
+			if i+1 >= len(args) {
+				return "", "", "", page, fmt.Errorf("flag %s requires a value", args[i])
+			}
+			value := args[i+1]
+			switch args[i] {
+			case "--cwd":
+				cwd = value
+			case "--offset":
+				if page.Offset, err = intFlag(args[i], value, 0, snapshot.DiffMaxOffset); err != nil {
+					return "", "", "", page, err
+				}
+			default:
+				if page.MaxPatchBytes, err = intFlag(args[i], value, snapshot.DiffMinPatchBytes, snapshot.DiffMaxPatchBytes); err != nil {
+					return "", "", "", page, err
+				}
+			}
+			i++
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return "", "", "", page, fmt.Errorf("unknown flag %q", args[i])
+			}
+			positional = append(positional, args[i])
+		}
+	}
+	if len(positional) != 2 {
+		return "", "", "", page, fmt.Errorf("expected two snapshot ids, got %d", len(positional))
+	}
+	for _, id := range positional {
+		if !snapshot.ValidID(id) {
+			return "", "", "", page, fmt.Errorf("invalid snapshot id %q", id)
+		}
+	}
+	return cwd, positional[0], positional[1], page, nil
+}
+
+func intFlag(name, value string, min, max int) (int, error) {
+	n, err := strconv.Atoi(value)
+	if err != nil || n < min || n > max {
+		return 0, fmt.Errorf("invalid value for %s: %q (want an integer from %d through %d)", name, value, min, max)
+	}
+	return n, nil
 }
 
 func printJSON(stdout io.Writer, v any) error {

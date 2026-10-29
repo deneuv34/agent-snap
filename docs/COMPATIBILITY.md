@@ -24,6 +24,7 @@ Executable name: `agent-snap`.
 | `create [reason] [--cwd <dir>]` | Create one snapshot with source `cli` and no host, and print a snapshot JSON object. `--reason` and a positional reason are mutually exclusive. |
 | `list [--cwd <dir>] [--limit <n>]` | Print `{"snapshots":[...]}` newest first. |
 | `get <id> [--cwd <dir>]` | Print the snapshot detail object. A missing snapshot fails with `snapshot not found: <id>`. |
+| `diff <from> <to> [--cwd <dir>] [--offset <n>] [--max-patch-bytes <n>]` | Print one page of the diff result object. `--offset` is 0 through 2147483647 and `--max-patch-bytes` is 1024 through 1048576. |
 | `ping` | Print `{"status":"ok","version":"<version>"}`. |
 | `version` | Print the version string and a newline. |
 | `serve` | JSONL server on stdin/stdout. Takes no arguments. |
@@ -44,8 +45,8 @@ Request:
 ```
 
 Unknown keys on the request or in `params` are rejected. `cwd` is required and
-must be a non-empty string for `snapshot.create`, `snapshot.list`, and
-`snapshot.get`.
+must be a non-empty string for `snapshot.create`, `snapshot.list`,
+`snapshot.get`, and `snapshot.diff`.
 
 | Method | Params | Result |
 | --- | --- | --- |
@@ -53,6 +54,7 @@ must be a non-empty string for `snapshot.create`, `snapshot.list`, and
 | `snapshot.create` | `cwd`, `reason?`, `source?`, `host?` | snapshot object |
 | `snapshot.list` | `cwd`, `limit?` | `{"snapshots":[...]}` |
 | `snapshot.get` | `cwd`, `id` | snapshot detail object |
+| `snapshot.diff` | `cwd`, `from`, `to`, `offset?`, `max_patch_bytes?` | diff result object |
 
 `limit` is an integer from **1 through 100**. Omitted `limit` uses the store
 default of **20**, newest first.
@@ -67,9 +69,9 @@ checked before the repository is resolved, and it resolves only inside the
 | --- | --- |
 | `-32700` | Parse error (malformed JSON or oversized line) |
 | `-32601` | Method not found |
-| `-32602` | Invalid params (unknown key, missing/blank `cwd`, bad types, bad `limit`, malformed snapshot `id`, invalid origin value, a reason that contains a NUL byte or ends with an origin paragraph) |
-| `-32603` | Internal error (repository resolution, Git, scratch index, ref update, tampered snapshot ref) |
-| `-32001` | Snapshot not found: a well-formed `id` with no snapshot in this worktree |
+| `-32602` | Invalid params (unknown key, missing/blank `cwd`, bad types, bad `limit`, malformed snapshot `id`, `from`, or `to`, bad diff `offset` or `max_patch_bytes`, invalid origin value, a reason that contains a NUL byte or ends with an origin paragraph) |
+| `-32603` | Internal error (repository resolution, Git, scratch index or evidence repository, ref update, tampered snapshot ref, missing object, a diff that fails its integrity check) |
+| `-32001` | Snapshot not found: a well-formed `id`, `from`, or `to` with no snapshot in this worktree |
 
 Error messages name the operation. They must not include working-tree file
 contents.
@@ -105,6 +107,36 @@ Returned by `snapshot.get` and `agent-snap get`.
 | `parent_id` | string | when the parent is a snapshot in the same worktree |
 | `changed_files` | string array, at most 1000 entries | always (may be empty) |
 | `changed_files_truncated` | boolean | `true` when more than 1000 paths changed |
+
+### Diff result object
+
+Returned by `snapshot.diff` and `agent-snap diff`. FR-14 and section 8.4 of
+[`BLINK_SPEC.md`](BLINK_SPEC.md) define every field and rule.
+
+| Field | Type | When present |
+| --- | --- | --- |
+| `from`, `to` | `{id, commit}` | always |
+| `offset` | integer | always |
+| `next_offset` | integer, greater than `offset` | when the page does not finish the diff |
+| `totals` | `{files, additions, deletions}` over the whole diff | always |
+| `files` | array of at most 200 file entries | always (may be empty) |
+
+Each file entry has `status` (`added`, `deleted`, `modified`, `renamed`,
+`type_changed`), `path`, `additions`, `deletions`, `patch` (`full`,
+`truncated`, `deferred`, `binary`), and `hunks`. It adds `old_path` and
+`similarity` for a rename, `old_mode`/`old_oid` unless added,
+`new_mode`/`new_oid` unless deleted, `patch_bytes` on some truncated files,
+and `lossy: true` when non-UTF-8 bytes were replaced. Each hunk has
+`old_start`, `old_lines`, `new_start`, `new_lines`, an optional `section`,
+and `text`.
+
+A page lists files from `offset`, default 0. `max_patch_bytes`, default 65536,
+bounds the hunk bytes on the page. A diff runs in a scratch bare repository
+outside the worktree that reads the repository's objects through
+`objects/info/alternates`. Git configuration, attribute files, and replace
+refs do not change the result, and the diff writes nothing to the repository.
+
+Mixed versions: a binary without `snapshot.diff` answers `-32601`.
 
 ### Snapshot origin
 
@@ -147,17 +179,18 @@ Mixed versions:
 ## Hidden Git refs
 
 Namespace: `refs/agent-snapshots/`. Callers never construct these paths; only
-`internal/snapshot.Store` owns them. Refs are per worktree. Capture, list, and
-get never move `HEAD`, write the real index, or write the working tree; get
-also writes no refs or objects.
+`internal/snapshot.Store` owns them. Refs are per worktree. Capture, list, get,
+and diff never move `HEAD`, write the real index, or write the working tree;
+get and diff also write no refs or objects.
 
 ## TypeScript client (`@agent-snap/core`)
 
 Public surface:
 
 - `SnapClient` / `SnapClient.fromEnv()` / `SnapClient.defaultBin()`
-- `SnapLike` (`create(cwd, reason?, signal?, origin?)`, `list`, `get`, `close`)
+- `SnapLike` (`create(cwd, reason?, signal?, origin?)`, `list`, `get`, `diff(cwd, from, to, page?, signal?)`, `close`)
 - `SnapOrigin`, `SnapSnapshot`, `SnapSnapshotDetail`, `SnapListResult`, `PingResult`
+- `SnapDiff`, `SnapDiffFile`, `SnapDiffHunk`, `SnapDiffSide`, `SnapDiffPage`, `SnapDiffStatus`, `SnapDiffPatch`
 - `SnapRpcError` (JSON-RPC `code` + `message`)
 - `SnapProtocolError` (malformed child output)
 
@@ -188,6 +221,7 @@ request fails closed.
 | Origin | Host `opencode`; source `session-start`, `session-idle`, or `tool`. |
 | `agent_snap_list(cwd?, limit?)` | Manual list. |
 | `agent_snap_get(id, cwd?)` | Describe one snapshot. Read-only. |
+| `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)` | One page of the diff between two snapshots, as Git evidence text. Read-only. |
 
 ## Pi extension (`@agent-snap/pi`)
 
@@ -198,8 +232,8 @@ Requires Pi Coding Agent `>= 0.84` and Node `>= 22.19`. Manifest key: `pi.extens
 | `session_start` | Awaited baseline (`session-start`). Failure is logged, not propagated. |
 | `agent_settled` | Coalesced snapshot, 1.5 s window. |
 | `session_shutdown` | Flush, then close the client. |
-| `agent_snap_create` / `agent_snap_list` / `agent_snap_get` | Tools. |
-| `agent-snap-create` / `agent-snap-list` / `agent-snap-get <id>` | Commands. |
+| `agent_snap_create` / `agent_snap_list` / `agent_snap_get` / `agent_snap_diff` | Tools. |
+| `agent-snap-create` / `agent-snap-list` / `agent-snap-get <id>` / `agent-snap-diff <from> <to>` | Commands. |
 | Origin | Host `pi`; source `session-start`, `agent-settled`, `tool`, or `command`. |
 
 The packaged extension must expose `package.json` and `dist/` at the extension
