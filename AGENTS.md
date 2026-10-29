@@ -89,7 +89,8 @@ Comments are reserved for non-obvious safety constraints (scratch-index placemen
 
 ### TypeScript
 
-- ESM. Node's built-in test runner. No extra test or assertion framework.
+- ESM. Bun is the toolchain: `bun install`, `bun run`, `bun test`. Tests use the `node:test` and `node:assert` APIs so the same files run on Bun and, through `bun run test:node`, on Node. No extra test or assertion framework.
+- Published packages run on Node in Pi and on compiled Bun in OpenCode. `packages/*/src` uses `node:` APIs only, never Bun globals. In a compiled host `process.execPath` is the host's own CLI, so anything spawned from it must keep working there (`bun run smoke` checks this).
 - Runtime-validate every RPC success and error payload. Never trust subprocess JSON.
 - Honor `AbortSignal` and the default timeout. Teardown must be started on cancel or timeout.
 - Keep `SnapLike` as the host dependency. Do not reach into `SnapClient` internals from plugins.
@@ -111,12 +112,13 @@ Required local gates:
 test -z "$(gofmt -l .)"
 go test ./...
 go vet ./...
-npm run build
-npm run typecheck
-npm test
+bun run build
+bun run typecheck
+bun run test
+bun run test:node
 go build -o bin/agent-snap ./cmd/agent-snap
-AGENT_SNAP_BIN="$PWD/bin/agent-snap" npm run smoke
-AGENT_SNAP_BIN="$PWD/bin/agent-snap" npm run pack-check
+AGENT_SNAP_BIN="$PWD/bin/agent-snap" bun run smoke
+AGENT_SNAP_BIN="$PWD/bin/agent-snap" bun run pack-check
 ```
 
 Cover empty history, invalid IDs, other-worktree refs, SHA-1 and SHA-256 repos, ignored/untracked/staged/unstaged files, symbolic-ref refusal, concurrent creates, cancellation, and malformed protocol responses when those paths exist.

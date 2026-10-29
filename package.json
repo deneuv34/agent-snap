@@ -9,19 +9,22 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "typecheck": "tsc --noEmit -p packages/core && tsc --noEmit -p packages/pi && tsc --noEmit -p packages/opencode && tsc --noEmit -p tsconfig.json",
-    "pretest": "npm run build",
-    "test": "node --import tsx --test packages/core/test/*.test.ts packages/pi/test/*.test.ts packages/opencode/test/*.test.ts",
-    "smoke": "tsx scripts/smoke.ts",
-    "pack-check": "tsx scripts/pack-check.ts"
+    "build": "bun run --filter './packages/*' build",
+    "typecheck": "bun --bun tsc --noEmit -p packages/core && bun --bun tsc --noEmit -p packages/pi && bun --bun tsc --noEmit -p packages/opencode && bun --bun tsc --noEmit -p tsconfig.json",
+    "pretest": "bun run build",
+    "test": "bun test --timeout 30000 ./packages",
+    "test:node": "bun run build && node --import tsx --test packages/core/test/*.test.ts packages/pi/test/*.test.ts",
+    "smoke": "bun scripts/smoke.ts",
+    "pack-check": "bun scripts/pack-check.ts"
   },
   "devDependencies": {
+    "@agent-snap/core": "workspace:*",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   },
   "engines": {
+    "bun": ">=1.4.0",
     "node": ">=22.19.0"
   },
   "keywords": [

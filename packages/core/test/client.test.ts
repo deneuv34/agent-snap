@@ -542,6 +542,42 @@ test(
   },
 )
 
+test(
+  "agent-snap never inherits the supervisor's launch markers",
+  { skip: process.platform === "win32" ? "guardian semantics are POSIX-only" : false },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-snap-env-"))
+    const log = join(dir, "fake.log")
+    const c = client({ FAKE_AGENT_SNAP_MODE: "record-env", FAKE_AGENT_SNAP_LOG: log })
+    try {
+      await c.ping()
+    } finally {
+      await c.close()
+    }
+    const env = readFileSync(log, "utf8")
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as { event: string; guardian?: string | null; bunBeBun?: string | null })
+      .find((entry) => entry.event === "env")
+    assert.deepEqual({ guardian: env?.guardian, bunBeBun: env?.bunBeBun }, { guardian: null, bunBeBun: null })
+  },
+)
+
+test(
+  "a host executable re-run as its own supervisor refuses to spawn another",
+  { skip: process.platform === "win32" ? "guardian semantics are POSIX-only" : false },
+  async () => {
+    process.env.AGENT_SNAP_GUARDIAN = "1"
+    const c = client()
+    try {
+      await assert.rejects(() => c.ping(), /supervisor cannot start/)
+    } finally {
+      delete process.env.AGENT_SNAP_GUARDIAN
+      await c.close()
+    }
+  },
+)
+
 test("aborted request tears down the transport and rejects with AbortError", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agent-snap-abort-test-"))
   const log = join(dir, "fake.log")

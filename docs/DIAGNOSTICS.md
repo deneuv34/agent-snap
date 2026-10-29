@@ -59,8 +59,15 @@ fail closed.
 ### POSIX (Linux, macOS)
 
 The client spawns a guardian supervisor as the process-group leader. It
-never signals a bare PGID from the Node process (the guardian is in that
+never signals a bare PGID from the host process (the guardian is in that
 group and a recycled PGID must not be signalled).
+
+- `agent-snap supervisor exited (code=1, signal=none)` right after start, in
+  a compiled host — the host executable did not run the supervisor script.
+  OpenCode needs to be built with Bun 1.2.16 or later.
+- `agent-snap supervisor cannot start: this host's executable ran its own
+  entrypoint …` — the host re-ran itself instead of the supervisor script and
+  refused to start another copy. Fail closed.
 
 Failure messages:
 
@@ -110,7 +117,7 @@ If you need to file a bug, include:
 
 1. `agent-snap version` / `ping` JSON
 2. OS and architecture
-3. Go / Node / Git versions
+3. Go / Git versions, and the host runtime (Node or Bun) with its version
 4. The error string and JSON-RPC code
 5. Whether the failure was timeout, abort, or Git
 6. Whether `HEAD`, the real index, and the worktree were unchanged (`git status`

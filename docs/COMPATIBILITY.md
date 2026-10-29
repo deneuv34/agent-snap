@@ -205,6 +205,12 @@ and do not invoke Git.
 
 Install: `{ "plugin": ["@agent-snap/opencode"] }` in `opencode.json`.
 
+OpenCode runs the plugin on its bundled Bun. On Linux and macOS the client
+starts its teardown supervisor through the host executable
+(`process.execPath`) with `BUN_BE_BUN=1`, which a compiled Bun host honors
+from Bun 1.2.16. Against an older host the supervisor fails to start and every
+request fails closed.
+
 | Hook / tool | Behaviour |
 | --- | --- |
 | `session.created` | Baseline snapshot. Failures are logged, not thrown. |

@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SnapClient, type SnapDiff, type SnapSnapshot, type SnapSnapshotDetail } from "@agent-snap/core"
@@ -147,6 +148,47 @@ async function runChecks(dir: string): Promise<void> {
   const latest = runJson(["list", "--cwd", dir, "--limit", "1"]) as { snapshots: SnapSnapshot[] }
   const captured = git(dir, ["show", `${latest.snapshots[0]?.commit}:file.txt`])
   if (captured !== "changed") fail(`snapshot content mismatch: got ${JSON.stringify(captured)}`)
+
+  // 6. A compiled Bun host, the way OpenCode ships: process.execPath is the
+  //    host's own CLI, not a JavaScript runtime.
+  writeFileSync(join(dir, "file.txt"), "compiled\n")
+  const hosted = runCompiledHost(dir)
+  if (hosted.reason !== "smoke-compiled-host" || !hosted.changed_files?.includes("file.txt")) {
+    fail(`compiled host snapshot mismatch: ${JSON.stringify(hosted)}`)
+  }
+}
+
+function runCompiledHost(dir: string): SnapSnapshot {
+  const work = mkdtempSync(join(tmpdir(), "agent-snap-smoke-host-"))
+  try {
+    const core = createRequire(import.meta.url).resolve("@agent-snap/core")
+    const entry = join(work, "host.ts")
+    // A host CLI that ran its own entrypoint for --eval would recurse; exit instead.
+    writeFileSync(
+      entry,
+      `import { SnapClient } from ${JSON.stringify(core)}
+if (process.argv.includes("--eval")) process.exit(3)
+const client = SnapClient.fromEnv()
+try {
+  console.log(JSON.stringify(await client.create(process.env.SMOKE_REPO ?? "", "smoke-compiled-host")))
+} finally {
+  await client.close()
+}
+`,
+    )
+    const host = join(work, process.platform === "win32" ? "host.exe" : "host")
+    execFileSync(process.execPath, ["build", "--compile", entry, "--outfile", host], { stdio: "ignore" })
+    // Recent macOS kills Bun's compiled output for an invalid signature.
+    if (process.platform === "darwin") execFileSync("codesign", ["--force", "--sign", "-", host], { stdio: "ignore" })
+    const output = execFileSync(host, [], {
+      encoding: "utf8",
+      timeout: 60_000,
+      env: { ...process.env, AGENT_SNAP_BIN: bin, SMOKE_REPO: dir },
+    })
+    return JSON.parse(output) as SnapSnapshot
+  } finally {
+    rmSync(work, { recursive: true, force: true })
+  }
 }
 
 main().catch((err: unknown) => fail(err instanceof Error ? err.message : String(err)))

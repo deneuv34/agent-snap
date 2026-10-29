@@ -153,6 +153,8 @@ function shutdown() {
   }, ${KILL_GRACE_MS})
 }
 var child = null
+delete process.env.AGENT_SNAP_GUARDIAN
+delete process.env.BUN_BE_BUN
 try {
   child = cp.spawn(process.argv[1], process.argv.slice(2), { stdio: ["pipe", "pipe", "inherit"], env: process.env })
 } catch (e) {
@@ -171,12 +173,15 @@ process.stdin.pipe(child.stdin)
 child.stdin.on("error", function () {})
 child.stdout.pipe(process.stdout)
 process.stdin.on("end", function () { shutdown() })
-// The control channel must be read via net.Socket, never fs.createReadStream:
-// a raw-fd read is serviced by libuv's threadpool and blocks forever once
-// the client stops writing, which deadlocks process.exit() in
-// uv__threadpool_cleanup (the supervisor would never die).
-var net = require("node:net")
-var control = new net.Socket({ fd: 3 })
+// On Node the control channel must be read via net.Socket, never
+// fs.createReadStream: a raw-fd read is serviced by libuv's threadpool and
+// blocks forever once the client stops writing, which deadlocks
+// process.exit() in uv__threadpool_cleanup (the supervisor would never die).
+// Bun's net.Socket never reads an inherited fd, so Bun reads the raw fd,
+// which does not block its exit.
+var control = process.versions.bun === undefined
+  ? new (require("node:net").Socket)({ fd: 3 })
+  : fs.createReadStream(null, { fd: 3 })
 readline.createInterface({ input: control, terminal: false }).on("line", function (line) {
   if (line === "shutdown") shutdown()
 })
@@ -690,10 +695,20 @@ export class SnapClient {
       return
     }
     // POSIX: spawn the guardian supervisor, which owns the process group
-    // and spawns agent-snap inside it.
+    // and spawns agent-snap inside it. In a compiled Bun host such as
+    // OpenCode, process.execPath is the host's own CLI, which rejects
+    // --eval; BUN_BE_BUN makes it act as the bun CLI. An executable that
+    // ignores both runs its own entrypoint instead, and that copy would
+    // spawn another: AGENT_SNAP_GUARDIAN marks the copy so it refuses. The
+    // guardian deletes both so agent-snap's tree never inherits them.
+    if (process.env.AGENT_SNAP_GUARDIAN !== undefined) {
+      throw new Error("agent-snap supervisor cannot start: this host's executable ran its own entrypoint instead of the supervisor script")
+    }
+    const guardianEnv: NodeJS.ProcessEnv = { ...env, AGENT_SNAP_GUARDIAN: "1" }
+    if (process.versions.bun !== undefined) guardianEnv.BUN_BE_BUN = "1"
     const child = spawn(process.execPath, ["--eval", GUARDIAN_SCRIPT, this.#bin, ...this.#serveArgs], {
       stdio: ["pipe", "pipe", "inherit", "pipe", "pipe"],
-      env,
+      env: guardianEnv,
       detached: true,
     }) as SnapChild
     this.#child = child

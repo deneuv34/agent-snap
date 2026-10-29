@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- `SnapClient` now works in Bun hosts on Linux and macOS. In a compiled Bun
+  host, `process.execPath` is the host's own CLI, so the supervisor never
+  started and every request failed with `agent-snap supervisor exited
+  (code=1, signal=none)`. The OpenCode CLI rejects `--eval` the same way. On
+  plain Bun, every `close()` took about 6 s and ended in a SIGKILL, because
+  Bun's `net.Socket` never reads the supervisor's control pipe. A host
+  executable that re-runs its own entrypoint now fails closed instead of
+  starting copies of itself.
+- Development uses Bun 1.4: `bun install`, `bun run build`, `bun run test`.
+  `bun.lock` replaces `package-lock.json`. `bun run test:node` runs the core
+  and Pi tests on Node, and pack-check runs its consumer check on Node and
+  Bun. Published packages and their runtime floors are unchanged.
 - Read-only snapshot diff (Phase 3): JSONL `snapshot.diff`, CLI
   `agent-snap diff <from> <to>`, `SnapClient.diff`, the OpenCode and Pi
   `agent_snap_diff` tools, and the Pi `agent-snap-diff` command. A diff pages

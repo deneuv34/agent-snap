@@ -24,6 +24,10 @@ if (mode === "survive-eof") {
   setInterval(() => {}, 10_000)
 }
 
+if (mode === "record-env") {
+  record({ event: "env", guardian: process.env.AGENT_SNAP_GUARDIAN ?? null, bunBeBun: process.env.BUN_BE_BUN ?? null })
+}
+
 const rl = createInterface({ input: process.stdin })
 let created = 0
 let grandchildSpawned = false
