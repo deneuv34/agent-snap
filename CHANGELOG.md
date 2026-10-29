@@ -10,6 +10,10 @@
   Bun's `net.Socket` never reads the supervisor's control pipe. A host
   executable that re-runs its own entrypoint now fails closed instead of
   starting copies of itself.
+- Development uses Bun 1.4: `bun install`, `bun run build`, `bun run test`.
+  `bun.lock` replaces `package-lock.json`. `bun run test:node` runs the core
+  and Pi tests on Node, and pack-check runs its consumer check on Node and
+  Bun. Published packages and their runtime floors are unchanged.
 - Read-only snapshot lookup (Phase 2): JSONL `snapshot.get`, CLI
   `agent-snap get <id>`, `SnapClient.get`, the OpenCode and Pi
   `agent_snap_get` tools, and the Pi `agent-snap-get` command. Lookup

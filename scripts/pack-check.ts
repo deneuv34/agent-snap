@@ -28,10 +28,11 @@ function main(): void {
     // 1. Pack each workspace.
     const tarballs: Array<{ workspace: string; path: string }> = []
     for (const workspace of ["@agent-snap/core", "@agent-snap/pi", "@agent-snap/opencode"]) {
-      const output = run("npm", ["pack", "--pack-destination", work, "-w", workspace], root)
-      const name = output.trim().split("\n").pop()?.trim() ?? ""
-      if (!name.endsWith(".tgz")) fail(`npm pack produced no tarball for ${workspace}: ${output}`)
-      tarballs.push({ workspace, path: join(work, name) })
+      const dir = join(root, "packages", workspace.slice("@agent-snap/".length))
+      const output = run("bun", ["pm", "pack", "--destination", work, "--quiet"], dir)
+      const path = output.trim().split("\n").pop()?.trim() ?? ""
+      if (!path.endsWith(".tgz")) fail(`bun pm pack produced no tarball for ${workspace}: ${output}`)
+      tarballs.push({ workspace, path })
     }
 
     // 2. Validate tarball contents (host entry present, stale files absent).
@@ -52,13 +53,14 @@ function main(): void {
       }
     }
 
-    // 3. Install the tarballs plus the pi peer dependency into a clean project.
+    // 3. Install the tarballs plus the pi peer dependency into a clean project,
+    //    with npm because that is how Pi installs packages.
     const project = join(work, "project")
     mkdirSync(project, { recursive: true })
     writeFileSync(join(project, "package.json"), JSON.stringify({ name: "pack-check", private: true }))
     run(
       "npm",
-      ["install", "--no-audit", "--no-fund", ...tarballs.map((t) => t.path), "@earendil-works/pi-coding-agent@0.84.1"],
+      ["install", "--no-audit", "--no-fund", "--prefer-online", ...tarballs.map((t) => t.path), "@earendil-works/pi-coding-agent@0.84.1"],
       project,
     )
 
@@ -141,12 +143,14 @@ const viaDiscovery = result.extensions.filter((e) => e.path.endsWith(".pi" + "/e
 if (viaDiscovery.length !== 1) throw new Error("pi extension not discovered from the documented topology: " + result.extensions.map((e) => e.path).join(", "))
 if (!viaDiscovery[0].handlers.has("session_start")) throw new Error("discovered extension missing session_start handler")
 
-console.log("pack-check: OK")
+console.log("pack-check: OK on " + (process.versions.bun ? "bun " + process.versions.bun : "node " + process.versions.node))
 `
     const checkFile = join(project, "check.mjs")
     writeFileSync(checkFile, checkScript)
-    const output = run(process.execPath, [checkFile], project)
-    console.log(output.trim())
+    // Pi hosts run the packages on Node; OpenCode hosts run them on Bun.
+    for (const runtime of ["node", "bun"]) {
+      console.log(run(runtime, [checkFile], project).trim())
+    }
   } finally {
     rmSync(work, { recursive: true, force: true })
   }

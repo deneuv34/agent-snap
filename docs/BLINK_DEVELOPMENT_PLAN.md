@@ -57,12 +57,13 @@ Pull requests that implement a phase should mention that phase's tracking issue.
 test -z "$(gofmt -l .)"
 go test ./...
 go vet ./...
-npm run build
-npm run typecheck
-npm test
+bun run build
+bun run typecheck
+bun run test
+bun run test:node
 go build -o bin/agent-snap ./cmd/agent-snap
-AGENT_SNAP_BIN="$PWD/bin/agent-snap" npm run smoke
-AGENT_SNAP_BIN="$PWD/bin/agent-snap" npm run pack-check
+AGENT_SNAP_BIN="$PWD/bin/agent-snap" bun run smoke
+AGENT_SNAP_BIN="$PWD/bin/agent-snap" bun run pack-check
 ```
 
 All commands pass on the supported platform matrix, and package artifacts install cleanly in a fresh directory.

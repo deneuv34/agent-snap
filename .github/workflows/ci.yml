@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  BUN_VERSION: "1.4.0"
+
 jobs:
   go:
     name: Go core (${{ matrix.os }})
@@ -38,8 +41,8 @@ jobs:
           name: agent-snap-${{ matrix.os }}
           path: bin/agent-snap*
 
-  node:
-    name: TypeScript adapters (${{ matrix.os }})
+  bun:
+    name: TypeScript adapters on Bun (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -49,16 +52,36 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: typecheck
+        run: bun run typecheck
+      - name: unit tests
+        run: bun run test
+
+  node:
+    name: Pi runtime on Node (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - name: typecheck
-        run: npm run typecheck
-      - name: unit tests
-        run: npm test
+      - run: bun install --frozen-lockfile
+      - name: core and pi unit tests on Node
+        run: bun run test:node
 
   smoke:
     name: Smoke test (${{ matrix.os }})
@@ -78,10 +101,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: npm
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ matrix.artifact }}
@@ -89,13 +114,17 @@ jobs:
       - name: make binary executable
         if: runner.os != 'Windows'
         run: chmod +x bin/${{ matrix.bin }}
-      - run: npm ci
-      - run: npm run build
-      - name: smoke
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: smoke (includes a compiled Bun host)
         env:
           AGENT_SNAP_BIN: ${{ github.workspace }}/bin/${{ matrix.bin }}
-        run: npm run smoke
-      - name: integration tests against real binary
+        run: bun run smoke
+      - name: integration tests against real binary on Bun
+        env:
+          AGENT_SNAP_BIN: ${{ github.workspace }}/bin/${{ matrix.bin }}
+        run: bun test --timeout 30000 ./packages/core/test/integration.test.ts ./packages/pi/test/integration.test.ts
+      - name: integration tests against real binary on Node
         env:
           AGENT_SNAP_BIN: ${{ github.workspace }}/bin/${{ matrix.bin }}
         run: node --import tsx --test packages/core/test/integration.test.ts packages/pi/test/integration.test.ts
@@ -108,18 +137,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: npm
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: agent-snap-ubuntu-latest
           path: bin
       - run: chmod +x bin/agent-snap
-      - run: npm ci
-      - run: npm run build
-      - name: pack-check (npm pack, clean tarball install, official Pi loader, discovery topology)
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: pack-check (bun pm pack, npm install of the tarballs, consumer check on Node and Bun)
         env:
           AGENT_SNAP_BIN: ${{ github.workspace }}/bin/agent-snap
-        run: npm run pack-check
+        run: bun run pack-check

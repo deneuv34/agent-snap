@@ -36,9 +36,11 @@ branch`, and never collide with your real history.
 ## Requirements
 
 - Go 1.26+
-- Node.js 22.19+ (adapters only; the Pi extension requires the same floor as
-  Pi Coding Agent)
 - git 2.30+
+- To use the adapters: Pi runs them on Node.js 22.19+ (the same floor as Pi
+  Coding Agent), and OpenCode runs them on its bundled Bun.
+- To develop the adapters: Bun 1.4+, plus Node.js 22.19+ for the Node test
+  run and pack-check.
 
 Supported CI matrix, release artifacts, and publication steps:
 [docs/RELEASE.md](docs/RELEASE.md). Frozen CLI / JSONL / package contract:
@@ -52,8 +54,8 @@ repository contents: [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
 go install ./cmd/agent-snap
 
 # TypeScript adapters (optional)
-npm install
-npm run build
+bun install
+bun run build
 ```
 
 ## CLI
@@ -171,17 +173,20 @@ Set `AGENT_SNAP_BIN` if the binary is not on `PATH`.
 ## Development
 
 These local gates match CI (`.github/workflows/ci.yml`). `gofmt` is required;
-CI also runs TypeScript tests on Linux, Windows, and macOS, and smoke on
-Linux and Windows.
+CI also runs TypeScript tests on Linux, Windows, and macOS on both Bun and
+Node, and smoke on Linux and Windows. Use `bun run test`, not `bun test`: the
+script builds first and raises Bun's 5 s per-test timeout, which teardown
+tests exceed.
 
 ```sh
 test -z "$(gofmt -l .)"
 go test ./... && go vet ./...
-npm install
-npm run build && npm run typecheck && npm test
+bun install
+bun run build && bun run typecheck && bun run test
+bun run test:node                                          # core and Pi tests on Node, Pi's runtime
 go build -o bin/agent-snap ./cmd/agent-snap
-AGENT_SNAP_BIN="$PWD/bin/agent-snap" npm run smoke
-AGENT_SNAP_BIN="$PWD/bin/agent-snap" npm run pack-check   # npm pack + clean tarball install
+AGENT_SNAP_BIN="$PWD/bin/agent-snap" bun run smoke         # includes a compiled Bun host
+AGENT_SNAP_BIN="$PWD/bin/agent-snap" bun run pack-check    # bun pm pack, npm install, check on Node and Bun
 ```
 
 ## Safety model

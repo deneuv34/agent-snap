@@ -9,15 +9,17 @@ and wire names stay frozen; see [COMPATIBILITY.md](COMPATIBILITY.md).
 | --- | --- | --- |
 | Git | 2.30 | runner default |
 | Go | 1.26 | `1.26.x` |
-| Node.js | 22.19.0 | `22` (latest 22.x ≥ 22.19) |
+| Bun (toolchain; OpenCode runtime) | 1.4.0 | `1.4.0` (`BUN_VERSION` in CI) |
+| Node.js (Pi runtime) | 22.19.0 | `22` (latest 22.x ≥ 22.19) |
 | OS (Go core + tests) | Linux, Windows | `ubuntu-latest`, `windows-latest` |
 | OS (TypeScript + teardown) | Linux, Windows, macOS | `ubuntu-latest`, `windows-latest`, `macos-latest` |
 | Smoke + pack-check | Linux | `ubuntu-latest` (Windows smoke also runs) |
 
-POSIX process-group teardown is covered by Linux and macOS Node tests.
-Windows process-tree teardown (`taskkill /T /F`) is covered by Windows Node
-tests. Smoke runs on Linux and Windows against the binary built on that OS.
-`npm run pack-check` runs on Linux as the publication check.
+POSIX process-group teardown is covered by Linux and macOS tests on Bun
+and on Node. Windows process-tree teardown (`taskkill /T /F`) is covered by
+Windows tests on both runtimes. Smoke runs on Linux and Windows against the
+binary built on that OS, including from a compiled Bun host like OpenCode.
+`bun run pack-check` runs on Linux as the publication check.
 
 ## Versioning
 
@@ -71,7 +73,7 @@ Published packages and their tarball contents (`files` in each `package.json`):
 | `@agent-snap/opencode` | `dist/`, `README.md`, `LICENSE` (`dist/index.js` present; no stale `plugin.js`) |
 | `@agent-snap/pi` | `dist/`, `README.md`, `LICENSE` (`dist/extension.js` present; no `orca-plugin.json`) |
 
-`npm run pack-check` is the automated content and clean-install gate.
+`bun run pack-check` is the automated content and clean-install gate.
 
 ## Pre-publish checklist
 
@@ -83,18 +85,19 @@ Published packages and their tarball contents (`files` in each `package.json`):
 test -z "$(gofmt -l .)"
 go test ./...
 go vet ./...
-npm run build
-npm run typecheck
-npm test
+bun run build
+bun run typecheck
+bun run test
+bun run test:node
 go build -o bin/agent-snap ./cmd/agent-snap
-AGENT_SNAP_BIN="$PWD/bin/agent-snap" npm run smoke
-AGENT_SNAP_BIN="$PWD/bin/agent-snap" npm run pack-check
+AGENT_SNAP_BIN="$PWD/bin/agent-snap" bun run smoke
+AGENT_SNAP_BIN="$PWD/bin/agent-snap" bun run pack-check
 ```
 
 - [ ] CI is green on the matrix above
 - [ ] Binaries built with the version ldflag
 - [ ] `SHA256SUMS` generated and stored with the binaries
-- [ ] `npm pack` for each workspace inspected (or pack-check passed)
+- [ ] `bun pm pack` for each workspace inspected (or pack-check passed)
 - [ ] npm publish in dependency order: `core`, then `opencode` and `pi`
 - [ ] GitHub release notes point at the changelog and checksums
 - [ ] No restore, rename, or new protocol method shipped in a baseline patch

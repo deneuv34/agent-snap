@@ -11,7 +11,7 @@ const perIterationMs = Number(process.env.PER_ITERATION_MS ?? "90000")
 function psTreeDump(): string {
   try {
     return execSync(
-      `ps -eo pid,ppid,pgid,state,etime,command | grep -E "agent-snap|fake-agent-snap|--eval|sleep 37|--test|tsx" | grep -v grep`,
+      `ps -eo pid,ppid,pgid,state,etime,command | grep -E "agent-snap|fake-agent-snap|--eval|sleep 37|bun test" | grep -v grep`,
       { encoding: "utf8" },
     )
   } catch {
@@ -23,7 +23,7 @@ function runIteration(index: number): Promise<"pass" | "fail" | "timeout"> {
   const started = Date.now()
   return new Promise((resolveIteration) => {
     let output = ""
-    const child = spawn(process.execPath, ["--import", "tsx", "--test", testFile], {
+    const child = spawn(process.execPath, ["test", "--timeout", "30000", testFile], {
       env: { ...process.env, AGENT_SNAP_BIN: bin },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
