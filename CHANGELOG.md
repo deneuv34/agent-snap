@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `@agent-snap/opencode` supports OpenCode 2.x as well as 1.x. The entry is
+  now one default export, `{ id, server, setup }`: OpenCode 1.x calls
+  `server`, OpenCode 2.x calls `setup` and loads it through the new
+  `./server` export. On 2.x the plugin follows `session.created`,
+  `session.idle`, `session.status`, and `session.deleted` through the event
+  stream, registers the same four tools with JSON Schema input, and resolves
+  a missing `cwd` from the calling session. Enable it with
+  `"plugins": ["@agent-snap/opencode"]` on 2.x; 1.x configuration is
+  unchanged. The named `AgentSnapPlugin` export is gone.
 - `@agent-snap/pi` accepts Pi Coding Agent 1.x. The peer range was
   `^0.84.0`, which npm reads as `< 0.85.0`; it is now `>= 0.84.0 < 2.0.0`.
   No extension API the plugin uses changed between 0.84 and 1.4.

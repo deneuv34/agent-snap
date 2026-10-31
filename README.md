@@ -126,8 +126,14 @@ FR-14 in [`docs/BLINK_SPEC.md`](docs/BLINK_SPEC.md).
 
 ### OpenCode plugin
 
+One package serves OpenCode 1.x (>= 1.18.18) and 2.x (>= 2.2.5). Enable it
+in `opencode.json(c)` with the key your OpenCode version reads:
+
 ```jsonc
-// opencode.json
+// OpenCode 2.x
+{ "plugins": ["@agent-snap/opencode"] }
+
+// OpenCode 1.x
 { "plugin": ["@agent-snap/opencode"] }
 ```
 

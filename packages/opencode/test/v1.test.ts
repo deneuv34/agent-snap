@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import type { SnapDiff, SnapDiffFile, SnapDiffPage, SnapLike, SnapOrigin, SnapSnapshot, SnapSnapshotDetail } from "@agent-snap/core"
-import { createAgentSnapPlugin } from "../src/factory.js"
+import { createAgentSnapPlugin } from "../src/v1.js"
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 

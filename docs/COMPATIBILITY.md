@@ -203,7 +203,18 @@ and do not invoke Git.
 
 ## OpenCode plugin (`@agent-snap/opencode`)
 
-Install: `{ "plugin": ["@agent-snap/opencode"] }` in `opencode.json`.
+Supports OpenCode 1.x (`@opencode-ai/plugin` >= 1.18.18) and 2.x
+(`@opencode/plugin` >= 2.2.5). Install in `opencode.json(c)`:
+`{ "plugins": ["@agent-snap/opencode"] }` on 2.x,
+`{ "plugin": ["@agent-snap/opencode"] }` on 1.x.
+
+The package entry (also exported as `./server`) has one default export,
+`{ id: "@agent-snap/opencode", server, setup }`. OpenCode 1.x calls `server`
+and 2.x calls `setup`; each host imports only its own adapter. The 1.x
+adapter loads `@opencode-ai/plugin`, whose `effect` dependency the 2.x
+runtime refuses to load from a plugin's `node_modules`, so 2.x never imports
+it. On 2.x, tools that omit `cwd` use the calling session's directory, and
+the plugin's cleanup ends its event subscription before the shutdown barrier.
 
 OpenCode runs the plugin on its bundled Bun. On Linux and macOS the client
 starts its teardown supervisor through the host executable

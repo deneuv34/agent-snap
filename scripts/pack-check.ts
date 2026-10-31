@@ -100,9 +100,20 @@ const items = await client.list(repo, 10)
 if (items.length !== 1) throw new Error("list mismatch")
 await client.close()
 
-// opencode tarball: exactly one loadable plugin entry
-const fns = Object.entries(opencodeEntry).filter(([, v]) => typeof v === "function").map(([k]) => k)
-if (fns.join(",") !== "AgentSnapPlugin") throw new Error("opencode entry exports: " + fns.join(","))
+// opencode tarball: one default export that OpenCode 1.x (server) and 2.x (setup) both load
+if (Object.keys(opencodeEntry).join(",") !== "default") throw new Error("opencode entry exports: " + Object.keys(opencodeEntry).join(","))
+const opencodePlugin = opencodeEntry.default
+if (opencodePlugin.id !== "@agent-snap/opencode" || typeof opencodePlugin.server !== "function" || typeof opencodePlugin.setup !== "function") {
+  throw new Error("opencode entry is not a 1.x and 2.x plugin: " + JSON.stringify(Object.keys(opencodePlugin)))
+}
+if (require.resolve("@agent-snap/opencode/server") !== require.resolve("@agent-snap/opencode")) {
+  throw new Error("opencode ./server export does not name the package entry")
+}
+const opencodeHooks = await opencodePlugin.server({ directory: repo })
+for (const tool of ["agent_snap_create", "agent_snap_list", "agent_snap_get", "agent_snap_diff"]) {
+  if (!opencodeHooks.tool?.[tool]) throw new Error("opencode 1.x hooks missing tool: " + tool)
+}
+await opencodeHooks.dispose()
 
 // pi tarball: manifest inside the packed tarball survives npm install
 const piPkg = require("@agent-snap/pi/package.json")
