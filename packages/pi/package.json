@@ -30,12 +30,12 @@
     "@agent-snap/core": "0.1.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^0.84.0",
-    "@earendil-works/pi-coding-agent": "^0.84.0"
+    "@earendil-works/pi-ai": ">=0.84.0 <2.0.0",
+    "@earendil-works/pi-coding-agent": ">=0.84.0 <2.0.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.84.1",
-    "@earendil-works/pi-coding-agent": "0.84.1"
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0"
   },
   "publishConfig": {
     "access": "public"

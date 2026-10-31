@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtempSync, readFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -133,6 +133,16 @@ function requestsOf(log: string) {
     .map(({ method, params }) => ({ method, params }))
 }
 
+// A fixed abort delay races the child's startup on slow runners; abort only
+// once the request is in flight inside the child.
+async function abortOnceReceived(controller: AbortController, log: string, method: string) {
+  const received = () => existsSync(log) && readFileSync(log, "utf8").includes(`"method":"${method}"`)
+  for (const deadline = Date.now() + 10_000; !received() && Date.now() < deadline; ) {
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  controller.abort()
+}
+
 test("diff sends exactly cwd, from, and to when no page is given", async () => {
   const log = join(mkdtempSync(join(tmpdir(), "agent-snap-diff-")), "log.jsonl")
   const c = client({ FAKE_AGENT_SNAP_LOG: log })
@@ -253,9 +263,12 @@ test("aborting a diff tears down the transport and rejects with AbortError", asy
   const c = client({ FAKE_AGENT_SNAP_MODE: "diff-slow", FAKE_AGENT_SNAP_LOG: log })
   const controller = new AbortController()
   try {
-    const pending = c.diff("/repo", fromID, toID, undefined, controller.signal)
-    setTimeout(() => controller.abort(), 150)
-    await assert.rejects(() => pending, (err: unknown) => (err as Error).name === "AbortError")
+    const rejected = assert.rejects(
+      c.diff("/repo", fromID, toID, undefined, controller.signal),
+      (err: unknown) => (err as Error).name === "AbortError",
+    )
+    await abortOnceReceived(controller, log, "snapshot.diff")
+    await rejected
     assert.equal(c.pid, undefined, "abort must start teardown of the transport")
   } finally {
     await c.close()
@@ -264,6 +277,7 @@ test("aborting a diff tears down the transport and rejects with AbortError", asy
     .split("\n")
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as { event: string })
+  assert.ok(entries.some((entry) => entry.event === "request"), "the diff must have reached the child before the abort")
   assert.ok(!entries.some((entry) => entry.event === "completed"), "aborted diff must never complete")
 })
 
@@ -584,9 +598,12 @@ test("aborted request tears down the transport and rejects with AbortError", asy
   const c = client({ FAKE_AGENT_SNAP_MODE: "slow-create", FAKE_AGENT_SNAP_LOG: log })
   const controller = new AbortController()
   try {
-    const pending = c.create("/repo", "aborted", controller.signal)
-    setTimeout(() => controller.abort(), 150)
-    await assert.rejects(() => pending, (err: unknown) => (err as Error).name === "AbortError")
+    const rejected = assert.rejects(
+      c.create("/repo", "aborted", controller.signal),
+      (err: unknown) => (err as Error).name === "AbortError",
+    )
+    await abortOnceReceived(controller, log, "snapshot.create")
+    await rejected
   } finally {
     await c.close()
   }
@@ -594,6 +611,7 @@ test("aborted request tears down the transport and rejects with AbortError", asy
     .split("\n")
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as { event: string })
+  assert.ok(entries.some((entry) => entry.event === "request"), "the create must have reached the child before the abort")
   assert.ok(!entries.some((entry) => entry.event === "completed"), "aborted create must never complete")
 })
 

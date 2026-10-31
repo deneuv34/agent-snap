@@ -1,5 +1,3 @@
-import { tool } from "@opencode-ai/plugin"
-import type { Hooks } from "@opencode-ai/plugin"
 import {
   createCoalescedScheduler,
   type SnapDiff,
@@ -13,8 +11,26 @@ import {
 
 const HOST = "opencode"
 
-const DIFF_DESCRIPTION =
-  "Show what changed between two agent-snap snapshots as Git hunks. Read-only. Snapshot ids come from agent_snap_list. Large diffs are paged: pass the offset the output names. Cite findings by path and hunk header."
+export const DESCRIPTIONS = {
+  create:
+    "Create a snapshot of the current git working tree, stored in hidden refs (refs/agent-snapshots/...). HEAD and the index are never touched. Unchanged trees reuse the previous snapshot.",
+  list: "List agent-snap snapshots for a repository, newest first.",
+  get: "Describe one agent-snap snapshot by id: its commit, tree, parent, and the files changed since its parent. Read-only. Snapshot ids come from agent_snap_list or agent_snap_create.",
+  diff: "Show what changed between two agent-snap snapshots as Git hunks. Read-only. Snapshot ids come from agent_snap_list. Large diffs are paged: pass the offset the output names. Cite findings by path and hunk header.",
+  reason: "Why the snapshot is being taken",
+  cwd: "Repository directory; defaults to the session directory",
+  limit: "Maximum number of snapshots to return",
+  id: "Snapshot id from agent_snap_list or agent_snap_create",
+  from: "Snapshot id from agent_snap_list to diff from",
+  to: "Snapshot id from agent_snap_list to diff to",
+  offset: "Index of the first file to show; use the offset the previous page named",
+  maxPatchBytes: "Patch byte budget for this page, 1024 to 1048576",
+} as const
+
+export const DIFF_BOUNDS = {
+  offset: { min: 0, max: 2147483647 },
+  maxPatchBytes: { min: 1024, max: 1048576 },
+} as const
 
 function formatCreated(snap: SnapSnapshot): string {
   const reused = snap.reused === true ? " (working tree unchanged — reused previous snapshot)" : ""
@@ -96,9 +112,28 @@ function diffPage(offset: number | undefined, maxPatchBytes: number | undefined)
 
 export interface AgentSnapDeps {
   client: SnapLike
-  directory: string
   coalesceDelayMs?: number
   log?: (message: string) => void
+}
+
+export interface DiffArgs {
+  from: string
+  to: string
+  offset?: number
+  max_patch_bytes?: number
+}
+
+/** Host-neutral session lifecycle and tool operations shared by the OpenCode 1.x and 2.x adapters. */
+export interface AgentSnap {
+  sessionCreated(sessionID: string, dir: string): void
+  sessionIdle(sessionID: string): void
+  sessionBusy(sessionID: string): void
+  sessionDeleted(sessionID: string): void
+  create(cwd: string, reason: string | undefined, signal: AbortSignal): Promise<string>
+  list(cwd: string, limit: number | undefined, signal: AbortSignal): Promise<string>
+  get(cwd: string, id: string, signal: AbortSignal): Promise<string>
+  diff(cwd: string, args: DiffArgs, signal: AbortSignal): Promise<string>
+  dispose(): Promise<void>
 }
 
 interface SessionState {
@@ -107,7 +142,7 @@ interface SessionState {
   idle: { controller: AbortController } | null
 }
 
-export function createAgentSnapPlugin(deps: AgentSnapDeps): Hooks {
+export function createAgentSnap(deps: AgentSnapDeps): AgentSnap {
   const { client } = deps
   const log = deps.log ?? (() => {})
   const sessions = new Map<string, SessionState>()
@@ -145,97 +180,61 @@ export function createAgentSnapPlugin(deps: AgentSnapDeps): Hooks {
     }
   }
 
+  const open = () => {
+    if (closing) throw new Error("agent-snap plugin is closing")
+  }
+
   return {
-    event: async ({ event }) => {
+    sessionCreated(sessionID, dir) {
       if (closing) return
-      if (event.type === "session.created") {
-        const dir = event.properties.info.directory || deps.directory
-        const controller = new AbortController()
-        sessions.set(event.properties.info.id, { dir, baseline: { controller }, idle: null })
-        trackBaseline(event.properties.info.id, baseline(dir, controller.signal))
-      } else if (event.type === "session.idle") {
-        const state = sessions.get(event.properties.sessionID)
-        if (state === undefined) {
-          log(`ignoring session.idle for unknown session ${event.properties.sessionID}`)
-          return
-        }
-        const controller = new AbortController()
-        state.idle = { controller }
-        idle.trigger(event.properties.sessionID, () =>
-          takeIdleSnapshot(event.properties.sessionID, state.dir, controller.signal),
-        )
-      } else if (event.type === "session.status") {
-        if (event.properties.status.type !== "busy") return
-        const state = sessions.get(event.properties.sessionID)
-        if (state === undefined) return
-        idle.cancel(event.properties.sessionID)
-        state.idle?.controller.abort()
-      } else if (event.type === "session.deleted") {
-        const state = sessions.get(event.properties.info.id)
-        if (state === undefined) return
-        idle.cancel(event.properties.info.id)
-        state.baseline?.controller.abort()
-        state.idle?.controller.abort()
-        sessions.delete(event.properties.info.id)
+      const controller = new AbortController()
+      sessions.set(sessionID, { dir, baseline: { controller }, idle: null })
+      trackBaseline(sessionID, baseline(dir, controller.signal))
+    },
+    sessionIdle(sessionID) {
+      if (closing) return
+      const state = sessions.get(sessionID)
+      if (state === undefined) {
+        log(`ignoring session.idle for unknown session ${sessionID}`)
+        return
       }
+      const controller = new AbortController()
+      state.idle = { controller }
+      idle.trigger(sessionID, () => takeIdleSnapshot(sessionID, state.dir, controller.signal))
     },
-    tool: {
-      agent_snap_create: tool({
-        description:
-          "Create a snapshot of the current git working tree, stored in hidden refs (refs/agent-snapshots/...). HEAD and the index are never touched. Unchanged trees reuse the previous snapshot.",
-        args: {
-          reason: tool.schema.string().describe("Why the snapshot is being taken").optional(),
-          cwd: tool.schema.string().describe("Repository directory; defaults to the session directory").optional(),
-        },
-        async execute(args, ctx) {
-          if (closing) throw new Error("agent-snap plugin is closing")
-          const cwd = args.cwd ?? ctx.directory
-          const snap = await client.create(cwd, args.reason ?? "manual", ctx.abort, { source: "tool", host: HOST })
-          return formatCreated(snap)
-        },
-      }),
-      agent_snap_list: tool({
-        description: "List agent-snap snapshots for a repository, newest first.",
-        args: {
-          cwd: tool.schema.string().describe("Repository directory; defaults to the session directory").optional(),
-          limit: tool.schema.number().int().positive().describe("Maximum number of snapshots to return").optional(),
-        },
-        async execute(args, ctx) {
-          if (closing) throw new Error("agent-snap plugin is closing")
-          const items = await client.list(args.cwd ?? ctx.directory, args.limit ?? 20, ctx.abort)
-          return formatList(items)
-        },
-      }),
-      agent_snap_get: tool({
-        description:
-          "Describe one agent-snap snapshot by id: its commit, tree, parent, and the files changed since its parent. Read-only. Snapshot ids come from agent_snap_list or agent_snap_create.",
-        args: {
-          id: tool.schema.string().describe("Snapshot id from agent_snap_list or agent_snap_create"),
-          cwd: tool.schema.string().describe("Repository directory; defaults to the session directory").optional(),
-        },
-        async execute(args, ctx) {
-          if (closing) throw new Error("agent-snap plugin is closing")
-          const snap = await client.get(args.cwd ?? ctx.directory, args.id, ctx.abort)
-          return formatDetail(snap)
-        },
-      }),
-      agent_snap_diff: tool({
-        description: DIFF_DESCRIPTION,
-        args: {
-          from: tool.schema.string().describe("Snapshot id from agent_snap_list to diff from"),
-          to: tool.schema.string().describe("Snapshot id from agent_snap_list to diff to"),
-          offset: tool.schema.number().int().min(0).max(2147483647).describe("Index of the first file to show; use the offset the previous page named").optional(),
-          max_patch_bytes: tool.schema.number().int().min(1024).max(1048576).describe("Patch byte budget for this page, 1024 to 1048576").optional(),
-          cwd: tool.schema.string().describe("Repository directory; defaults to the session directory").optional(),
-        },
-        async execute(args, ctx) {
-          if (closing) throw new Error("agent-snap plugin is closing")
-          const diff = await client.diff(args.cwd ?? ctx.directory, args.from, args.to, diffPage(args.offset, args.max_patch_bytes), ctx.abort)
-          return formatDiff(diff)
-        },
-      }),
+    sessionBusy(sessionID) {
+      if (closing) return
+      const state = sessions.get(sessionID)
+      if (state === undefined) return
+      idle.cancel(sessionID)
+      state.idle?.controller.abort()
     },
-    dispose: async () => {
+    sessionDeleted(sessionID) {
+      if (closing) return
+      const state = sessions.get(sessionID)
+      if (state === undefined) return
+      idle.cancel(sessionID)
+      state.baseline?.controller.abort()
+      state.idle?.controller.abort()
+      sessions.delete(sessionID)
+    },
+    async create(cwd, reason, signal) {
+      open()
+      return formatCreated(await client.create(cwd, reason ?? "manual", signal, { source: "tool", host: HOST }))
+    },
+    async list(cwd, limit, signal) {
+      open()
+      return formatList(await client.list(cwd, limit ?? 20, signal))
+    },
+    async get(cwd, id, signal) {
+      open()
+      return formatDetail(await client.get(cwd, id, signal))
+    },
+    async diff(cwd, args, signal) {
+      open()
+      return formatDiff(await client.diff(cwd, args.from, args.to, diffPage(args.offset, args.max_patch_bytes), signal))
+    },
+    async dispose() {
       closing = true
       await idle.flush()
       idle.dispose()

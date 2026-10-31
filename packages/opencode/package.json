@@ -1,12 +1,16 @@
 {
   "name": "@agent-snap/opencode",
   "version": "0.1.0",
-  "description": "agent-snap plugin for OpenCode: baseline snapshot at session start, coalesced snapshot at session idle, snapshot tools",
+  "description": "agent-snap plugin for OpenCode 1.x and 2.x: baseline snapshot at session start, coalesced snapshot at session idle, snapshot tools",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./server": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
@@ -38,9 +42,16 @@
     "working-tree"
   ],
   "peerDependencies": {
-    "@opencode-ai/plugin": "^1.18.18"
+    "@opencode-ai/plugin": "^1.18.18",
+    "@opencode/plugin": "^2.2.5"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "1.18.18"
+    "@opencode-ai/plugin": "1.18.18",
+    "@opencode/plugin": "2.2.5"
   }
 }
