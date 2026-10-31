@@ -225,7 +225,10 @@ request fails closed.
 
 ## Pi extension (`@agent-snap/pi`)
 
-Requires Pi Coding Agent `>= 0.84` and Node `>= 22.19`. Manifest key: `pi.extensions`.
+Requires Pi Coding Agent `>= 0.84.0 < 2.0.0` and Node `>= 22.19`. The unit
+tests load the extension through Pi 1.4's own loader; pack-check loads the
+packed tarball through Pi 0.84.1, the floor of the range. Manifest key:
+`pi.extensions`.
 
 | Hook / tool / command | Behaviour |
 | --- | --- |

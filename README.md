@@ -145,8 +145,8 @@ Set `AGENT_SNAP_BIN` if the binary is not on `PATH`.
 
 ### Pi Coding Agent extension
 
-Targets **Pi Coding Agent** (pi.dev, `@earendil-works/pi-coding-agent` >=
-0.84, Node >= 22.19). Install with Pi's package installer:
+Targets **Pi Coding Agent** (pi.dev, `@earendil-works/pi-coding-agent` 0.84
+through 1.x, Node >= 22.19). Install with Pi's package installer:
 
 ```sh
 pi install npm:@agent-snap/pi
