@@ -155,7 +155,7 @@ All commands pass on the supported platform matrix, and package artifacts instal
 ### Deliverables
 
 - A reviewed restore design covering full-tree and path-scoped operations.
-- A `snapshot.restore` dry-run API that computes writes, deletions, conflicts, and preservation requirements without changing the repository.
+- A `snapshot.restore_plan` dry-run API (FR-15) that computes writes, deletions, conflicts, and preservation requirements without changing the repository.
 - A mandatory safety-snapshot design that captures the current state before every confirmed restore.
 
 ### Work items
@@ -187,7 +187,7 @@ All commands pass on the supported platform matrix, and package artifacts instal
 ### Work items
 
 1. Implement restore writes through a narrowly scoped core API; do not expose raw Git commands directly through host plugins.
-2. Enforce the validated dry-run plan and confirmation capability at the protocol boundary.
+2. Enforce the validated dry-run plan at the protocol boundary, and the person's confirmation in the hosts and the CLI ([docs/RESTORE.md](RESTORE.md)).
 3. Apply the documented preservation and conflict rules; refuse rather than overwrite anything outside the approved plan.
 4. Provide an abort and recovery path that references the newly created safety snapshot.
 5. Add end-to-end tests that prove no unrelated files, index entries, refs, or worktrees are modified.
