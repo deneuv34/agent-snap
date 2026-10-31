@@ -1,7 +1,7 @@
 # @agent-snap/pi
 
 agent-snap extension for **Pi Coding Agent** (pi.dev,
-`@earendil-works/pi-coding-agent` >= 0.84, Node >= 22.19).
+`@earendil-works/pi-coding-agent` 0.84 through 1.x, Node >= 22.19).
 
 The package declares `pi.extensions: ["dist/extension.js"]` in its
 `package.json`, which Pi's extension discovery reads. The extension:
