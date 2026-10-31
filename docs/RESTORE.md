@@ -120,7 +120,7 @@ A restore deletes untracked files on purpose. The main use is to undo what an ag
 
 Staged content is not a blocker. A restore changes only the working tree, so the index keeps every staged blob, and the backup holds every working-tree file the restore replaces, in its cleaned form.
 
-Section 10 asks that staged and unstaged changes be "detected and preserved". This record reads "preserved" as "named in the plan, held by the backup, and never overwritten without a confirmation". A stricter reading, that a restore must leave every unstaged change in place, would block every `unstaged` entry instead. That choice is the second open question.
+Section 10 asks that staged and unstaged changes be "detected and preserved". This record reads "preserved" as "named in the plan, held by the backup, and never overwritten without a confirmation". A stricter reading, that a restore must leave every unstaged change in place, would block every `unstaged` entry instead, including the agent edits a restore exists to undo. Review chose the first reading.
 
 Any blocker makes the plan inapplicable. Blink never skips a blocked path and applies the rest. The user narrows `paths` or resolves the state with Git.
 
@@ -164,7 +164,7 @@ The core cannot tell a person from an agent. It enforces the binding in the prev
 - OpenCode 1.x and 2.x get the plan tool only, and its output ends with the CLI command to run. In 1.x, `ToolContext.ask` goes through OpenCode's permission settings, which a user can set to allow without asking, so it cannot prove that a person answered. The 2.x prompt has not been checked, and Phase 5 treats it the same way until it is.
 - The CLI opens the controlling terminal, refuses when there is none, and asks the user to type the last six hex digits of the backup ID. It has no `--yes` and never reads the confirmation from standard input. The digits make the user read the backup ID. They are not a secret, because the plan prints them.
 
-Blink does not claim to stop an agent that has a shell. Such an agent can run Git itself, start its own `serve`, or give the CLI a terminal with a tool such as `script`. The guarantee covers Blink's own tools, hooks, and shared transport, and the spec will say so. Phase 5 work item 2 asks for the confirmation to be enforced "at the protocol boundary". The core enforces the plan there. It cannot enforce that a person confirmed, and the third open question asks whether that limit is acceptable.
+Blink does not claim to stop an agent that has a shell. Such an agent can run Git itself, start its own `serve`, or give the CLI a terminal with a tool such as `script`. The guarantee covers Blink's own tools, hooks, and shared transport, and the spec will say so. Phase 5 work item 2 asks for the confirmation to be enforced "at the protocol boundary". The core enforces the plan there. It cannot enforce that a person confirmed. Review accepted that limit, and the spec pull request rewords the work item to match.
 
 ## Phase 5 writes follow these rules
 
@@ -191,7 +191,7 @@ An automatic snapshot that runs during a restore writes only objects and hidden 
 Each step is one pull request that ends in a check. The steps that simplify existing code come before the steps that add to it.
 
 1. This record.
-2. Spec. Add FR-15 for the plan, the error code `-32002` for a stale plan, the backup rule, and the reading of "fresh" and "preserved" above. Replace the restore items in section 10 and the restore decision in section 14 with references to FR-15. Name the plan's private object directory next to the scratch index in section 9 and in `AGENTS.md`. Update the roadmap's method name.
+2. Spec. Add FR-15 for the plan, the error code `-32002` for a stale plan, the backup rule, and the reading of "fresh" and "preserved" above. Replace the restore items in section 10 and the restore decision in section 14 with references to FR-15. Name the plan's private object directory next to the scratch index in section 9 and in `AGENTS.md`. State that the confirmation guarantee does not cover an agent with a shell. In the roadmap, update the method name and reword Phase 5 work item 2 so that the protocol boundary enforces the plan, and the hosts enforce the confirmation.
 3. Move the capture steps out of `Store.Create` into one function, with no change in behavior.
 4. Make the `validateResult` default an error. Today it passes the result of an unknown method through unchecked.
 5. `Store.PlanRestore`, with real-repository tests for each state and blocker above. They cover SHA-1 and SHA-256, linked and nested worktrees, renames, a `HEAD` with CRLF content under `core.autocrlf`, sparse checkout, an unborn branch, and cancellation. One test fingerprints the paths, sizes, and contents under the Git directory before and after a plan. Another records a `create` after each plan and checks that its tree equals `current_tree`.
@@ -216,13 +216,15 @@ Phase 4 work item 5 asks for tests of failures between backup and write. Phase 4
 | 8. Auditability | The five bound values and the backup ID in every result. |
 | 9. Testing | The Phase 4 pull requests above, then the Phase 5 adversarial suite. |
 
-## Open questions for review
+## Review decisions
 
-1. Should a restore delete untracked files the snapshot lacks by default, as proposed, or only when the user asks for it?
-2. Should a restore overwrite unstaged changes once the user has seen them and the backup holds them, as proposed, or block every `unstaged` entry?
-3. Is a confirmation guarantee that covers Blink's own tools, hooks, and shared transport acceptable, given that an agent with a shell can provide a terminal or start its own `serve`?
-4. Is a plan tool with no in-host restore acceptable for OpenCode, as proposed, or should OpenCode accept `ToolContext.ask` with a documented warning?
-5. Do the names `snapshot.restore_plan` and `snapshot.restore` replace the roadmap's "`snapshot.restore` dry-run API"?
+Review settled five product questions on 2026-11-01, each as this record proposed:
+
+1. A restore deletes the untracked files that the snapshot lacks within the scope, by default. Opting in would leave an agent's new files behind after a default restore.
+2. A restore overwrites an unstaged change after the user saw it flagged and the backup holds it. Blocking every `unstaged` entry would refuse the agent edits a restore exists to undo.
+3. The confirmation guarantee covers Blink's own tools, hooks, and shared transport, and not an agent with a shell. Such an agent can already run Git, so no Blink mechanism would protect more.
+4. OpenCode gets the plan tool only. Its permission prompt can be set to allow without asking, so it cannot prove that a person answered.
+5. `snapshot.restore_plan` and `snapshot.restore` replace the roadmap's "`snapshot.restore` dry-run API".
 
 ## Evidence
 
