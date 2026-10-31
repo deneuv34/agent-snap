@@ -558,7 +558,7 @@ A client MUST reject a result that breaks any of these rules:
 
 ## 10. Restore Release Requirements (Future)
 
-Restore is intentionally excluded from the current executable and protocol. It may be introduced only when all of these acceptance requirements are designed and tested:
+Restore is intentionally excluded from the current executable and protocol. [`RESTORE.md`](RESTORE.md) proposes the design. Restore may be introduced only when all of these acceptance requirements are designed and tested:
 
 1. **Explicit selection:** restore requires an exact snapshot ID or commit and, for partial restore, an explicit path set.
 2. **Preflight:** Blink determines the target repository, validates the snapshot ref/commit, checks repository state, and computes a dry-run plan before writing.
