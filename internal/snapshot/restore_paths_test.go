@@ -2,11 +2,13 @@ package snapshot
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha1"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"hash"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -18,13 +20,8 @@ import (
 
 var objectFormats = []string{"sha1", "sha256"}
 
-// testRepoIn is testRepo in the given object format. It skips when Git
-// cannot create a repository in that format.
-func testRepoIn(t *testing.T, format string) string {
+func emptyRepoIn(t *testing.T, format string) string {
 	t.Helper()
-	if format == "sha1" {
-		return testRepo(t)
-	}
 	dir := t.TempDir()
 	init := exec.Command("git", "init", "--object-format="+format, "-b", "main")
 	init.Dir = dir
@@ -32,6 +29,15 @@ func testRepoIn(t *testing.T, format string) string {
 	if out, err := init.CombinedOutput(); err != nil {
 		t.Skipf("git without %s support: %v: %s", format, err, out)
 	}
+	return dir
+}
+
+func testRepoIn(t *testing.T, format string) string {
+	t.Helper()
+	if format == "sha1" {
+		return testRepo(t)
+	}
+	dir := emptyRepoIn(t, format)
 	writeFile(t, dir, "tracked.txt", "initial\n")
 	git(t, dir, "add", "tracked.txt")
 	git(t, dir, "commit", "-m", "initial")
@@ -413,4 +419,54 @@ func alternateCase(s string) string {
 		}
 	}
 	return string(b)
+}
+
+func TestPathRulesApplyInFR15Order(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "d", "a file where the change needs a directory\n")
+	oid := strings.Repeat("1", 40)
+	fixture := struct {
+		path, mode    string
+		scope         Scope
+		flagged, fold bool
+	}{"d/e/.git\xff", modeGitlink, Scope{paths: []string{"d/e"}, set: map[string]bool{"d/e": true}}, true, true}
+	steps := []struct {
+		remove func()
+		want   PathBlocker
+	}{
+		{func() {}, BlockUnaddressablePath},
+		{func() { fixture.path = "d/e/.git" }, BlockUnsafePath},
+		{func() { fixture.path = "d/e/x" }, BlockSubmodule},
+		{func() { fixture.mode = modeFile }, BlockParentConflict},
+		{func() { fixture.scope = Scope{paths: []string{"d"}, set: map[string]bool{"d": true}} }, BlockIndexFlag},
+		{func() { fixture.flagged = false }, BlockNameCollision},
+		{func() { fixture.fold = false }, BlockUntrackedInTheWay},
+		{func() {
+			if err := os.Remove(filepath.Join(root, "d")); err != nil {
+				t.Fatal(err)
+			}
+		}, ""},
+	}
+	for _, step := range steps {
+		step.remove()
+		p := &plan{
+			scope:   fixture.scope,
+			current: listing{{path: "d", mode: modeFile, oid: oid}},
+			changes: []change{{path: fixture.path, tgt: &leaf{path: fixture.path, mode: fixture.mode, oid: oid}}},
+		}
+		w := &world{
+			index: indexView{stage0: map[string]indexEntry{fixture.path: {mode: fixture.mode, oid: oid, flagged: fixture.flagged}}},
+			head:  headView{unborn: true},
+			disk:  newDiskProbe(root, nil, false),
+		}
+		if fixture.fold {
+			w.nodes = map[string][]string{foldKey("d"): {"d", "D"}}
+		}
+		if err := p.decide(context.Background(), w); err != nil {
+			t.Fatal(err)
+		}
+		if got := p.changes[0].blocker; got != step.want {
+			t.Fatalf("%s %q: blocker %q, want %q", fixture.mode, fixture.path, got, step.want)
+		}
+	}
 }
