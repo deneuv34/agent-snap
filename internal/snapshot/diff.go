@@ -21,8 +21,6 @@ const (
 	DiffDefaultPatchBytes = 64 << 10
 	DiffMinPatchBytes     = 1 << 10
 	DiffMaxPatchBytes     = 1 << 20
-	DiffMaxOffset         = 1<<31 - 1
-	diffPageFiles         = 200
 	diffTokenLimit        = 1 << 20
 	diffHeaderLimit       = 64 << 10
 	diffStderrLimit       = 4 << 10
@@ -143,8 +141,8 @@ func (s *Store) Diff(ctx context.Context, fromID, toID string, page DiffPage) (D
 }
 
 func (p DiffPage) budget() (int, error) {
-	if p.Offset < 0 || p.Offset > DiffMaxOffset {
-		return 0, fmt.Errorf("invalid diff page: offset %d is outside 0 through %d", p.Offset, DiffMaxOffset)
+	if p.Offset < 0 || p.Offset > MaxPageOffset {
+		return 0, fmt.Errorf("invalid diff page: offset %d is outside 0 through %d", p.Offset, MaxPageOffset)
 	}
 	if p.MaxPatchBytes == 0 {
 		return DiffDefaultPatchBytes, nil
@@ -354,7 +352,7 @@ func readSummary(r *bufio.Reader, offset int) (diffSummary, error) {
 	var sum diffSummary
 	rawPaths, numPaths := sha256.New(), sha256.New()
 	raws, numstats, oidLen := 0, 0, 0
-	inWindow := func(i int) bool { return i >= offset && i-offset < diffPageFiles }
+	inWindow := func(i int) bool { return i >= offset && i-offset < pageSize }
 	for {
 		b, err := r.Peek(1)
 		if err == io.EOF && raws == 0 {
