@@ -49,8 +49,8 @@ Normal Git commits are not sufficient for this purpose: committing affects the u
 
 ### 4.2 Planned capabilities (not implemented)
 
-- Restore all or selected paths from a snapshot.
-- Preview, confirm, and back up a restore operation.
+- Preview a restore of all or selected paths, and record its safety backup. FR-15 specifies this, and it is not yet built.
+- Confirm and apply a restore.
 - Retention and garbage-collection policy.
 - Product-facing naming, UX, and packaging under `blink`.
 
@@ -352,6 +352,116 @@ Errors:
 | `from` or `to` has no snapshot in the namespace | `-32001` | `snapshot not found: <id>` |
 | Repository not resolved, item ref refused, no scratch directory outside the worktree, missing object, Git failure, or a failed integrity check | `-32603` | The operation's message |
 
+### FR-15: Restore plan
+
+**Status:** Specified for Phase 4 and not yet built. [`RESTORE.md`](RESTORE.md) records the design and the order of the pull requests that build it. Each of those pull requests adds its layer to FR-8 through FR-11 and section 7.1. Until the protocol pull request lands, the binary answers `snapshot.restore_plan` with `-32601`.
+
+A restore plan shows what restoring a snapshot would change in the working tree, and what would stop the restore. It is read-only. This release cannot apply a restore.
+
+Selection:
+
+- `snapshot.restore_plan` takes `cwd` and `id`, and optionally `paths`, `offset`, and `current_tree`. `id` is a snapshot identifier, resolved as FR-12 resolves a lookup.
+- Without `paths`, the plan covers the whole tree. With `paths`, it holds 1 to 100 repository paths. Each path is valid UTF-8, at most 4096 bytes, and made of segments separated by `/`. No segment is empty, `.`, or `..`, and no path contains a NUL byte. Paths are literal, with no globs and no pathspec magic.
+- A scope path covers itself and every path below it, by whole segments. `src` covers `src` and `src/a.go`, and not `srcx`. No scope path may equal or cover another.
+- A scope path that covers no path in the current tree or the snapshot tree is listed in `unmatched`.
+
+Trees:
+
+- The current tree is the tree that FR-2 capture would record at that moment. Blink computes it with the same steps as `snapshot.create`, so a `create` of an unchanged working tree records exactly `current_tree`.
+- Without `paths`, the result tree is the snapshot tree. With `paths`, the result tree holds every current-tree path that no scope path covers, and every snapshot-tree path that a scope path covers.
+- Neither tree is stored in the repository. Their objects stay in the plan's scratch directory and are removed with it.
+
+Capture safety:
+
+- The plan uses a scratch `GIT_INDEX_FILE`, and sets `GIT_OBJECT_DIRECTORY` to a private object directory. Both live in a scratch directory placed by the FR-3 rule. The private directory's `info/alternates` names the repository's object directory, so Git reads every existing object and writes only new objects, into the private directory.
+- Git runs in the repository, so its excludes, attributes, filters, and configuration apply as they do for capture.
+- A plan MUST NOT write the index, refs, `HEAD`, configuration, logs, or working-tree files, and MUST NOT add, remove, or change the content of any file in the Git directory. Git may refresh the modification time of an existing object or pack file that it would otherwise write.
+- A plan runs the programs that the repository configures for capture, exactly as `snapshot.create` does. They include clean filters, process filters such as Git LFS, and a `core.fsmonitor` hook. What those programs write is outside this guarantee.
+- Reads of the real index run `ls-files` with `GIT_OPTIONAL_LOCKS=0`. A plan never runs a command that refreshes the index.
+- Blink removes the scratch directory when the request finishes, fails, or is cancelled. A cancelled plan returns no result.
+
+Entries:
+
+- Each covered path that differs between the current tree and the snapshot tree is one entry. Without `paths`, every path is covered. A path differs when its mode or object ID changes, or when only one tree has it. Entries are in byte order of the path.
+- The action is `create` when only the snapshot tree has the path, and `delete` when only the current tree has it. It is `type_change` when the two trees hold different kinds of entry (regular file, symbolic link, or submodule), and `modify` otherwise. Renames are not detected, so a rename is a `delete` and a `create`.
+- `staged` is set when the real index's stage-0 entry and the `HEAD` entry for the path differ, or only one exists. On an unborn branch, `HEAD` is the empty tree.
+- `unstaged` is set when the real index has a stage-0 entry for the path, and the current tree lacks the path or holds a different mode or object ID.
+- `untracked` is set when the current tree has the path and the real index has no entry for it. `unstaged` and `untracked` are never both set.
+- A path that is not valid UTF-8 is reported with each run of invalid bytes replaced by one U+FFFD, as FR-14 does.
+- An entry carries at most one blocker, the first in the order of the path-blocker table that applies.
+
+Repository blockers, listed in `blockers` in this order, each at most once:
+
+| Blocker | Applies when |
+| --- | --- |
+| `operation_in_progress` | `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `BISECT_LOG`, `rebase-merge`, `rebase-apply`, or `sequencer` exists at the path that `git rev-parse --git-path` gives for it. |
+| `unmerged_index` | The real index has an entry above stage 0. |
+| `sparse_checkout` | `core.sparseCheckout` is true for the worktree. |
+
+Path blockers, in the order Blink applies them:
+
+| Blocker | Applies when |
+| --- | --- |
+| `unaddressable_path` | The path is not valid UTF-8, so no request or result can name it exactly. |
+| `unsafe_path` | A segment of the path is empty, `.`, `..`, or `.git` in any letter case, or is a segment that Git refuses to check out under its `core.protectNTFS` or `core.protectHFS` rules. Blink applies both rules on every platform. |
+| `submodule` | The current or the target mode is `160000`. This includes a nested repository that capture recorded as a submodule. |
+| `parent_conflict` | In a path-scoped plan, the action writes the target, and a parent of the path that no scope path covers is a regular file, symbolic link, or submodule in the current tree. |
+| `index_flag` | The real index has a stage-0 entry for the path that is marked assume-unchanged or skip-worktree. |
+| `name_collision` | The working tree folds case, and the path or one of its parent directories becomes equal, under Unicode simple case folding, to a different path or parent directory in the result tree. |
+| `untracked_in_the_way` | The action writes the target, and something would still be in the way after the restore removed every current-tree path that the plan deletes or replaces. Anything at the path is in the way. At a parent of the path where the current tree has no directory, anything other than a real directory is in the way, such as a file or a symbolic link. |
+
+- An action writes the target when it is `create`, `modify`, or `type_change`.
+- `untracked_in_the_way` covers ignored files, ignored symbolic links, empty directories, and a directory that holds ignored files where the snapshot has a file. A path that the file system resolves to a current-tree path the plan deletes, as in a case-only rename, is not in the way.
+- The working tree folds case when `core.ignorecase` is true. It also folds case when the first current-tree path, in byte order, whose last segment holds an ASCII letter names the same file after the case of those letters is swapped. A plan does not check Unicode normalization.
+
+Applicability:
+
+- `applicable` is true exactly when `blockers` and `unmatched` are empty and no entry has a blocker. A plan with no entries is applicable when that holds.
+- `result_tree` is absent when an entry has `parent_conflict`, because no tree can hold both a file and a path below it.
+- `HEAD` moving since the snapshot was recorded is not a blocker.
+
+Paging and staleness:
+
+- Entries are numbered from 0. A page lists at most 200 entries, from index `offset` (default 0).
+- `next_offset` is `offset + entries.length` when that is less than `totals.entries`, and absent otherwise. An `offset` at or beyond `totals.entries` returns no entries.
+- A request with `offset` greater than 0 MUST carry `current_tree`, the value from the first page.
+- When a request carries `current_tree` and the working tree no longer captures to it, the plan fails with `-32002` and lists nothing. Each page captures the working tree again.
+- `totals` always covers the whole plan.
+
+Safety backup:
+
+- A restore's safety backup is a snapshot recorded by `snapshot.create` with reason `restore backup`, after the plan and before any confirmation.
+- The backup is valid for a plan when its tree, read by FR-12 lookup, equals `current_tree`. Origin does not count, because FR-13 origin is not evidence.
+- Deduplication (FR-5) applies. A reused snapshot whose tree equals `current_tree` is a valid backup.
+- `snapshot.diff` from a valid backup to the snapshot shows the content of a full-tree plan. For a path-scoped plan, it also shows changes outside the scope.
+
+Interfaces:
+
+- CLI `restore-plan <id> [--cwd <dir>] [--path <path>]... [--offset <n>] [--current-tree <oid>]` prints one page of the restore plan object as JSON. `--path` may repeat. The command exits `0` when it prints a plan, including a plan that is not applicable, and `1` on any error.
+- `SnapClient.restorePlan(cwd, id, options?, signal?)` sends `snapshot.restore_plan` and returns the validated restore plan object (section 8.5). `options` holds `paths`, `offset`, and `currentTree`. When the binary answers `-32601`, the client rejects with an error that says the installed `agent-snap` cannot plan restores.
+- `SnapLike` gains `restorePlan`, and nothing else for restore.
+- Both hosts expose `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)` with caller cancellation support. The tool returns text that says whether the plan is applicable, lists each repository blocker and unmatched scope path, and gives the totals. It then lists every entry on the page with its action, flags, and blocker, and names the `offset` and `current_tree` to request next. It ends by saying that the plan changed nothing, and that this release cannot apply a restore.
+- The plan tool result is Git evidence only. Hosts MUST NOT add generated summaries, rankings, or opinions to it.
+
+Errors:
+
+| Condition | Code | Message |
+| --- | --- | --- |
+| Unknown param | `-32602` | `unknown param: <key>` |
+| `cwd` or `id` missing | `-32602` | `missing required param: <key>` |
+| `cwd` or `id` blank or not a string | `-32602` | `param must be a non-empty string: <key>` |
+| `id` not a snapshot identifier | `-32602` | `param must be a snapshot id: id` |
+| `paths` not an array of strings | `-32602` | `param must be an array of strings: paths` |
+| `paths` empty or longer than 100 | `-32602` | `param must hold 1 to 100 paths: paths` |
+| A path that breaks the path rules | `-32602` | `param must hold only repository paths: paths` |
+| Two paths where one equals or covers the other | `-32602` | `param must not hold overlapping paths: paths` |
+| `offset` not an integer from 0 through 2147483647 | `-32602` | `param must be an integer between 0 and 2147483647: offset` |
+| `current_tree` not 40 or 64 lowercase hex digits | `-32602` | `param must be an object id: current_tree` |
+| `offset` greater than 0 without `current_tree` | `-32602` | `missing required param: current_tree` |
+| `id` has no snapshot in the namespace | `-32001` | `snapshot not found: <id>` |
+| The working tree no longer captures to `current_tree` | `-32002` | `working tree changed since the plan` |
+| Repository not resolved, item ref refused, no scratch directory outside the worktree, missing object, or Git failure | `-32603` | The operation's message |
+
 ## 7. Technical Architecture
 
 ```text
@@ -468,6 +578,12 @@ Diff:
 {"id":4,"method":"snapshot.diff","params":{"cwd":"/path/to/repo","from":"20261029T101500.123456789Z-1a2b3c4d5e6f","to":"20261029T104200.987654321Z-9f8e7d6c5b4a","offset":0,"max_patch_bytes":65536}}
 ```
 
+Restore plan, second page:
+
+```json
+{"id":5,"method":"snapshot.restore_plan","params":{"cwd":"/path/to/repo","id":"20261029T101500.123456789Z-1a2b3c4d5e6f","paths":["src"],"offset":200,"current_tree":"9c1e7a3f..."}}
+```
+
 Success responses contain `id` and `result`. Failure responses contain `id` and `error`:
 
 ```json
@@ -547,9 +663,68 @@ A client MUST reject a result that breaks any of these rules:
 - `files.length` is at most 200. When `files` is not empty, `offset + files.length` is at most `totals.files`.
 - `next_offset`, when present, is greater than `offset` and at most `offset + files.length`.
 
+### 8.5 Restore plan object
+
+Returned by `snapshot.restore_plan`. The example plans a restore of `src` that an ignored file blocks.
+
+```json
+{
+  "snapshot": {"id": "20261029T101500.123456789Z-1a2b3c4d5e6f", "commit": "1a2b3c4d5e6f...", "tree": "7f3e9b2a..."},
+  "paths": ["src"],
+  "current_tree": "9c1e7a3f...",
+  "result_tree": "d2f04b91...",
+  "applicable": false,
+  "blockers": [],
+  "unmatched": [],
+  "offset": 0,
+  "totals": {"entries": 3, "create": 1, "modify": 1, "type_change": 0, "delete": 1, "staged": 0, "unstaged": 1, "untracked": 1, "blocked": 1},
+  "entries": [
+    {"path": "src/cache.log", "action": "create", "target": {"mode": "100644", "oid": "5716ca59..."}, "blocker": "untracked_in_the_way"},
+    {"path": "src/new.go", "action": "delete", "current": {"mode": "100644", "oid": "e69de29b..."}, "untracked": true},
+    {"path": "src/server.go", "action": "modify", "current": {"mode": "100644", "oid": "8792505e..."}, "target": {"mode": "100644", "oid": "83db48f8..."}, "unstaged": true}
+  ]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `snapshot` | object | `{id, commit, tree}` of the snapshot to restore. |
+| `paths` | string array, optional | The scope, as requested. Absent for a full-tree plan. |
+| `current_tree` | string | Full ID of the tree that the working tree captures to. |
+| `result_tree` | string, optional | Full ID of the tree that the restore would produce. Absent when an entry has `parent_conflict`. |
+| `applicable` | boolean | Whether a restore could apply this plan (FR-15). |
+| `blockers` | string array | Repository blockers, in the FR-15 order. |
+| `unmatched` | string array | Scope paths that cover nothing. Empty for a full-tree plan. |
+| `offset` | integer | Index of the first listed entry, as requested. |
+| `next_offset` | integer, optional | Index to request next. Absent on the last page. |
+| `totals` | object | `{entries, create, modify, type_change, delete, staged, unstaged, untracked, blocked}`, counted over the whole plan. |
+| `entries` | array | At most 200 entries, starting at `offset`. |
+
+Entry:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `path` | string | Repository path, repaired as FR-15 describes when it is not valid UTF-8. |
+| `action` | `"create"`, `"modify"`, `"type_change"`, or `"delete"` | What the restore would do at the path. |
+| `current` | object, optional | `{mode, oid}` in the current tree. Absent for `create`. |
+| `target` | object, optional | `{mode, oid}` in the snapshot tree. Absent for `delete`. For mode `160000` the ID is a submodule commit. |
+| `staged`, `unstaged`, `untracked` | `true`, optional | The FR-15 flags. Each is present only when set. |
+| `blocker` | string, optional | The path blocker that stops this entry. |
+
+A client MUST reject a result that breaks any of these rules:
+
+- `current` is absent exactly when `action` is `create`. `target` is absent exactly when `action` is `delete`.
+- `unstaged` and `untracked` are never both present.
+- Every value in `blockers` is a repository blocker, and every `blocker` is a path blocker, from FR-15.
+- When `applicable` is true, `blockers` and `unmatched` are empty, `totals.blocked` is 0, and `result_tree` is present.
+- `totals.entries` equals the sum of `create`, `modify`, `type_change`, and `delete`. Each of `staged`, `unstaged`, `untracked`, and `blocked` is at most `totals.entries`.
+- `entries.length` is at most 200. When `entries` is not empty, `offset + entries.length` is at most `totals.entries`.
+- `next_offset`, when present, equals `offset + entries.length` and is less than `totals.entries`.
+- Every mode is six octal digits. `current_tree`, `result_tree`, `snapshot.tree`, and every `oid` are full object IDs of one length, 40 or 64 lowercase hex digits.
+
 ## 9. Safety and Reliability Requirements
 
-- All Git commands run from the resolved repository and with inherited `GIT_*` variables removed. The one exception is the FR-14 diff, which runs in a private evidence repository whose only link to the resolved repository is a read-only `objects/info/alternates` entry.
+- All Git commands run from the resolved repository and with inherited `GIT_*` variables removed. Blink sets only its own scratch `GIT_INDEX_FILE` for capture, and for a restore plan also `GIT_OBJECT_DIRECTORY`, naming the private object directory of FR-15. The one exception is the FR-14 diff, which runs in a private evidence repository whose only link to the resolved repository is a read-only `objects/info/alternates` entry.
 - Ref writes must never dereference symbolic refs into normal repository refs.
 - A failed scratch-directory safety check must stop snapshot creation rather than create temporary state inside the worktree.
 - The Node client must terminate descendant processes on Unix and Windows according to platform-specific process-tree semantics.
@@ -559,15 +734,15 @@ A client MUST reject a result that breaks any of these rules:
 
 ## 10. Restore Release Requirements (Future)
 
-Restore is intentionally excluded from the current executable and protocol. [`RESTORE.md`](RESTORE.md) proposes the design. Restore may be introduced only when all of these acceptance requirements are designed and tested:
+Restore writes are excluded from the current executable and protocol. [`RESTORE.md`](RESTORE.md) is the approved design. FR-15 specifies the read-only plan and the safety backup. The write is Phase 5 and needs its own design review. It may be introduced only when all of these acceptance requirements are designed and tested:
 
-1. **Explicit selection:** restore requires an exact snapshot ID or commit and, for partial restore, an explicit path set.
-2. **Preflight:** Blink determines the target repository, validates the snapshot ref/commit, checks repository state, and computes a dry-run plan before writing.
-3. **Preview:** the caller can inspect changed, added, deleted, and conflicting paths before confirmation.
-4. **Backup:** Blink captures the pre-restore state in a fresh safety snapshot before any working-tree write.
-5. **Conflict preservation:** staged and unstaged changes are detected and preserved or the operation refuses with actionable guidance; it must never silently overwrite them.
+1. **Explicit selection:** restore requires an exact snapshot identifier and, for partial restore, an explicit path allow-list, as FR-15 defines them.
+2. **Preflight:** Blink computes the FR-15 plan again immediately before writing, and refuses when it is not applicable or no longer matches the plan the user saw.
+3. **Preview:** the caller can inspect the FR-15 entries, flags, and blockers, and the diff from the backup to the snapshot, before confirmation.
+4. **Backup:** a valid FR-15 safety backup exists before any working-tree write. A fresh capture that equals the planned current tree counts as fresh, even when deduplication reused an existing snapshot.
+5. **Conflict preservation:** staged changes are kept, because a restore never writes the index. Unstaged changes and untracked files are named in the plan, held by the backup, and never overwritten or deleted without a confirmation.
 6. **Atomicity:** writes use the safest practical transaction/rollback strategy. If full atomicity is impossible, the result clearly identifies completed and failed paths and offers recovery from the safety snapshot.
-7. **Confirmation:** destructive restore requires an explicit confirmation outside unattended lifecycle hooks.
+7. **Confirmation:** destructive restore requires an explicit confirmation from a person, outside lifecycle hooks and agent tools. The guarantee covers Blink's own tools, hooks, and shared transport. An agent with a shell can run Git or the CLI itself, and Blink does not claim to stop it.
 8. **Auditability:** the result identifies the source snapshot, safety backup, selected paths, and final outcome.
 9. **Testing:** integration tests cover clean repositories, dirty staged and unstaged repositories, untracked files, deletions, path-scoped restore, merge conflicts, linked worktrees, cancellation, and mid-operation failure.
 
@@ -586,6 +761,7 @@ An intelligent review layer may prioritize risky changes, summarize scope, and f
 - Test ignored files, untracked files, staged and unstaged changes, deletions, deduplication, ref namespace isolation, symbolic-ref refusal, and concurrent creation.
 - Test lookup with empty history, malformed and path-like identifiers, identifiers from another worktree, SHA-1 and SHA-256 repositories, tampered item refs, and changed-path truncation.
 - Test diff with equal and identical snapshots, renames, type changes, symbolic links, submodules, binary files, non-UTF-8 bytes, carriage returns, and missing final newlines. Test every paging rule at its edges, isolation from hostile attributes, configuration, and replace refs, SHA-1 and SHA-256 repositories, linked worktrees, and that a diff writes nothing to the repository.
+- Test restore plans in every FR-15 state and blocker, path-scope validation and matching, paging and staleness, SHA-1 and SHA-256 repositories, linked worktrees, an unborn branch, a `HEAD` with CRLF content under `core.autocrlf`, sparse checkout, and cancellation. Test that a `create` right after a plan records `current_tree`, and that a plan changes no path or content in the Git directory and nothing in the working tree.
 - Test scratch-directory selection and cleanup, including a temporary directory configured inside the repository.
 - Test client cancellation, timeout, crash recovery, close barriers, response validation, and platform teardown decisions.
 - Test host lifecycle coalescing, busy/session-deleted cancellation, shutdown flush, and manual tools/commands.
@@ -639,7 +815,6 @@ These decisions need product and engineering agreement before their related mile
 
 - Whether `refs/agent-snapshots/` becomes `refs/blink/`, remains a compatibility namespace, or is hidden behind a migration layer.
 - Which host environments are first-class after OpenCode and Pi Coding Agent.
-- How a restore confirmation is represented in each agent host and CLI without enabling prompt-driven destructive writes.
 - Whether review intelligence is local-only, host-provided, or supported by an optional service.
 - Retention defaults, storage quotas, and whether checkpoints may be explicitly exported or shared.
 - Versioning, package names, and executable aliases for the Blink product release.

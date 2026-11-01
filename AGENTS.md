@@ -14,6 +14,7 @@ Identity is frozen: executable `agent-snap`, packages `@agent-snap/*`, JSONL met
 These are non-negotiable. Capture, list, and inspect must never modify `HEAD`, the real index, normal refs, or the working tree.
 
 - Snapshot creation uses a private scratch `GIT_INDEX_FILE` outside the repository. Fail closed if that cannot be guaranteed.
+- A restore plan also sets `GIT_OBJECT_DIRECTORY` to a private object directory beside its scratch index, whose `info/alternates` names the real object directory. It never writes the real object store.
 - Every Git invocation strips inherited `GIT_*` repository-redirect variables and runs against the resolved repo. The one exception is `Store.Diff`: it runs Git in a private bare evidence repository outside the worktree whose only link to the resolved repo is a read-only `objects/info/alternates` entry, so attributes, configuration, and replace refs cannot shape the evidence.
 - `Store` owns every hidden-ref path. Callers never construct `refs/agent-snapshots/...` themselves.
 - Host plugins and extensions never invoke Git and never spawn `agent-snap` except through `SnapClient`.

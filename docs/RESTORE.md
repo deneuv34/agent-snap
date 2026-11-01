@@ -16,7 +16,7 @@ Every restore is a move from a current tree to a result tree. Both are trees in 
 
 A restore writes working-tree files only. It never writes the real index, `HEAD`, branches, or normal refs. After a restore, `git status` shows the restored content as unstaged changes against the index. That is the same result as `git restore --worktree --source=<snapshot>`, plus the deletions described in [the state table](#each-repository-state-has-one-response).
 
-Ignored files are outside both trees. A restore never writes, overwrites, or deletes an ignored file. A planned write that would land on one, or a directory the restore removes while it still holds one, blocks the plan.
+Ignored files are outside both trees. A restore never writes, overwrites, or deletes an ignored file. A planned write that would land on one, or replace a directory that still holds one, blocks the plan. A directory whose tracked files the restore deletes keeps its ignored files, because Git removes only empty directories.
 
 ## Restore is three operations with one safety class each
 
@@ -136,11 +136,11 @@ Path blockers:
 
 | Blocker | Detected by |
 | --- | --- |
-| `untracked_in_the_way` | Something on disk that the current tree lacks sits where the restore must write or remove. That is the path itself or a parent directory the restore must create, or anything inside a directory the restore deletes or turns into a file or a symbolic link. It covers ignored files, ignored symbolic links, and empty directories. Git's own writes remove such entries silently. A lookup that finds a path the same plan deletes under a different case is a case-only rename, not a blocker. |
-| `parent_conflict` | In a path-scoped restore, an entry the snapshot has below a scope path whose parent, outside the scope, is a file, symbolic link, or submodule in the current tree. The restore could write the entry only by changing a path the user did not select. |
+| `untracked_in_the_way` | Something on disk that the current tree lacks sits where the restore must write or remove. That is the path itself or a parent directory the restore must create, or anything inside a directory the restore turns into a file or a symbolic link. It covers ignored files, ignored symbolic links, and empty directories. Git's own writes remove such entries silently. A lookup that finds a path the same plan deletes under a different case is a case-only rename, not a blocker. |
+| `parent_conflict` | In a path-scoped restore, an entry the snapshot has below a scope path whose parent, outside the scope, is a file, symbolic link, or submodule in the current tree. The restore could write the entry only by changing a path the user did not select, and the plan has no `result_tree`. |
 | `submodule` | Mode `160000` on either side. Blink does not write submodules or nested repositories. |
 | `index_flag` | The real index marks the entry assume-unchanged or skip-worktree (`ls-files -v` shows a lowercase tag or `S`). A write there would be hidden from `git status`. |
-| `name_collision` | Two result paths name one file on disk, because they are equal when case is folded or Unicode is normalized. Checked when `core.ignorecase` or `core.precomposeUnicode` is true, or when the file system resolves a tracked path with its case changed to the same file. |
+| `name_collision` | Two result paths name one file on disk, because they are equal when case is folded. Checked when `core.ignorecase` is true, or when the file system resolves a tracked path with its case changed to the same file. Unicode normalization is not checked, because Go's standard library has no normalization tables. The Phase 5 capture after the write catches such a collision. |
 | `unsafe_path` | A path segment that Git refuses to check out, such as `.git` or one of its file-system aliases. Only a tampered tree reaches this. |
 | `unaddressable_path` | The path bytes are not valid UTF-8, so the JSON protocol cannot name the path exactly. |
 
@@ -176,6 +176,7 @@ Phase 5 needs its own design review before any write lands. This record fixes th
 - Check a repeated apply first. When a fresh capture already equals `result_tree`, the write does nothing and reports success. Only then compare the capture with `current_tree`. Where a filter loses bytes, a repeat can capture to neither tree and fails as stale, which writes nothing.
 - Git has no working-tree lock. The write checks each path immediately before it writes that path, and stops at the first one that changed. That narrows the race with a running agent but cannot close it.
 - If a write fails, report the paths written, failed, and not yet started, and the backup ID. Recovery is a normal confirmed restore of the backup.
+- After the last write, capture the working tree again. When the capture differs from `result_tree`, report the outcome as unknown. This catches what the plan cannot predict, such as a Unicode name collision or a filter that loses bytes.
 
 Two write engines meet these rules. Phase 5 picks one by experiment:
 
@@ -197,7 +198,7 @@ Each step is one pull request that ends in a check. The steps that simplify exis
 5. `Store.PlanRestore`, with real-repository tests for each state and blocker above. They cover SHA-1 and SHA-256, linked and nested worktrees, renames, a `HEAD` with CRLF content under `core.autocrlf`, sparse checkout, an unborn branch, and cancellation. One test fingerprints the paths, sizes, and contents under the Git directory before and after a plan. Another records a `create` after each plan and checks that its tree equals `current_tree`.
 6. Protocol method `snapshot.restore_plan`, with table-driven validation.
 7. TypeScript types, result validation, a typed error for `-32601`, and cancellation tests.
-8. CLI `restore-plan`, with smoke and pack-check coverage. Its output ends with the `create` command for the backup.
+8. CLI `restore-plan`, with smoke and pack-check coverage. It prints JSON, like every other command.
 9. The `agent_snap_restore_plan` tool in Pi and in both OpenCode adapters. Its description and output formatting go in `packages/opencode/src/snapshots.ts`, which the 1.x and 2.x adapters share.
 
 Phase 4 work item 5 asks for tests of failures between backup and write. Phase 4 has no write, so those tests move to Phase 5. The confirmation module, the Pi `/agent-snap-restore` command, the interactive CLI `restore`, the error code for a blocked restore, and `snapshot.restore` itself are Phase 5.
@@ -236,7 +237,7 @@ Throwaway prototypes ran on Git 2.54.0 (Apple Git-157) on macOS, in fresh reposi
 - `ls-files`, `diff-index --cached`, and `ls-files --unmerged` under `GIT_OPTIONAL_LOCKS=0` left `.git` unchanged. A plain `git status` rewrote the index.
 - `ls-files -s -t` shows an assume-unchanged entry as `H`. Only `ls-files -v` shows it as lowercase `h`.
 - `checkout-index -f` from a scratch index left the real index unchanged, replaced a symbolic link to an outside directory with a real directory instead of writing through it, overwrote an ignored file, deleted an untracked directory that blocked a file, and wrote the smudged form of filtered files.
-- A two-way `read-tree -m -u` from a tracked directory `D` to a file `D` deleted the ignored file `D/y.log` and exited `0`.
+- A two-way `read-tree -m -u` from a tracked directory `D` to a file `D` deleted the ignored file `D/y.log` and exited `0`. A merge that deleted every tracked file in `D`, and wrote no file named `D`, left `D/y.log` in place.
 - A two-way `read-tree -m -u` on an index filled by `read-tree` alone failed with "Entry 'a' not uptodate". On the index left by `read-tree HEAD` and `add -A`, the same merge succeeded.
 
 Five things are assumed and not yet observed. They are two-way `read-tree -m -u` with smudge filters, what Git LFS and `core.fsmonitor` write during a plan, the `name_collision` probe, Windows and NTFS behavior, and Git versions older than 2.54. The Store pull request turns each observed fact that the plan relies on into a Go test.
