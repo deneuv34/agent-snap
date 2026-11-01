@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `SnapClient.request` rejects with `SnapProtocolError` when `agent-snap`
+  returns a result for a method the client has no validator for. It used to
+  return that result unchecked. Error responses are unchanged, so an unknown
+  method still rejects with `SnapRpcError` code `-32601`.
 - `@agent-snap/opencode` supports OpenCode 2.x as well as 1.x. The entry is
   now one default export, `{ id, server, setup }`: OpenCode 1.x calls
   `server`, OpenCode 2.x calls `setup` and loads it through the new

@@ -192,6 +192,8 @@ function handle(req) {
     default:
       if (mode === "bad-error") {
         respond(req, null, "boom")
+      } else if (mode === "unknown-method-result") {
+        respond(req, { status: "ok" })
       } else {
         respond(req, null, { code: -32601, message: "method not found" })
       }

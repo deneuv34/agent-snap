@@ -433,7 +433,7 @@ function validateResult(method: string, result: unknown): unknown {
     case "snapshot.diff":
       return validateDiff(result)
     default:
-      return result
+      throw new SnapProtocolError(`response for "${method}" has a result this client cannot validate`)
   }
 }
 

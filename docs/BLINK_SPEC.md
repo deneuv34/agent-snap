@@ -196,6 +196,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - `SnapClient` launches `agent-snap serve` lazily and reuses one transport while healthy.
 - `AGENT_SNAP_BIN` overrides the executable path; the fallback is `agent-snap` on `PATH`.
 - The client MUST runtime-validate successful and error responses before exposing them to integrations.
+- The client MUST reject a successful result for a method it has no validator for as a protocol error. It never returns such a result unchecked.
 - Requests support `AbortSignal` and a default 30-second timeout.
 - Timeout or cancellation MUST start teardown of the spawned process tree, preventing a timed-out request from later producing an unobserved checkpoint.
 - After a crash or close, the client MAY spawn a fresh transport lazily for a subsequent request.
