@@ -160,7 +160,7 @@ All commands pass on the supported platform matrix, and package artifacts instal
 
 ### Work items
 
-1. Write an ADR for restore semantics: staged versus unstaged preservation, untracked file treatment, ignored-file handling, conflict policy, rollback, and exit status.
+1. Write an ADR for restore semantics: staged versus unstaged preservation, untracked file treatment, ignored-file handling, conflict policy, rollback, and exit status ([docs/RESTORE.md](RESTORE.md)).
 2. Add a dry-run protocol method with exact target selection and explicit path allow-list semantics.
 3. Define an explicit confirmation token/capability model that lifecycle hooks and unattended agent prompts cannot manufacture.
 4. Implement backup-only flow and verify it uses the same scratch-index safety properties as normal capture.
