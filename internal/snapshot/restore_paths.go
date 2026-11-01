@@ -3,6 +3,9 @@ package snapshot
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"unicode"
@@ -197,4 +200,128 @@ func smallestFold(r rune) rune {
 		smallest = min(smallest, f)
 	}
 	return smallest
+}
+
+func foldingProbe(root string, cur listing) bool {
+	for _, l := range cur {
+		dir, name := l.path[:strings.LastIndexByte(l.path, '/')+1], l.path[strings.LastIndexByte(l.path, '/')+1:]
+		swapped := swapASCIICase(name)
+		if swapped == name {
+			continue
+		}
+		original, err := lstatNoFollow(root, l.path)
+		if err != nil {
+			return false
+		}
+		other, err := lstatNoFollow(root, dir+swapped)
+		return err == nil && os.SameFile(original, other)
+	}
+	return false
+}
+
+func swapASCIICase(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r - 'a' + 'A'
+		case r >= 'A' && r <= 'Z':
+			return r - 'A' + 'a'
+		}
+		return r
+	}, s)
+}
+
+func lstatNoFollow(root, p string) (fs.FileInfo, error) {
+	for _, d := range parents(p) {
+		info, err := os.Lstat(onDisk(root, d))
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("lstat %s: %s is not a directory", p, d)
+		}
+	}
+	return os.Lstat(onDisk(root, p))
+}
+
+func onDisk(root, p string) string { return filepath.Join(root, filepath.FromSlash(p)) }
+
+// diskProbe never follows a symbolic link. It reads a directory only after
+// Lstat reports a real one, and a path it cannot inspect is in the way.
+type diskProbe struct {
+	root    string
+	removed map[string]bool
+	byFold  map[string][]string
+}
+
+func newDiskProbe(root string, removed []string, folds bool) diskProbe {
+	d := diskProbe{root: root, removed: make(map[string]bool, len(removed))}
+	if folds {
+		d.byFold = map[string][]string{}
+	}
+	for _, p := range removed {
+		d.removed[p] = true
+		if folds {
+			key := foldKey(p)
+			d.byFold[key] = append(d.byFold[key], p)
+		}
+	}
+	return d
+}
+
+func (d diskProbe) inTheWay(path string) bool {
+	for _, dir := range parents(path) {
+		info, err := os.Lstat(onDisk(d.root, dir))
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return false
+		case err != nil:
+			return true
+		case !info.IsDir():
+			return !d.removes(dir, info)
+		}
+	}
+	info, err := os.Lstat(onDisk(d.root, path))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return false
+	case err != nil:
+		return true
+	case d.removes(path, info):
+		return false
+	case info.IsDir():
+		return !d.emptiedBy(path)
+	}
+	return true
+}
+
+func (d diskProbe) emptiedBy(dir string) bool {
+	entries, err := os.ReadDir(onDisk(d.root, dir))
+	if err != nil || len(entries) == 0 {
+		return false
+	}
+	for _, entry := range entries {
+		path := dir + "/" + entry.Name()
+		info, err := entry.Info()
+		switch {
+		case err != nil:
+			return false
+		case d.removes(path, info):
+		case !info.IsDir() || !d.emptiedBy(path):
+			return false
+		}
+	}
+	return true
+}
+
+func (d diskProbe) removes(path string, info fs.FileInfo) bool {
+	if d.removed[path] {
+		return true
+	}
+	for _, other := range d.byFold[foldKey(path)] {
+		if removed, err := lstatNoFollow(d.root, other); err == nil && os.SameFile(info, removed) {
+			return true
+		}
+	}
+	return false
 }
