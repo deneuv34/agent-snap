@@ -408,6 +408,18 @@ test("unknown method surfaces a SnapRpcError with the wire code", async () => {
   }
 })
 
+test("a result for a method the client cannot validate surfaces SnapProtocolError", async () => {
+  const c = client({ FAKE_AGENT_SNAP_MODE: "unknown-method-result" })
+  try {
+    await assert.rejects(
+      () => c.request("snapshot.future"),
+      (err: unknown) => err instanceof SnapProtocolError,
+    )
+  } finally {
+    await c.close()
+  }
+})
+
 test("client respawns lazily after close", async () => {
   const c = client()
   try {
