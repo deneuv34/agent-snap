@@ -502,7 +502,7 @@ func TestCreateDoesNotRetryOtherAddFailures(t *testing.T) {
 // time of an object it would otherwise write again.
 func gitDirFiles(t *testing.T, dir string) map[string]string {
 	t.Helper()
-	root := git(t, dir, "rev-parse", "--absolute-git-dir")
+	root := git(t, dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	files := map[string]string{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
