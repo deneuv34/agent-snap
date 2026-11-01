@@ -221,18 +221,7 @@ func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snaps
 		"TEMP=" + tmpDir,
 	}
 
-	head, headErr := s.gitMaybe(ctx, scratchEnv, "rev-parse", "--verify", "HEAD")
-	if headErr == nil {
-		if _, err := s.git(ctx, scratchEnv, "read-tree", head); err != nil {
-			return Snapshot{}, err
-		}
-	} else if _, err := s.git(ctx, scratchEnv, "read-tree", "--empty"); err != nil {
-		return Snapshot{}, err
-	}
-	if err := s.addAll(ctx, scratchEnv); err != nil {
-		return Snapshot{}, err
-	}
-	tree, err := s.git(ctx, scratchEnv, "write-tree")
+	tree, head, err := s.captureTree(ctx, scratchEnv)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -255,11 +244,9 @@ func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snaps
 			}
 		}
 
-		parent := ""
+		parent := head
 		if latestErr == nil {
 			parent = latest
-		} else if headErr == nil {
-			parent = head
 		}
 
 		args := []string{"commit-tree", tree}
@@ -290,6 +277,29 @@ func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snaps
 			return Snapshot{ID: id, Commit: commit, Reason: reason, CreatedAt: now, Origin: origin, ChangedFiles: changed}, nil
 		}
 	}
+}
+
+// captureTree is the one definition of the captured state: the tree that
+// git add -A -- . stages into the scratch index named in env, seeded from
+// HEAD. head is empty on an unborn branch.
+func (s *Store) captureTree(ctx context.Context, env []string) (tree, head string, err error) {
+	head, headErr := s.gitMaybe(ctx, env, "rev-parse", "--verify", "HEAD")
+	if headErr != nil {
+		head = ""
+		if _, err := s.git(ctx, env, "read-tree", "--empty"); err != nil {
+			return "", "", err
+		}
+	} else if _, err := s.git(ctx, env, "read-tree", head); err != nil {
+		return "", "", err
+	}
+	if err := s.addAll(ctx, env); err != nil {
+		return "", "", err
+	}
+	tree, err = s.git(ctx, env, "write-tree")
+	if err != nil {
+		return "", "", err
+	}
+	return tree, head, nil
 }
 
 // addAll stages the working tree into the scratch index. Concurrent creates in
