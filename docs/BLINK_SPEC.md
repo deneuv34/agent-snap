@@ -403,7 +403,7 @@ Path blockers, in the order Blink applies them:
 | Blocker | Applies when |
 | --- | --- |
 | `unaddressable_path` | The path is not valid UTF-8, so no request or result can name it exactly. |
-| `unsafe_path` | A segment of the path is empty, `.`, `..`, or `.git` in any letter case, or is a segment that Git refuses to check out under its `core.protectNTFS` or `core.protectHFS` rules. Blink applies both rules on every platform. |
+| `unsafe_path` | A segment of the path is empty, `.`, `..`, or `.git` in any letter case, or is a segment that Git refuses to check out under its `core.protectNTFS` or `core.protectHFS` rules. It also applies when the entry is checked out as a symbolic link and a segment is a name that Git refuses for a symbolic `.gitmodules` under those rules. An entry is checked out with its target mode, or with its current mode for a `delete`. Blink applies both rules on every platform. |
 | `submodule` | The current or the target mode is `160000`. This includes a nested repository that capture recorded as a submodule. |
 | `parent_conflict` | In a path-scoped plan, the action writes the target, and a parent of the path that no scope path covers is a regular file, symbolic link, or submodule in the current tree. |
 | `index_flag` | The real index has a stage-0 entry for the path that is marked assume-unchanged or skip-worktree. |
@@ -417,7 +417,7 @@ Path blockers, in the order Blink applies them:
 Applicability:
 
 - `applicable` is true exactly when `blockers` and `unmatched` are empty and no entry has a blocker. A plan with no entries is applicable when that holds.
-- `result_tree` is absent when an entry has `parent_conflict`, because no tree can hold both a file and a path below it.
+- `result_tree` is absent when any entry meets the `parent_conflict` condition, even when that entry reports an earlier blocker, because no tree can hold both a file and a path below it.
 - `HEAD` moving since the snapshot was recorded is not a blocker.
 
 Paging and staleness:
@@ -460,7 +460,7 @@ Errors:
 | `offset` greater than 0 without `current_tree` | `-32602` | `missing required param: current_tree` |
 | `id` has no snapshot in the namespace | `-32001` | `snapshot not found: <id>` |
 | The working tree no longer captures to `current_tree` | `-32002` | `working tree changed since the plan` |
-| Repository not resolved, item ref refused, no scratch directory outside the worktree, missing object, or Git failure | `-32603` | The operation's message |
+| Repository not resolved, item ref refused, no scratch directory outside the worktree, missing object, Git failure, or a snapshot tree that names one path twice or holds a path below a file | `-32603` | The operation's message |
 
 ## 7. Technical Architecture
 
@@ -477,7 +477,7 @@ Pi extension ────┘                                                │
 | --- | --- |
 | `cmd/agent-snap` | User-facing CLI and process entrypoint. |
 | `internal/protocol` | Strict JSONL request parsing, parameter validation, dispatch, and JSON-RPC-style errors. |
-| `internal/snapshot` | Repository discovery, scratch-index snapshot construction, hidden-ref persistence, deduplication, listing, lookup, and diff. |
+| `internal/snapshot` | Repository discovery, scratch-index snapshot construction, hidden-ref persistence, deduplication, listing, lookup, diff, and restore plans. |
 | `packages/core` | Typed Node client, response validation, process lifecycle management, cancellation, and teardown. |
 | `packages/opencode` | OpenCode lifecycle integration and manual tools. |
 | `packages/pi` | Pi lifecycle integration, manual tools, and commands. |
@@ -691,7 +691,7 @@ Returned by `snapshot.restore_plan`. The example plans a restore of `src` that a
 | `snapshot` | object | `{id, commit, tree}` of the snapshot to restore. |
 | `paths` | string array, optional | The scope, as requested. Absent for a full-tree plan. |
 | `current_tree` | string | Full ID of the tree that the working tree captures to. |
-| `result_tree` | string, optional | Full ID of the tree that the restore would produce. Absent when an entry has `parent_conflict`. |
+| `result_tree` | string, optional | Full ID of the tree that the restore would produce. Absent when any entry meets the `parent_conflict` condition, even when that entry reports an earlier blocker. |
 | `applicable` | boolean | Whether a restore could apply this plan (FR-15). |
 | `blockers` | string array | Repository blockers, in the FR-15 order. |
 | `unmatched` | string array | Scope paths that cover nothing. Empty for a full-tree plan. |
