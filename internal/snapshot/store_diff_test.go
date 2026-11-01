@@ -374,7 +374,7 @@ func TestDiffPagesAtMost200Files(t *testing.T) {
 	if len(second.Files) != 1 || second.Files[0].Path != "f200" || second.Files[0].Patch != PatchFull || second.NextOffset != 0 || second.Offset != 200 {
 		t.Fatalf("second page: %+v", second)
 	}
-	for _, offset := range []int{201, DiffMaxOffset} {
+	for _, offset := range []int{201, MaxPageOffset} {
 		past := diffOf(t, store, from, to, DiffPage{Offset: offset})
 		if len(past.Files) != 0 || past.Files == nil || past.NextOffset != 0 || past.Totals.Files != 201 || past.Offset != offset {
 			t.Fatalf("offset %d past the end: %+v", offset, past)
@@ -423,7 +423,7 @@ func TestDiffRejectsPagesOutsideTheirRange(t *testing.T) {
 	dir := testRepo(t)
 	store := newStore(t, dir)
 	snap := create(t, store, "one")
-	for _, page := range []DiffPage{{Offset: -1}, {Offset: DiffMaxOffset + 1}, {MaxPatchBytes: DiffMinPatchBytes - 1}, {MaxPatchBytes: DiffMaxPatchBytes + 1}, {MaxPatchBytes: -1}} {
+	for _, page := range []DiffPage{{Offset: -1}, {Offset: MaxPageOffset + 1}, {MaxPatchBytes: DiffMinPatchBytes - 1}, {MaxPatchBytes: DiffMaxPatchBytes + 1}, {MaxPatchBytes: -1}} {
 		if _, err := store.Diff(context.Background(), snap.ID, snap.ID, page); err == nil || errors.Is(err, ErrNotFound) {
 			t.Errorf("page %+v: got %v", page, err)
 		}

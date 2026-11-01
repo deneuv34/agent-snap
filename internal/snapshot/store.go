@@ -25,6 +25,8 @@ const (
 	addAttempts       = 5
 	changedFilesLimit = 1000
 	originLimit       = 64
+	MaxPageOffset     = 1<<31 - 1
+	pageSize          = 200
 )
 
 var (
@@ -213,15 +215,9 @@ func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snaps
 		return Snapshot{}, err
 	}
 	defer cleanup()
-	indexPath := filepath.Join(tmpDir, "index")
-	scratchEnv := []string{
-		"GIT_INDEX_FILE=" + indexPath,
-		"TMPDIR=" + tmpDir,
-		"TMP=" + tmpDir,
-		"TEMP=" + tmpDir,
-	}
+	env := scratchEnv(tmpDir)
 
-	tree, head, err := s.captureTree(ctx, scratchEnv)
+	tree, head, err := s.captureTree(ctx, env)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -233,9 +229,9 @@ func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snaps
 			return Snapshot{}, fmt.Errorf("snapshot ref %s is a symbolic ref; refusing to update it", s.latestRef())
 		}
 
-		latest, latestErr := s.gitMaybe(ctx, scratchEnv, "rev-parse", "--verify", s.latestRef())
+		latest, latestErr := s.gitMaybe(ctx, env, "rev-parse", "--verify", s.latestRef())
 		if latestErr == nil {
-			latestTree, err := s.git(ctx, scratchEnv, "rev-parse", latest+"^{tree}")
+			latestTree, err := s.git(ctx, env, "rev-parse", latest+"^{tree}")
 			if err != nil {
 				return Snapshot{}, err
 			}
@@ -254,7 +250,7 @@ func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snaps
 			args = append(args, "-p", parent)
 		}
 		args = append(args, "-F", "-")
-		commit, err := s.gitStdin(ctx, append(scratchEnv, authorEnv()...), commitMessage(reason, origin), args...)
+		commit, err := s.gitStdin(ctx, append(env, authorEnv()...), commitMessage(reason, origin), args...)
 		if err != nil {
 			return Snapshot{}, err
 		}
@@ -265,7 +261,7 @@ func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snaps
 		if latestErr == nil {
 			latestHash = latest
 		}
-		committed, err := s.commitRefs(ctx, id, commit, latestHash, scratchEnv)
+		committed, err := s.commitRefs(ctx, id, commit, latestHash, env)
 		if err != nil {
 			return Snapshot{}, err
 		}
@@ -349,6 +345,15 @@ func createScratchIndex(repo string) (scratchDir string, cleanup func(), err err
 		return "", nil, err
 	}
 	return dir, func() { _ = os.RemoveAll(dir) }, nil
+}
+
+func scratchEnv(dir string) []string {
+	return []string{
+		"GIT_INDEX_FILE=" + filepath.Join(dir, "index"),
+		"TMPDIR=" + dir,
+		"TMP=" + dir,
+		"TEMP=" + dir,
+	}
 }
 
 // scratchRootOutside returns a temp directory candidate that is not inside

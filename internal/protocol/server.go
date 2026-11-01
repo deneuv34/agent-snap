@@ -273,7 +273,7 @@ func diffSnapshots(ctx context.Context, params map[string]any) (any, *Error) {
 	if rerr != nil {
 		return nil, rerr
 	}
-	offset, rerr := optionalInt(params, "offset", 0, snapshot.DiffMaxOffset)
+	offset, rerr := optionalInt(params, "offset", 0, snapshot.MaxPageOffset)
 	if rerr != nil {
 		return nil, rerr
 	}
