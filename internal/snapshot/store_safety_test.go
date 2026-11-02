@@ -2,14 +2,18 @@ package snapshot
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestCreateWorksInRepoWithoutCommits(t *testing.T) {
@@ -420,7 +424,7 @@ func fakeAddFailures(t *testing.T, failures int, stderr string) func() int {
 	}
 	dir := t.TempDir()
 	counter := filepath.Join(dir, "adds")
-	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = add ]; then\n  n=$(( $(cat %q 2>/dev/null || echo 0) + 1 ))\n  echo \"$n\" > %q\n  if [ \"$n\" -le %d ]; then printf '%%s\\n' %q >&2; exit 128; fi\nfi\nexec %q \"$@\"\n", counter, counter, failures, stderr, realGit)
+	script := fmt.Sprintf("#!/bin/sh\ncommand=$1\nif [ \"$1\" = -c ]; then command=$3; fi\nif [ \"$command\" = add ]; then\n  n=$(( $(cat %q 2>/dev/null || echo 0) + 1 ))\n  echo \"$n\" > %q\n  if [ \"$n\" -le %d ]; then printf '%%s\\n' %q >&2; exit 128; fi\nfi\nexec %q \"$@\"\n", counter, counter, failures, stderr, realGit)
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -492,4 +496,94 @@ func TestCreateDoesNotRetryOtherAddFailures(t *testing.T) {
 	if got := adds(); got != 1 {
 		t.Fatalf("git add ran %d times, want 1", got)
 	}
+}
+
+// Modification times are left out, because Git refreshes the modification
+// time of an object it would otherwise write again.
+func gitDirFiles(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	root := git(t, dir, "rev-parse", "--absolute-git-dir")
+	files := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		switch {
+		case d.IsDir():
+			files[rel] = "directory"
+		case d.Type()&fs.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			files[rel] = "link to " + target
+		default:
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			files[rel] = fmt.Sprintf("%d bytes %x", len(content), sha256.Sum256(content))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func gitDirChanges(before, after map[string]string, allowed ...string) []string {
+	var changes []string
+	note := func(path, change string) {
+		for _, prefix := range allowed {
+			if path == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(path, prefix) {
+				return
+			}
+		}
+		changes = append(changes, change+" "+path)
+	}
+	for path, was := range before {
+		if now, ok := after[path]; !ok {
+			note(path, "removed")
+		} else if now != was {
+			note(path, "changed")
+		}
+	}
+	for path := range after {
+		if _, ok := before[path]; !ok {
+			note(path, "added")
+		}
+	}
+	sort.Strings(changes)
+	return changes
+}
+
+func TestCreateUnderSplitIndexLeavesTheGitDirectoryUnchanged(t *testing.T) {
+	dir := testRepo(t)
+	git(t, dir, "config", "core.splitIndex", "true")
+	git(t, dir, "update-index", "--split-index")
+	shared, err := filepath.Glob(filepath.Join(git(t, dir, "rev-parse", "--absolute-git-dir"), "sharedindex.*"))
+	if err != nil || len(shared) == 0 {
+		t.Fatalf("the real index is not split: %v %v", shared, err)
+	}
+	monthAgo := time.Now().Add(-30 * 24 * time.Hour)
+	for _, path := range shared {
+		if err := os.Chtimes(path, monthAgo, monthAgo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, dir, "tracked.txt", "changed\n")
+	writeFile(t, dir, "new.txt", "new\n")
+
+	before := gitDirFiles(t, dir)
+	create(t, newStore(t, dir), "split index")
+	if changes := gitDirChanges(before, gitDirFiles(t, dir), "objects/", "refs/agent-snapshots/"); len(changes) > 0 {
+		t.Fatalf("create changed the Git directory outside its objects and snapshot refs:\n%s", strings.Join(changes, "\n"))
+	}
+	git(t, dir, "ls-files", "--stage")
 }

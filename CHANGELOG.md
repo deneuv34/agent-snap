@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `snapshot.create` no longer writes or deletes shared index files in a
+  repository with `core.splitIndex=true`. Each create wrote a new
+  `sharedindex.<oid>` file into the Git directory. Git also deleted every
+  shared index file there older than `splitIndex.sharedIndexExpire`, two
+  weeks by default, including the one the real index still needed. Git
+  commands then failed with `index file open failed`, and the create failed
+  after it had written the snapshot refs. Capture now writes an unsplit
+  scratch index. The captured tree is unchanged.
 - `SnapClient.request` rejects with `SnapProtocolError` when `agent-snap`
   returns a result for a method the client has no validator for. It used to
   return that result unchecked. Error responses are unchanged, so an unknown

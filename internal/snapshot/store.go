@@ -286,20 +286,27 @@ func (s *Store) captureTree(ctx context.Context, env []string) (tree, head strin
 	head, headErr := s.gitMaybe(ctx, env, "rev-parse", "--verify", "HEAD")
 	if headErr != nil {
 		head = ""
-		if _, err := s.git(ctx, env, "read-tree", "--empty"); err != nil {
+		if _, err := s.git(ctx, env, scratchIndexArgs("read-tree", "--empty")...); err != nil {
 			return "", "", err
 		}
-	} else if _, err := s.git(ctx, env, "read-tree", head); err != nil {
+	} else if _, err := s.git(ctx, env, scratchIndexArgs("read-tree", head)...); err != nil {
 		return "", "", err
 	}
 	if err := s.addAll(ctx, env); err != nil {
 		return "", "", err
 	}
-	tree, err = s.git(ctx, env, "write-tree")
+	tree, err = s.git(ctx, env, scratchIndexArgs("write-tree")...)
 	if err != nil {
 		return "", "", err
 	}
 	return tree, head, nil
+}
+
+// Under core.splitIndex=true, Git writes a shared index into the real Git
+// directory whatever GIT_INDEX_FILE names, and deletes expired shared indexes
+// there, including the one the real index still needs.
+func scratchIndexArgs(args ...string) []string {
+	return append([]string{"-c", "core.splitIndex=false"}, args...)
 }
 
 // addAll stages the working tree into the scratch index. Concurrent creates in
@@ -311,7 +318,7 @@ func (s *Store) captureTree(ctx context.Context, env []string) (tree, head strin
 func (s *Store) addAll(ctx context.Context, env []string) error {
 	delay := 25 * time.Millisecond
 	for attempt := 1; ; attempt++ {
-		out, err := s.gitMaybe(ctx, env, "add", "-A", "--", ".")
+		out, err := s.gitMaybe(ctx, env, scratchIndexArgs("add", "-A", "--", ".")...)
 		if err == nil {
 			return nil
 		}
