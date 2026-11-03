@@ -102,9 +102,11 @@ Methods:
 | `snapshot.list`  | `cwd`, `limit?`               | `{"snapshots":[...]}` (newest first)     |
 | `snapshot.get`   | `cwd`, `id`                   | snapshot detail object                   |
 | `snapshot.diff`  | `cwd`, `from`, `to`, `offset?`, `max_patch_bytes?` | one diff page            |
+| `snapshot.restore_plan` | `cwd`, `id`, `paths?`, `offset?`, `current_tree?` | one restore plan page |
 
 Error codes: `-32700` parse error, `-32601` method not found,
-`-32602` invalid params, `-32603` internal error, `-32001` snapshot not found.
+`-32602` invalid params, `-32603` internal error, `-32001` snapshot not found,
+`-32002` stale restore plan.
 
 `source` and `host` are the snapshot's origin: what asked for it, and which
 integration sent the request. Each is a lowercase hyphenated token of at most
@@ -121,6 +123,14 @@ by default. Each file says whether its hunks are on the page (`full`,
 The same pair gives the same result with the same Git, because the diff runs
 in a scratch repository that ignores Git attributes and configuration. See
 FR-14 in [`docs/BLINK_SPEC.md`](docs/BLINK_SPEC.md).
+
+`snapshot.restore_plan` lists what restoring a snapshot would do to the working
+tree, one page at a time, and changes nothing. A request with `offset` above 0
+must carry the `current_tree` from the first page. If the working tree no
+longer captures to `current_tree`, the method answers `-32002`. Only the JSONL
+method exists. `SnapClient`, the CLI, and the host tools do not expose it, and
+no release can apply a restore. See FR-15 in
+[`docs/BLINK_SPEC.md`](docs/BLINK_SPEC.md).
 
 ## Adapters
 
