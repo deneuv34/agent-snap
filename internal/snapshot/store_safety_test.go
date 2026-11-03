@@ -587,3 +587,126 @@ func TestCreateUnderSplitIndexLeavesTheGitDirectoryUnchanged(t *testing.T) {
 	}
 	git(t, dir, "ls-files", "--stage")
 }
+
+func TestConcurrentRecordsLandEveryDistinctTree(t *testing.T) {
+	dir := testRepo(t)
+	store := newStore(t, dir)
+	head := git(t, dir, "rev-parse", "HEAD")
+	const n = 16
+	trees := make([]string, n)
+	for i := range trees {
+		entry := fmt.Sprintf("100644 blob %s\tfile.txt\n", blobOf(t, dir, fmt.Sprintf("content-%d\n", i)))
+		tree, err := store.gitStdin(context.Background(), nil, entry, "mktree")
+		if err != nil {
+			t.Fatal(err)
+		}
+		trees[i] = tree
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	snaps := make([]Snapshot, n)
+	for i := range trees {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			snaps[i], errs[i] = store.recordTree(context.Background(), nil, trees[i], head, fmt.Sprintf("record-%d", i), Origin{})
+		}(i)
+	}
+	wg.Wait()
+
+	ids, commits := map[string]bool{}, map[string]bool{}
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("record %d failed: %v", i, err)
+		}
+		if snaps[i].Reused {
+			t.Fatalf("record %d of a distinct tree was reused", i)
+		}
+		ids[snaps[i].ID], commits[snaps[i].Commit] = true, true
+	}
+	if len(ids) != n || len(commits) != n {
+		t.Fatalf("got %d ids and %d commits, want %d distinct snapshots", len(ids), len(commits), n)
+	}
+	chain := strings.Fields(git(t, dir, "rev-list", store.latestRef(), "^"+head))
+	if len(chain) != n {
+		t.Fatalf("latest chain holds %d commits, want %d", len(chain), n)
+	}
+	for _, commit := range chain {
+		if !commits[commit] {
+			t.Fatalf("latest chain holds %s, which no record returned", commit)
+		}
+	}
+}
+
+func TestCreateFailsFastOnAStaleRefLock(t *testing.T) {
+	cases := []struct {
+		name  string
+		plant func(t *testing.T, dir string, store *Store) []string
+	}{
+		{"latest", func(t *testing.T, dir string, store *Store) []string {
+			create(t, store, "first")
+			writeFile(t, dir, "tracked.txt", "changed\n")
+			return []string{store.latestRef() + ".lock"}
+		}},
+		{"item", func(t *testing.T, dir string, store *Store) []string {
+			now := time.Date(2026, 1, 2, 3, 4, 5, 6, time.UTC)
+			store.now = func() time.Time { return now }
+			tree := git(t, dir, "rev-parse", "HEAD^{tree}")
+			head := git(t, dir, "rev-parse", "HEAD")
+			var locks []string
+			for sec := time.Now().Unix(); sec < time.Now().Unix()+15; sec++ {
+				env := authorEnv()
+				for i, kv := range env {
+					if strings.HasPrefix(kv, "GIT_AUTHOR_DATE=") || strings.HasPrefix(kv, "GIT_COMMITTER_DATE=") {
+						env[i] = kv[:strings.IndexByte(kv, '=')+1] + fmt.Sprintf("%d +0000", sec)
+					}
+				}
+				commit, err := store.gitStdin(context.Background(), env, commitMessage("stale", Origin{}), "commit-tree", tree, "-p", head, "-F", "-")
+				if err != nil {
+					t.Fatal(err)
+				}
+				locks = append(locks, store.itemsRef()+now.Format("20060102T150405.000000000Z")+"-"+commit[:12]+".lock")
+			}
+			return locks
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := testRepo(t)
+			store := newStore(t, dir)
+			locks := tc.plant(t, dir, store)
+			for _, lock := range locks {
+				writeFile(t, filepath.Join(dir, ".git"), lock, "")
+			}
+			refsBefore := git(t, dir, "for-each-ref", refsPrefix)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			start := time.Now()
+			_, err := store.Create(ctx, "stale", Origin{})
+			elapsed := time.Since(start)
+			if err == nil {
+				t.Fatal("a create behind a stale ref lock must fail")
+			}
+			named := false
+			for _, lock := range locks {
+				named = named || strings.Contains(err.Error(), "snapshot ref lock "+lock+" in the Git directory")
+			}
+			if !named || !strings.Contains(err.Error(), "remove it only when no agent-snap or Git process is running") {
+				t.Fatalf("after %s the error does not name the lock and the recovery: %v", elapsed, err)
+			}
+			if elapsed > 2*time.Second {
+				t.Fatalf("the create took %s to report the stale lock", elapsed)
+			}
+			for _, lock := range locks {
+				if _, err := os.Stat(filepath.Join(dir, ".git", lock)); err != nil {
+					t.Fatalf("the create touched the planted lock %s: %v", lock, err)
+				}
+			}
+			if refs := git(t, dir, "for-each-ref", refsPrefix); refs != refsBefore {
+				t.Fatalf("the failed create changed refs from %q to %q", refsBefore, refs)
+			}
+		})
+	}
+}

@@ -28,6 +28,7 @@ const (
 	changedFilesLimit = 1000
 	originLimit       = 64
 	gitStopGrace      = 500 * time.Millisecond
+	refLockTimeout    = time.Second
 	MaxPageOffset     = 1<<31 - 1
 	pageSize          = 200
 )
@@ -224,7 +225,10 @@ func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snaps
 	if err != nil {
 		return Snapshot{}, err
 	}
+	return s.recordTree(ctx, env, tree, head, reason, origin)
+}
 
+func (s *Store) recordTree(ctx context.Context, env []string, tree, head, reason string, origin Origin) (Snapshot, error) {
 	for {
 		if symref, err := s.isSymref(ctx, s.latestRef()); err != nil {
 			return Snapshot{}, err
@@ -409,7 +413,8 @@ func (s *Store) isSymref(ctx context.Context, ref string) (bool, error) {
 // encoded as the object format's all-zero OID, meaning "latest must not
 // exist yet". update-ref runs with --no-deref so a symbolic snapshot ref can
 // never redirect the write onto a real branch; symbolic refs are rejected
-// outright.
+// outright. A ref lock held past refLockTimeout fails the call and is never
+// removed, because a stale lock and one that a live Git holds look the same.
 func (s *Store) commitRefs(ctx context.Context, id, commit, expectedLatest string, extraEnv []string) (bool, error) {
 	itemsRef := s.itemsRef() + id
 	if symref, err := s.isSymref(ctx, itemsRef); err != nil {
@@ -433,12 +438,15 @@ func (s *Store) commitRefs(ctx context.Context, id, commit, expectedLatest strin
 	fmt.Fprintf(&b, "update %s %s %s\n", s.latestRef(), commit, expected)
 	b.WriteString("prepare\ncommit\n")
 
-	out, err := s.gitStdinMaybe(ctx, extraEnv, b.String(), "update-ref", "--no-deref", "--stdin")
+	out, err := s.gitStdinMaybe(ctx, extraEnv, b.String(), "-c", fmt.Sprintf("core.filesRefLockTimeout=%d", refLockTimeout.Milliseconds()), "update-ref", "--no-deref", "--stdin")
 	if err != nil {
-		if strings.Contains(out, "but expected") ||
-			strings.Contains(out, "cannot lock ref") ||
-			strings.Contains(out, "reference already exists") {
+		if strings.Contains(out, "but expected") || strings.Contains(out, "reference already exists") {
 			return false, nil
+		}
+		for _, ref := range []string{itemsRef, s.latestRef()} {
+			if strings.Contains(out, "cannot lock ref '"+ref+"': Unable to create '") && strings.Contains(out, "': File exists") {
+				return false, fmt.Errorf("snapshot ref lock %s.lock in the Git directory stayed held for %s; remove it only when no agent-snap or Git process is running in this repository", ref, refLockTimeout)
+			}
 		}
 		return false, fmt.Errorf("update refs: %w: %s", err, out)
 	}
@@ -668,9 +676,10 @@ func sanitizedEnv() []string {
 
 // gitCmd stops Git with SIGTERM when ctx ends, because a SIGKILL can land
 // while Git removes its ref lock files and leave them in the repository. A
-// Git or a hook that still holds the pipes gitStopGrace later is killed and
-// its pipes are closed, so cleanup finishes inside the client's kill grace.
-// Windows has no SIGTERM, so cancellation kills Git there.
+// Git still running gitStopGrace later is killed, and the pipes are closed
+// even when a hook still holds them, so cleanup finishes inside the client's
+// kill grace. The hook itself is not killed. Windows has no SIGTERM, so
+// cancellation kills Git there.
 func gitCmd(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	if runtime.GOOS != "windows" {

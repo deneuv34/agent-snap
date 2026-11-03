@@ -157,6 +157,8 @@ This workflow is a product requirement for the restore release, not an MVP behav
 - Updates to the per-worktree item ref and `latest` ref MUST occur in one Git ref transaction.
 - Moving `latest` MUST use compare-and-swap against the observed prior value.
 - If another create wins the race, the operation MUST re-read state and retry rather than overwrite the other snapshot.
+- Git waits up to one second for a snapshot ref lock (`core.filesRefLockTimeout`). When the lock is still held after that wait, the create fails with `-32603` and the message `snapshot ref lock <ref>.lock in the Git directory stayed held for 1s; remove it only when no agent-snap or Git process is running in this repository`. It creates no ref.
+- Blink MUST NOT remove, rename, or rewrite a ref lock file, because it cannot tell a lock that a dead Git left from one that a live Git holds.
 - The resulting snapshot-parent chain MUST remain linear per worktree.
 
 ### FR-7: Snapshot listing
