@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The `agent-snap` binary answers `snapshot.restore_plan` with a read-only
+  restore plan (FR-15). It lists what restoring a snapshot would change and
+  what would block it, and it writes nothing to the repository. A request
+  that carries a `current_tree` the working tree no longer captures to fails
+  with the new error code `-32002`. `SnapClient`, the CLI, and the host tools
+  do not expose it yet.
 - `snapshot.create` no longer writes or deletes shared index files in a
   repository with `core.splitIndex=true`. Each create wrote a new
   `sharedindex.<oid>` file into the Git directory. Git also deleted every
