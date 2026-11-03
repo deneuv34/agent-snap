@@ -12,8 +12,11 @@ The package declares `pi.extensions: ["dist/extension.js"]` in its
 - flushes pending snapshots and shuts the Go subprocess down at
   `session_shutdown`,
 - registers `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
-  `agent_snap_get(id, cwd?)`, and
-  `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)` tools,
+  `agent_snap_get(id, cwd?)`,
+  `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)`, and
+  `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)` tools
+  (the restore plan tool is read-only and names the `offset` and
+  `current_tree` of the next page),
 - registers `agent-snap-create`, `agent-snap-list`, `agent-snap-get <id>`, and
   `agent-snap-diff <from> <to>` commands,
 - records host `pi` and source `session-start`, `agent-settled`, `tool`, or

@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import type { SnapDiff, SnapDiffPage, SnapLike, SnapOrigin, SnapSnapshot } from "@agent-snap/core"
+import type { SnapDiff, SnapDiffPage, SnapLike, SnapOrigin, SnapRestorePlan, SnapRestorePlanOptions, SnapSnapshot } from "@agent-snap/core"
 import { setupAgentSnap, type AgentSnapHost } from "../src/v2.js"
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -16,6 +16,7 @@ function fakeClient() {
   const creates: CreateCall[] = []
   const lists: Array<{ cwd: string; limit?: number; signal?: AbortSignal }> = []
   const diffs: Array<{ cwd: string; from: string; to: string; page?: SnapDiffPage; signal?: AbortSignal }> = []
+  const restorePlans: Array<{ cwd: string; id: string; options?: SnapRestorePlanOptions; signal?: AbortSignal }> = []
   const releases: Array<() => void> = []
   let closed = false
   const client: SnapLike = {
@@ -47,6 +48,21 @@ function fakeClient() {
       }
       return empty
     },
+    async restorePlan(cwd, id, options, signal) {
+      restorePlans.push({ cwd, id, options, signal })
+      const empty: SnapRestorePlan = {
+        snapshot: { id, commit: "a".repeat(40), tree: "b".repeat(40) },
+        current_tree: "c".repeat(40),
+        result_tree: "b".repeat(40),
+        applicable: true,
+        blockers: [],
+        unmatched: [],
+        offset: 0,
+        totals: { entries: 0, create: 0, modify: 0, type_change: 0, delete: 0, staged: 0, unstaged: 0, untracked: 0, blocked: 0 },
+        entries: [],
+      }
+      return empty
+    },
     async close() {
       closed = true
     },
@@ -54,7 +70,7 @@ function fakeClient() {
   const release = () => {
     for (const resolve of releases.splice(0)) resolve()
   }
-  return { client, creates, lists, diffs, release, closed: () => closed }
+  return { client, creates, lists, diffs, restorePlans, release, closed: () => closed }
 }
 
 interface ToolInfo {
@@ -129,12 +145,12 @@ const deleted = (sessionID: string) => ({ type: "session.deleted", data: { sessi
 
 const toolContext = (sessionID = "ses_1", signal = new AbortController().signal) => ({ sessionID, signal })
 
-test("registers create, list, get, and diff tools with strict object schemas", async () => {
+test("registers create, list, get, diff, and restore plan tools with strict object schemas", async () => {
   const { client } = fakeClient()
   const { host, tools } = fakeHost()
   const cleanup = await setupAgentSnap(host, { client })
   try {
-    assert.deepEqual([...tools.keys()], ["agent_snap_create", "agent_snap_list", "agent_snap_get", "agent_snap_diff"])
+    assert.deepEqual([...tools.keys()], ["agent_snap_create", "agent_snap_list", "agent_snap_get", "agent_snap_diff", "agent_snap_restore_plan"])
     for (const tool of tools.values()) {
       assert.equal(tool.input.type, "object")
       assert.equal(tool.input.additionalProperties, false, `${tool.name} must reject unknown keys`)
@@ -151,6 +167,11 @@ test("registers create, list, get, and diff tools with strict object schemas", a
     const diff = tools.get("agent_snap_diff")?.input.properties
     assert.deepEqual([diff?.offset?.minimum, diff?.offset?.maximum], [0, 2147483647])
     assert.deepEqual([diff?.max_patch_bytes?.minimum, diff?.max_patch_bytes?.maximum], [1024, 1048576])
+    assert.deepEqual(tools.get("agent_snap_restore_plan")?.input.required, ["id"])
+    const plan = tools.get("agent_snap_restore_plan")?.input.properties
+    assert.deepEqual([plan?.paths?.type, plan?.paths?.items, plan?.paths?.minItems, plan?.paths?.maxItems], ["array", { type: "string" }, 1, 100])
+    assert.deepEqual([plan?.offset?.type, plan?.offset?.minimum, plan?.offset?.maximum], ["integer", 0, 2147483647])
+    assert.equal(plan?.current_tree?.type, "string")
   } finally {
     await cleanup?.()
   }
@@ -251,8 +272,43 @@ test("diff passes ids and page fields only when given", async () => {
   }
 })
 
+test("restore plan passes id, cwd, options only when given, and the signal", async () => {
+  const { client, restorePlans } = fakeClient()
+  const { host, tools } = fakeHost({ sessionDirectory: "/session" })
+  const cleanup = await setupAgentSnap(host, { client })
+  try {
+    const plan = tools.get("agent_snap_restore_plan")
+    const signal = new AbortController().signal
+    const output = await plan?.execute({ id: "a" }, toolContext("ses_1", signal))
+    assert.match(String(output?.content), /^Git evidence: restore plan \(read-only\)\nsnapshot a\nscope: whole tree\n/)
+    await plan?.execute({ id: "a", cwd: "/r", paths: ["src", "docs"], offset: 200, current_tree: "t" }, toolContext("ses_1", signal))
+    await plan?.execute({ id: "a", cwd: "/r", offset: 0 }, toolContext("ses_1", signal))
+    assert.deepEqual(restorePlans, [
+      { cwd: "/session", id: "a", options: {}, signal },
+      { cwd: "/r", id: "a", options: { paths: ["src", "docs"], offset: 200, currentTree: "t" }, signal },
+      { cwd: "/r", id: "a", options: { offset: 0 }, signal },
+    ])
+  } finally {
+    await cleanup?.()
+  }
+})
+
+test("restore plan forwards an aborted signal to the client", async () => {
+  const { client, restorePlans } = fakeClient()
+  const { host, tools } = fakeHost()
+  const cleanup = await setupAgentSnap(host, { client })
+  try {
+    const controller = new AbortController()
+    controller.abort()
+    await tools.get("agent_snap_restore_plan")?.execute({ id: "a", cwd: "/r" }, toolContext("ses_1", controller.signal))
+    assert.equal(restorePlans[0]?.signal?.aborted, true)
+  } finally {
+    await cleanup?.()
+  }
+})
+
 test("tools reject malformed input before reaching the client", async () => {
-  const { client, creates, diffs } = fakeClient()
+  const { client, creates, diffs, restorePlans } = fakeClient()
   const { host, tools, gets } = fakeHost()
   const cleanup = await setupAgentSnap(host, { client })
   try {
@@ -262,7 +318,11 @@ test("tools reject malformed input before reaching the client", async () => {
     await assert.rejects(() => tools.get("agent_snap_get")!.execute({ cwd: "/r" }, toolContext()), /id is required/)
     await assert.rejects(() => tools.get("agent_snap_diff")!.execute({ from: "a", cwd: "/r" }, toolContext()), /to is required/)
     await assert.rejects(() => tools.get("agent_snap_diff")!.execute({ from: "a", to: "b", cwd: 1 }, toolContext()), /cwd must be a string/)
-    assert.equal(creates.length + diffs.length + gets.length, 0)
+    await assert.rejects(() => tools.get("agent_snap_restore_plan")!.execute({ cwd: "/r" }, toolContext()), /id is required/)
+    await assert.rejects(() => tools.get("agent_snap_restore_plan")!.execute({ id: "a", cwd: "/r", paths: "src" }, toolContext()), /paths must be an array of strings/)
+    await assert.rejects(() => tools.get("agent_snap_restore_plan")!.execute({ id: "a", cwd: "/r", paths: ["src", 1] }, toolContext()), /paths must be an array of strings/)
+    await assert.rejects(() => tools.get("agent_snap_restore_plan")!.execute({ id: "a", cwd: "/r", current_tree: 1 }, toolContext()), /current_tree must be a string/)
+    assert.equal(creates.length + diffs.length + gets.length + restorePlans.length, 0)
   } finally {
     await cleanup?.()
   }

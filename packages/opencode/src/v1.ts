@@ -1,7 +1,7 @@
 import { tool } from "@opencode-ai/plugin"
 import type { Hooks, Plugin } from "@opencode-ai/plugin"
 import { SnapClient } from "@agent-snap/core"
-import { createAgentSnap, DESCRIPTIONS, DIFF_BOUNDS, type AgentSnapDeps } from "./snapshots.js"
+import { createAgentSnap, DESCRIPTIONS, DIFF_BOUNDS, RESTORE_PLAN_BOUNDS, type AgentSnapDeps } from "./snapshots.js"
 
 export interface AgentSnapPluginDeps extends AgentSnapDeps {
   directory: string
@@ -63,6 +63,28 @@ export function createAgentSnapPlugin(deps: AgentSnapPluginDeps): Hooks {
           cwd: tool.schema.string().describe(DESCRIPTIONS.cwd).optional(),
         },
         execute: (args, ctx) => snap.diff(args.cwd ?? ctx.directory, args, ctx.abort),
+      }),
+      agent_snap_restore_plan: tool({
+        description: DESCRIPTIONS.restorePlan,
+        args: {
+          id: tool.schema.string().describe(DESCRIPTIONS.id),
+          paths: tool.schema
+            .array(tool.schema.string())
+            .min(RESTORE_PLAN_BOUNDS.paths.min)
+            .max(RESTORE_PLAN_BOUNDS.paths.max)
+            .describe(DESCRIPTIONS.restorePaths)
+            .optional(),
+          offset: tool.schema
+            .number()
+            .int()
+            .min(RESTORE_PLAN_BOUNDS.offset.min)
+            .max(RESTORE_PLAN_BOUNDS.offset.max)
+            .describe(DESCRIPTIONS.restoreOffset)
+            .optional(),
+          current_tree: tool.schema.string().describe(DESCRIPTIONS.currentTree).optional(),
+          cwd: tool.schema.string().describe(DESCRIPTIONS.cwd).optional(),
+        },
+        execute: (args, ctx) => snap.restorePlan(args.cwd ?? ctx.directory, args, ctx.abort),
       }),
     },
     dispose: () => snap.dispose(),
