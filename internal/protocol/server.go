@@ -40,6 +40,7 @@ const (
 	CodeInvalidParams    = -32602
 	CodeInternalError    = -32603
 	CodeSnapshotNotFound = -32001
+	CodeStalePlan        = -32002
 )
 
 func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
@@ -84,6 +85,8 @@ func dispatch(ctx context.Context, req *Request) (any, *Error) {
 		return getSnapshot(ctx, req.Params)
 	case "snapshot.diff":
 		return diffSnapshots(ctx, req.Params)
+	case "snapshot.restore_plan":
+		return planRestore(ctx, req.Params)
 	default:
 		return nil, &Error{Code: CodeMethodNotFound, Message: "method not found"}
 	}
@@ -293,6 +296,99 @@ func diffSnapshots(ctx context.Context, params map[string]any) (any, *Error) {
 		return nil, &Error{Code: CodeInternalError, Message: err.Error()}
 	}
 	return diff, nil
+}
+
+var scopeMessages = []struct {
+	err     error
+	message string
+}{
+	{snapshot.ErrScopeSize, "param must hold 1 to 100 paths: paths"},
+	{snapshot.ErrScopePath, "param must hold only repository paths: paths"},
+	{snapshot.ErrScopeOverlap, "param must not hold overlapping paths: paths"},
+}
+
+func optionalScope(params map[string]any) (snapshot.Scope, *Error) {
+	raw, ok := params["paths"]
+	if !ok {
+		return snapshot.Scope{}, nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return snapshot.Scope{}, &Error{Code: CodeInvalidParams, Message: "param must be an array of strings: paths"}
+	}
+	paths := make([]string, len(items))
+	for i, item := range items {
+		path, ok := item.(string)
+		if !ok {
+			return snapshot.Scope{}, &Error{Code: CodeInvalidParams, Message: "param must be an array of strings: paths"}
+		}
+		paths[i] = path
+	}
+	scope, err := snapshot.ParseScope(paths)
+	if err == nil {
+		return scope, nil
+	}
+	for _, row := range scopeMessages {
+		if errors.Is(err, row.err) {
+			return snapshot.Scope{}, &Error{Code: CodeInvalidParams, Message: row.message}
+		}
+	}
+	return snapshot.Scope{}, &Error{Code: CodeInvalidParams, Message: err.Error()}
+}
+
+func optionalObjectID(params map[string]any, key string) (string, *Error) {
+	raw, ok := params[key]
+	if !ok {
+		return "", nil
+	}
+	value, ok := raw.(string)
+	if !ok || !snapshot.ValidObjectID(value) {
+		return "", &Error{Code: CodeInvalidParams, Message: "param must be an object id: " + key}
+	}
+	return value, nil
+}
+
+func planRestore(ctx context.Context, params map[string]any) (any, *Error) {
+	if err := validateParams(params, "cwd", "id", "paths", "offset", "current_tree"); err != nil {
+		return nil, err
+	}
+	cwd, rerr := requireString(params, "cwd")
+	if rerr != nil {
+		return nil, rerr
+	}
+	id, rerr := requireSnapshotID(params, "id")
+	if rerr != nil {
+		return nil, rerr
+	}
+	scope, rerr := optionalScope(params)
+	if rerr != nil {
+		return nil, rerr
+	}
+	offset, rerr := optionalInt(params, "offset", 0, snapshot.MaxPageOffset)
+	if rerr != nil {
+		return nil, rerr
+	}
+	currentTree, rerr := optionalObjectID(params, "current_tree")
+	if rerr != nil {
+		return nil, rerr
+	}
+	if offset > 0 && currentTree == "" {
+		return nil, &Error{Code: CodeInvalidParams, Message: "missing required param: current_tree"}
+	}
+	store, err := snapshot.New(cwd)
+	if err != nil {
+		return nil, &Error{Code: CodeInternalError, Message: err.Error()}
+	}
+	plan, err := store.PlanRestore(ctx, id, snapshot.PlanQuery{Scope: scope, Offset: offset, CurrentTree: currentTree})
+	switch {
+	case errors.Is(err, snapshot.ErrNotFound):
+		return nil, &Error{Code: CodeSnapshotNotFound, Message: err.Error()}
+	case errors.Is(err, snapshot.ErrStale):
+		return nil, &Error{Code: CodeStalePlan, Message: err.Error()}
+	case err != nil:
+		return nil, &Error{Code: CodeInternalError, Message: err.Error()}
+	}
+	return plan, nil
 }
 
 func writeResponse(enc *json.Encoder, id json.RawMessage, result any, rerr *Error) error {
