@@ -181,6 +181,8 @@ func (s *Store) planRestore(ctx context.Context, id string, q PlanQuery) (Restor
 
 func (q PlanQuery) check() error {
 	switch {
+	case q.Scope.unset():
+		return fmt.Errorf("plan restore: %w: pass WholeTree() to plan every path", ErrNoScope)
 	case q.Offset < 0 || q.Offset > MaxPageOffset:
 		return fmt.Errorf("invalid restore plan page: offset %d is outside 0 through %d", q.Offset, MaxPageOffset)
 	case q.CurrentTree != "" && !ValidObjectID(q.CurrentTree):

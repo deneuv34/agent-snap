@@ -21,12 +21,18 @@ var (
 	ErrScopeSize    = errors.New("restore scope must hold 1 to 100 paths")
 	ErrScopePath    = errors.New("restore scope holds a path that is not a repository path")
 	ErrScopeOverlap = errors.New("restore scope holds overlapping paths")
+	ErrNoScope      = errors.New("restore scope is unset")
 )
 
+// Scope is the whole tree or a non-empty set of literal paths. The zero value
+// is neither, so a Scope returned beside a ParseScope error selects nothing.
 type Scope struct {
 	paths []string
 	set   map[string]bool
+	all   bool
 }
+
+func WholeTree() Scope { return Scope{all: true} }
 
 func ParseScope(paths []string) (Scope, error) {
 	if len(paths) < 1 || len(paths) > ScopeMaxPaths {
@@ -56,7 +62,9 @@ func ParseScope(paths []string) (Scope, error) {
 
 func (s Scope) Paths() []string { return slices.Clone(s.paths) }
 
-func (s Scope) whole() bool { return s.set == nil }
+func (s Scope) whole() bool { return s.all }
+
+func (s Scope) unset() bool { return !s.all && s.set == nil }
 
 func (s Scope) covering(p string) (string, bool) {
 	if s.whole() {

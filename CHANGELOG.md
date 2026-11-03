@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `snapshot.PlanRestore` refuses a `PlanQuery` whose `Scope` is the zero value
+  with `snapshot.ErrNoScope`. A caller that wants every path passes
+  `snapshot.WholeTree()`. The JSONL behavior of `snapshot.restore_plan` is
+  unchanged.
 - The `agent-snap` binary answers `snapshot.restore_plan` with a read-only
   restore plan (FR-15). It lists what restoring a snapshot would change and
   what would block it, and it writes nothing to the repository. A request

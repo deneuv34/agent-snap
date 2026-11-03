@@ -124,7 +124,7 @@ func TestPlanRestoreOfAnUnchangedTreeIsEmptyAndApplicable(t *testing.T) {
 			snap := create(t, store, "snap")
 			tree := get(t, store, snap.ID).Tree
 
-			plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{})
+			plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
 			want := RestorePlan{
 				Snapshot:    PlanSnapshot{ID: snap.ID, Commit: snap.Commit, Tree: tree},
 				CurrentTree: tree, ResultTree: tree, Applicable: true,
@@ -168,7 +168,7 @@ func TestPlanRestoreReportsEachActionWithItsSides(t *testing.T) {
 				writeFile(t, dir, name, content)
 			}
 
-			plan := planAndCheck(t, dir, store, snapshot, PlanQuery{})
+			plan := planAndCheck(t, dir, store, snapshot, PlanQuery{Scope: WholeTree()})
 			oid := func(content string) string { return blobOf(t, dir, content) }
 			assertEntries(t, plan.Entries, []PlanEntry{
 				{Path: "d", Action: ActionCreate, Target: side(modeFile, oid("a file\n"))},
@@ -214,7 +214,7 @@ func TestPlanRestoreSetsTheFlagsFromHeadTheIndexAndTheWorkingTree(t *testing.T) 
 			git(t, dir, "add", "-N", "ita.txt")
 			writeFile(t, dir, "untracked.txt", "v1\n")
 
-			plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{})
+			plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
 			type flags struct{ staged, unstaged, untracked bool }
 			want := map[string]flags{
 				"both.txt":      {staged: true, unstaged: true},
@@ -275,7 +275,7 @@ func TestPlanRestoreListsEntriesInByteOrder(t *testing.T) {
 		dirEntry("a", treeOf(t, dir, fileEntry(t, dir, modeFile, "x", "5\n"))),
 		fileEntry(t, dir, modeFile, "a0", "6\n"),
 	))
-	plan := planAndCheck(t, dir, store, snapshot, PlanQuery{})
+	plan := planAndCheck(t, dir, store, snapshot, PlanQuery{Scope: WholeTree()})
 	if got, want := entryPaths(plan.Entries), []string{"B", "a b", "a-b", "a.b", "a/x", "a0"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("entries in %q, want byte order %q", got, want)
 	}
@@ -289,7 +289,7 @@ func TestPlanRestoreReportsARenameAsADeleteAndACreate(t *testing.T) {
 	if err := os.Rename(filepath.Join(dir, "old.txt"), filepath.Join(dir, "new.txt")); err != nil {
 		t.Fatal(err)
 	}
-	plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{})
+	plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
 	blob := blobOf(t, dir, "moved\n")
 	assertEntries(t, plan.Entries, []PlanEntry{
 		{Path: "new.txt", Action: ActionDelete, Current: side(modeFile, blob), Untracked: true},
@@ -307,7 +307,7 @@ func TestPlanRestoreOnAnUnbornBranchComparesTheIndexWithAnEmptyHead(t *testing.T
 			writeFile(t, dir, "loose.txt", "loose\n")
 			git(t, dir, "add", "added.txt")
 
-			plan := planAndCheck(t, dir, store, snapshot, PlanQuery{})
+			plan := planAndCheck(t, dir, store, snapshot, PlanQuery{Scope: WholeTree()})
 			assertEntries(t, plan.Entries, []PlanEntry{
 				{Path: "added.txt", Action: ActionDelete, Current: side(modeFile, blobOf(t, dir, "added\n")), Staged: true},
 				{Path: "loose.txt", Action: ActionDelete, Current: side(modeFile, blobOf(t, dir, "loose\n")), Untracked: true},
@@ -422,7 +422,7 @@ func TestPlanRestoreBlocksAWriteBelowAFileOutsideTheScope(t *testing.T) {
 			if e := entryAt(t, masked, "a/b"); e.Blocker != BlockSubmodule || masked.ResultTree != "" {
 				t.Fatalf("a submodule below the file a: blocker %q, result tree %q", e.Blocker, masked.ResultTree)
 			}
-			for _, q := range []PlanQuery{{}, {Scope: scopeOf(t, "a")}} {
+			for _, q := range []PlanQuery{{Scope: WholeTree()}, {Scope: scopeOf(t, "a")}} {
 				covered := planAndCheck(t, dir, store, below, q)
 				if covered.ResultTree == "" || covered.Totals.Blocked != 0 {
 					t.Fatalf("scope %q covers a: result tree %q, blocked %d", q.Scope.Paths(), covered.ResultTree, covered.Totals.Blocked)
@@ -438,7 +438,7 @@ func TestPlanRestoreReportsRepositoryBlockersOnceInOrder(t *testing.T) {
 			dir := testRepoIn(t, format)
 			store := newStore(t, dir)
 			snap := create(t, store, "snap")
-			plan := func() RestorePlan { return planAndCheck(t, dir, store, snap.ID, PlanQuery{}) }
+			plan := func() RestorePlan { return planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()}) }
 
 			for _, name := range operationFiles {
 				path := git(t, dir, "rev-parse", "--git-path", name)
@@ -495,7 +495,7 @@ func TestPlanRestoreCountsADanglingOperationLinkAsAnOperation(t *testing.T) {
 	if err := os.Symlink("missing", filepath.Join(dir, ".git", "MERGE_HEAD")); err != nil {
 		t.Skipf("symbolic links unavailable: %v", err)
 	}
-	if got := planAndCheck(t, dir, store, snap.ID, PlanQuery{}).Blockers; !reflect.DeepEqual(got, []RepoBlocker{BlockOperationInProgress}) {
+	if got := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()}).Blockers; !reflect.DeepEqual(got, []RepoBlocker{BlockOperationInProgress}) {
 		t.Fatalf("blockers %q", got)
 	}
 }
@@ -515,7 +515,7 @@ func TestPlanRestoreBlocksPathsTheIndexFlags(t *testing.T) {
 	git(t, dir, "update-index", "--assume-unchanged", "assumed.txt", "both.txt")
 	git(t, dir, "update-index", "--skip-worktree", "skipped.txt", "both.txt")
 
-	plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{})
+	plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
 	for path, want := range map[string]PathBlocker{"assumed.txt": BlockIndexFlag, "skipped.txt": BlockIndexFlag, "both.txt": BlockIndexFlag, "plain.txt": ""} {
 		if got := entryAt(t, plan, path).Blocker; got != want {
 			t.Errorf("%s: blocker %q, want %q", path, got, want)
@@ -531,10 +531,10 @@ func TestPlanRestorePagesTheWholePlan(t *testing.T) {
 		writeFile(t, dir, fmt.Sprintf("f%03d", i), "x\n")
 	}
 
-	first := planAndCheck(t, dir, store, snap.ID, PlanQuery{})
+	first := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
 	pages := []RestorePlan{first}
 	for page := first; page.NextOffset != 0 && len(pages) <= 3; {
-		page = planAndCheck(t, dir, store, snap.ID, PlanQuery{Offset: page.NextOffset, CurrentTree: first.CurrentTree})
+		page = planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree(), Offset: page.NextOffset, CurrentTree: first.CurrentTree})
 		pages = append(pages, page)
 	}
 	var got []string
@@ -549,7 +549,7 @@ func TestPlanRestorePagesTheWholePlan(t *testing.T) {
 		t.Fatalf("%d pages, %d entries from %q to %q, totals %+v", len(pages), len(got), got[0], got[len(got)-1], first.Totals)
 	}
 	for _, offset := range []int{450, MaxPageOffset} {
-		past := planAndCheck(t, dir, store, snap.ID, PlanQuery{Offset: offset, CurrentTree: first.CurrentTree})
+		past := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree(), Offset: offset, CurrentTree: first.CurrentTree})
 		if len(past.Entries) != 0 || past.Entries == nil || past.NextOffset != 0 || past.Totals != first.Totals || past.Offset != offset {
 			t.Fatalf("offset %d past the end: %+v", offset, past)
 		}
@@ -563,11 +563,11 @@ func TestPlanRestoreFailsWhenTheWorkingTreeNoLongerCapturesToCurrentTree(t *test
 			store := newStore(t, dir)
 			snap := create(t, store, "snap")
 			writeFile(t, dir, "new.txt", "new\n")
-			first := planAndCheck(t, dir, store, snap.ID, PlanQuery{})
+			first := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
 			writeFile(t, dir, "newer.txt", "newer\n")
 
 			other := strings.Repeat("a", 104-len(first.CurrentTree))
-			for _, q := range []PlanQuery{{CurrentTree: first.CurrentTree}, {Offset: 1, CurrentTree: first.CurrentTree}, {CurrentTree: other}} {
+			for _, q := range []PlanQuery{{Scope: WholeTree(), CurrentTree: first.CurrentTree}, {Scope: WholeTree(), Offset: 1, CurrentTree: first.CurrentTree}, {Scope: WholeTree(), CurrentTree: other}} {
 				plan, err := store.PlanRestore(context.Background(), snap.ID, q)
 				if err != ErrStale || err.Error() != "working tree changed since the plan" || !reflect.DeepEqual(plan, RestorePlan{}) {
 					t.Fatalf("%+v: got %v and %+v, want ErrStale and no plan", q, err, plan)
@@ -583,18 +583,18 @@ func TestPlanRestoreChecksTheQueryBeforeTheLookup(t *testing.T) {
 	unknown := "20260101T000000.000000000Z-000000000000"
 	tree := strings.Repeat("a", 40)
 	for _, q := range []PlanQuery{
-		{Offset: -1},
-		{Offset: MaxPageOffset + 1, CurrentTree: tree},
-		{Offset: 1},
-		{CurrentTree: "abc"},
-		{CurrentTree: strings.ToUpper(tree)},
-		{CurrentTree: tree + "0"},
+		{Scope: WholeTree(), Offset: -1},
+		{Scope: WholeTree(), Offset: MaxPageOffset + 1, CurrentTree: tree},
+		{Scope: WholeTree(), Offset: 1},
+		{Scope: WholeTree(), CurrentTree: "abc"},
+		{Scope: WholeTree(), CurrentTree: strings.ToUpper(tree)},
+		{Scope: WholeTree(), CurrentTree: tree + "0"},
 	} {
 		if _, err := store.PlanRestore(context.Background(), unknown, q); err == nil || errors.Is(err, ErrNotFound) {
 			t.Errorf("%+v: got %v, want a query error before the lookup", q, err)
 		}
 	}
-	if _, err := store.PlanRestore(context.Background(), unknown, PlanQuery{Offset: MaxPageOffset, CurrentTree: tree}); !errors.Is(err, ErrNotFound) {
+	if _, err := store.PlanRestore(context.Background(), unknown, PlanQuery{Scope: WholeTree(), Offset: MaxPageOffset, CurrentTree: tree}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a valid query for an unknown snapshot: %v", err)
 	}
 }
@@ -604,18 +604,18 @@ func TestPlanRestoreResolvesTheSnapshotAsGetDoes(t *testing.T) {
 	store := newStore(t, dir)
 	snap := create(t, store, "snap")
 	for id, want := range map[string]error{"not-an-id": ErrInvalidID, "20260101T000000.000000000Z-000000000000": ErrNotFound} {
-		if _, err := store.PlanRestore(context.Background(), id, PlanQuery{}); !errors.Is(err, want) {
+		if _, err := store.PlanRestore(context.Background(), id, PlanQuery{Scope: WholeTree()}); !errors.Is(err, want) {
 			t.Errorf("%q: got %v, want %v", id, err, want)
 		}
 	}
 	linked := filepath.Join(t.TempDir(), "linked")
 	git(t, dir, "worktree", "add", "-q", "--detach", linked)
-	if _, err := newStore(t, linked).PlanRestore(context.Background(), snap.ID, PlanQuery{}); !errors.Is(err, ErrNotFound) {
+	if _, err := newStore(t, linked).PlanRestore(context.Background(), snap.ID, PlanQuery{Scope: WholeTree()}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("another worktree's snapshot: %v", err)
 	}
 	symbolic := "20260101T000000.000000000Z-" + snap.Commit[:12]
 	git(t, dir, "symbolic-ref", store.itemsRef()+symbolic, store.itemsRef()+snap.ID)
-	if _, err := store.PlanRestore(context.Background(), symbolic, PlanQuery{}); err == nil || !strings.Contains(err.Error(), "symbolic ref") {
+	if _, err := store.PlanRestore(context.Background(), symbolic, PlanQuery{Scope: WholeTree()}); err == nil || !strings.Contains(err.Error(), "symbolic ref") {
 		t.Fatalf("a symbolic item ref: %v", err)
 	}
 }
@@ -678,7 +678,7 @@ func TestPlanRestoreBlocksEachWriteSomethingUntrackedStandsIn(t *testing.T) {
 				nestedEntry(t, dir, c.write, fileEntry(t, dir, modeFile, filepath.Base(c.write), "snapshot\n")),
 			))
 
-			plan := planAndCheck(t, dir, store, snapshot, PlanQuery{})
+			plan := planAndCheck(t, dir, store, snapshot, PlanQuery{Scope: WholeTree()})
 			want := PathBlocker("")
 			if c.blocked {
 				want = BlockUntrackedInTheWay
@@ -723,7 +723,7 @@ func TestPlanRestoreNeverFollowsASymbolicLink(t *testing.T) {
 		nestedEntry(t, dir, "out.log/x", fileEntry(t, dir, modeFile, "x", "snapshot\n")),
 	))
 
-	plan := planAndCheck(t, dir, store, snapshot, PlanQuery{})
+	plan := planAndCheck(t, dir, store, snapshot, PlanQuery{Scope: WholeTree()})
 	if e := entryAt(t, plan, "link"); e.Action != ActionDelete || e.Current.Mode != modeSymlink || e.Blocker != "" {
 		t.Fatalf("the current link: %+v", e)
 	}
@@ -750,7 +750,7 @@ func TestPlanRestoreBlocksNamesThatFoldTogether(t *testing.T) {
 		fileEntry(t, dir, modeFile, "README.md", "current\n"),
 	))
 
-	plan := planAndCheck(t, dir, store, pair, PlanQuery{})
+	plan := planAndCheck(t, dir, store, pair, PlanQuery{Scope: WholeTree()})
 	want := map[string]PathBlocker{
 		"Docs/a":    BlockNameCollision,
 		"Docs/c":    BlockNameCollision,
@@ -770,7 +770,7 @@ func TestPlanRestoreBlocksNamesThatFoldTogether(t *testing.T) {
 
 	if !foldsCase(t, dir) {
 		git(t, dir, "config", "core.ignorecase", "false")
-		for _, e := range planAndCheck(t, dir, store, pair, PlanQuery{}).Entries {
+		for _, e := range planAndCheck(t, dir, store, pair, PlanQuery{Scope: WholeTree()}).Entries {
 			if e.Blocker != "" {
 				t.Errorf("a tree that does not fold: %s blocked as %q", e.Path, e.Blocker)
 			}
@@ -790,7 +790,7 @@ func TestPlanRestoreProbesForFoldingWhenTheConfigurationIsSilent(t *testing.T) {
 		fileEntry(t, dir, modeFile, "README", "upper\n"),
 		fileEntry(t, dir, modeFile, "readme", "lower\n"),
 	))
-	plan := planAndCheck(t, dir, store, snapshot, PlanQuery{})
+	plan := planAndCheck(t, dir, store, snapshot, PlanQuery{Scope: WholeTree()})
 	for _, path := range []string{"README", "readme"} {
 		if got := entryAt(t, plan, path).Blocker; got != BlockNameCollision {
 			t.Errorf("%s: blocker %q, want %q", path, got, BlockNameCollision)
@@ -811,7 +811,7 @@ func TestPlanRestoreDoesNotCountACaseOnlyRenameAsInTheWay(t *testing.T) {
 		fileEntry(t, dir, modeFile, "README", "snapshot\n"),
 		fileEntry(t, dir, modeFile, "DIR", "snapshot\n"),
 	))
-	plan := planAndCheck(t, dir, store, snapshot, PlanQuery{})
+	plan := planAndCheck(t, dir, store, snapshot, PlanQuery{Scope: WholeTree()})
 	want := map[string]PathBlocker{"DIR": "", "Dir/x": BlockNameCollision, "README": "", "readme": ""}
 	got := map[string]PathBlocker{}
 	for _, e := range plan.Entries {
@@ -831,7 +831,7 @@ func TestPlanRestoreBlocksTheDeleteOfACaseOnlyDirectoryRename(t *testing.T) {
 		fileEntry(t, dir, modeFile, "tracked.txt", "initial\n"),
 		dirEntry("dir", treeOf(t, dir, fileEntry(t, dir, modeFile, "a", "a\n"))),
 	))
-	plan := planAndCheck(t, dir, store, snapshot, PlanQuery{})
+	plan := planAndCheck(t, dir, store, snapshot, PlanQuery{Scope: WholeTree()})
 	want := map[string]PathBlocker{"Dir/a": BlockNameCollision, "dir/a": ""}
 	got := map[string]PathBlocker{}
 	for _, e := range plan.Entries {
@@ -857,7 +857,7 @@ func TestPlanRestoreBlocksNamesGitRefusesWithoutTouchingThem(t *testing.T) {
 			)
 			snapshot := snapshotOfTree(t, dir, store, snapshotTree)
 
-			plan := planAndCheck(t, dir, store, snapshot, PlanQuery{})
+			plan := planAndCheck(t, dir, store, snapshot, PlanQuery{Scope: WholeTree()})
 			want := map[string]PathBlocker{
 				".git/hooks/x":  BlockUnsafePath,
 				".gitmodules":   BlockUnsafePath,
@@ -915,7 +915,7 @@ func TestPlanRestoreFailsOnASnapshotTreeNoRestoreCouldProduce(t *testing.T) {
 		literalTree(t, dir, [3]string{modeFile, "a", blob}, [3]string{"40000", "a", below}): `holds "a" and a path below it`,
 	} {
 		snapshot := snapshotOfTree(t, dir, store, name)
-		plan, err := store.PlanRestore(context.Background(), snapshot, PlanQuery{})
+		plan, err := store.PlanRestore(context.Background(), snapshot, PlanQuery{Scope: WholeTree()})
 		if err == nil || !strings.Contains(err.Error(), want) || !reflect.DeepEqual(plan, RestorePlan{}) {
 			t.Fatalf("tree %s: got %v and %+v, want an error that %s", name, err, plan, want)
 		}
@@ -942,7 +942,7 @@ func TestPlanRestoreFailsOnAMissingTargetBlobWithoutFetchingIt(t *testing.T) {
 		t.Skipf("blob is not a loose object: %v", err)
 	}
 
-	for _, q := range []PlanQuery{{}, {Scope: scopeOf(t, "lost.txt")}} {
+	for _, q := range []PlanQuery{{Scope: WholeTree()}, {Scope: scopeOf(t, "lost.txt")}} {
 		plan, err := store.PlanRestore(context.Background(), snap.ID, q)
 		if err == nil || !strings.Contains(err.Error(), blob) || !reflect.DeepEqual(plan, RestorePlan{}) {
 			t.Fatalf("scope %v: got %v and %+v, want an error that names the missing blob", q.Scope.Paths(), err, plan)
@@ -962,13 +962,13 @@ func TestPlanRestoreIgnoresReplaceRefs(t *testing.T) {
 	store := newStore(t, dir)
 	snap := create(t, store, "snap")
 	writeFile(t, dir, "a.txt", "changed\n")
-	before := planAndCheck(t, dir, store, snap.ID, PlanQuery{})
+	before := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
 
 	tree := get(t, store, snap.ID).Tree
 	decoy := treeOf(t, dir, fileEntry(t, dir, modeFile, "decoy.txt", "decoy\n"))
 	git(t, dir, "replace", "-f", tree, decoy)
 	git(t, dir, "replace", "-f", blobOf(t, dir, "a\n"), blobOf(t, dir, "decoy\n"))
-	after := planAndCheck(t, dir, store, snap.ID, PlanQuery{})
+	after := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
 	if !reflect.DeepEqual(after, before) || after.Snapshot.Tree != tree {
 		t.Fatalf("a replace ref changed the plan:\nbefore %+v\nafter  %+v", before, after)
 	}
@@ -999,11 +999,11 @@ func TestPlanRestoreBlocksSubmodulesAndNestedRepositories(t *testing.T) {
 		modeGitlink+" commit "+head+"\tsub",
 	))
 
-	plan := planAndCheck(t, dir, store, empty.ID, PlanQuery{})
+	plan := planAndCheck(t, dir, store, empty.ID, PlanQuery{Scope: WholeTree()})
 	assertEntries(t, plan.Entries, []PlanEntry{
 		{Path: "nested", Action: ActionDelete, Current: side(modeGitlink, nested), Untracked: true, Blocker: BlockSubmodule},
 	})
-	plan = planAndCheck(t, dir, store, gitlink, PlanQuery{})
+	plan = planAndCheck(t, dir, store, gitlink, PlanQuery{Scope: WholeTree()})
 	assertEntries(t, plan.Entries, []PlanEntry{
 		{Path: "sub", Action: ActionCreate, Target: side(modeGitlink, head), Blocker: BlockSubmodule},
 	})
@@ -1024,7 +1024,7 @@ func TestPlanRestoreSeesGitlinkChangesDespiteSubmoduleIgnore(t *testing.T) {
 	git(t, inner, "commit", "-q", "-am", "second")
 	second := git(t, inner, "rev-parse", "HEAD")
 
-	plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{})
+	plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
 	assertEntries(t, plan.Entries, []PlanEntry{
 		{Path: "sub", Action: ActionModify, Current: side(modeGitlink, second), Target: side(modeGitlink, first), Unstaged: true, Blocker: BlockSubmodule},
 	})
@@ -1039,7 +1039,7 @@ func TestPlanRestoreInALinkedWorktreeReadsThatWorktreesState(t *testing.T) {
 			store := newStore(t, linked)
 			snap := create(t, store, "linked")
 			writeFile(t, linked, "work.txt", "linked\n")
-			if got := planAndCheck(t, linked, store, snap.ID, PlanQuery{}); !got.Applicable || len(got.Entries) != 1 {
+			if got := planAndCheck(t, linked, store, snap.ID, PlanQuery{Scope: WholeTree()}); !got.Applicable || len(got.Entries) != 1 {
 				t.Fatalf("linked plan %+v", got)
 			}
 
@@ -1048,11 +1048,11 @@ func TestPlanRestoreInALinkedWorktreeReadsThatWorktreesState(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer os.Remove(mergeHead)
-			if got := planAndCheck(t, linked, store, snap.ID, PlanQuery{}).Blockers; !reflect.DeepEqual(got, []RepoBlocker{BlockOperationInProgress}) {
+			if got := planAndCheck(t, linked, store, snap.ID, PlanQuery{Scope: WholeTree()}).Blockers; !reflect.DeepEqual(got, []RepoBlocker{BlockOperationInProgress}) {
 				t.Fatalf("linked worktree with MERGE_HEAD: blockers %q", got)
 			}
 			mainSnap := create(t, main, "main")
-			if got := planAndCheck(t, dir, main, mainSnap.ID, PlanQuery{}).Blockers; len(got) != 0 {
+			if got := planAndCheck(t, dir, main, mainSnap.ID, PlanQuery{Scope: WholeTree()}).Blockers; len(got) != 0 {
 				t.Fatalf("the main worktree read the linked worktree's MERGE_HEAD: blockers %q", got)
 			}
 		})
@@ -1113,7 +1113,7 @@ func TestPlanRestoreCapturesTheTreeCreateWouldRecord(t *testing.T) {
 				c.dirty(t, dir)
 
 				before := gitDirFiles(t, dir)
-				plan, err := store.PlanRestore(context.Background(), snap.ID, PlanQuery{})
+				plan, err := store.PlanRestore(context.Background(), snap.ID, PlanQuery{Scope: WholeTree()})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1123,7 +1123,7 @@ func TestPlanRestoreCapturesTheTreeCreateWouldRecord(t *testing.T) {
 				if objectExists(t, dir, plan.CurrentTree) {
 					t.Fatalf("the plan wrote its current tree %s into the repository's object store", plan.CurrentTree)
 				}
-				if again := planAndCheck(t, dir, store, snap.ID, PlanQuery{}); again.CurrentTree != plan.CurrentTree || len(plan.Entries) == 0 {
+				if again := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()}); again.CurrentTree != plan.CurrentTree || len(plan.Entries) == 0 {
 					t.Fatalf("current tree %s then %s, %d entries", plan.CurrentTree, again.CurrentTree, len(plan.Entries))
 				}
 			})
@@ -1141,7 +1141,7 @@ func TestPlanRestoreReadsTheIndexWhileItIsLocked(t *testing.T) {
 	if err := os.WriteFile(lock, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{})
+	plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
 	if e := entryAt(t, plan, "tracked.txt"); !e.Staged || e.Unstaged {
 		t.Fatalf("tracked.txt staged under a held lock: %+v", e)
 	}
@@ -1179,15 +1179,15 @@ func TestPlanRestoreRemovesItsScratchDirectoryOnEveryReturn(t *testing.T) {
 	writeFile(t, dir, "tracked.txt", "changed\n")
 	root := scratchRoot(t)
 
-	if _, err := store.PlanRestore(context.Background(), snap.ID, PlanQuery{}); err != nil {
+	if _, err := store.PlanRestore(context.Background(), snap.ID, PlanQuery{Scope: WholeTree()}); err != nil {
 		t.Fatal(err)
 	}
 	assertEmpty(t, root, "a plan")
-	if _, err := store.PlanRestore(context.Background(), snap.ID, PlanQuery{CurrentTree: strings.Repeat("0", 40)}); err != ErrStale {
+	if _, err := store.PlanRestore(context.Background(), snap.ID, PlanQuery{Scope: WholeTree(), CurrentTree: strings.Repeat("0", 40)}); err != ErrStale {
 		t.Fatalf("stale page: %v", err)
 	}
 	assertEmpty(t, root, "a stale page")
-	if _, err := store.PlanRestore(context.Background(), tampered, PlanQuery{}); err == nil {
+	if _, err := store.PlanRestore(context.Background(), tampered, PlanQuery{Scope: WholeTree()}); err == nil {
 		t.Fatal("a tampered snapshot tree must fail the plan")
 	}
 	assertEmpty(t, root, "a failed plan")
@@ -1215,7 +1215,7 @@ func TestPlanRestoreCancelledWhileAFilterBlocksReturnsNoPlan(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		plan, err := store.PlanRestore(ctx, snap.ID, PlanQuery{})
+		plan, err := store.PlanRestore(ctx, snap.ID, PlanQuery{Scope: WholeTree()})
 		done <- result{plan, err}
 	}()
 	defer func() { _ = os.WriteFile(release, nil, 0o644) }()
@@ -1256,23 +1256,23 @@ func TestPlanRestoreIsApplicableOnlyWithoutBlockersOrUnmatchedPaths(t *testing.T
 		query      PlanQuery
 		applicable bool
 	}{
-		{"no entries", func() {}, PlanQuery{}, true},
-		{"an entry with no blocker", func() { writeFile(t, dir, "tracked.txt", "changed\n") }, PlanQuery{}, true},
+		{"no entries", func() {}, PlanQuery{Scope: WholeTree()}, true},
+		{"an entry with no blocker", func() { writeFile(t, dir, "tracked.txt", "changed\n") }, PlanQuery{Scope: WholeTree()}, true},
 		{"an unmatched scope path", func() {}, PlanQuery{Scope: scopeOf(t, "tracked.txt", "nowhere")}, false},
 		{"a blocked entry", func() {
 			writeFile(t, dir, "flagged.txt", "v2\n")
 			git(t, dir, "update-index", "--skip-worktree", "flagged.txt")
-		}, PlanQuery{}, false},
+		}, PlanQuery{Scope: WholeTree()}, false},
 		{"a repository blocker", func() {
 			git(t, dir, "update-index", "--no-skip-worktree", "flagged.txt")
 			writeFile(t, dir, "flagged.txt", "v1\n")
 			writeFile(t, dir, ".git/MERGE_HEAD", git(t, dir, "rev-parse", "HEAD")+"\n")
-		}, PlanQuery{}, false},
+		}, PlanQuery{Scope: WholeTree()}, false},
 		{"the repository blocker gone", func() {
 			if err := os.Remove(mergeHead); err != nil {
 				t.Fatal(err)
 			}
-		}, PlanQuery{}, true},
+		}, PlanQuery{Scope: WholeTree()}, true},
 	}
 	for _, c := range cases {
 		c.setup()
@@ -1280,5 +1280,37 @@ func TestPlanRestoreIsApplicableOnlyWithoutBlockersOrUnmatchedPaths(t *testing.T
 		if plan.Applicable != c.applicable {
 			t.Errorf("%s: applicable %v, want %v (blockers %q, unmatched %q, blocked %d)", c.name, plan.Applicable, c.applicable, plan.Blockers, plan.Unmatched, plan.Totals.Blocked)
 		}
+	}
+}
+
+func TestPlanRestoreRefusesAnUnsetScopeBeforeAnyGitWork(t *testing.T) {
+	dir := testRepo(t)
+	store := newStore(t, dir)
+	snap := create(t, store, "snap")
+	writeFile(t, dir, "tracked.txt", "changed\n")
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	unknown := "20260101T000000.000000000Z-000000000000"
+	parsed, parseErr := ParseScope([]string{"a//b"})
+	if parseErr == nil {
+		t.Fatal("ParseScope accepted a malformed path")
+	}
+	for name, q := range map[string]PlanQuery{
+		"a zero query":                        {},
+		"the Scope beside a ParseScope error": {Scope: parsed},
+		"a zero scope with a valid page":      {CurrentTree: strings.Repeat("a", 40), Offset: 1},
+	} {
+		for _, id := range []string{snap.ID, unknown} {
+			plan, err := store.PlanRestore(context.Background(), id, q)
+			if !errors.Is(err, ErrNoScope) {
+				t.Errorf("%s, %s: got %v, want ErrNoScope", name, id, err)
+			}
+			if !reflect.DeepEqual(plan, RestorePlan{}) {
+				t.Errorf("%s, %s: got a non-zero plan %+v", name, id, plan)
+			}
+		}
+	}
+	if entries, err := os.ReadDir(tmp); err != nil || len(entries) != 0 {
+		t.Errorf("an unset scope left scratch files behind: %v %v", entries, err)
 	}
 }

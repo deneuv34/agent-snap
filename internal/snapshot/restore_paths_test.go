@@ -126,7 +126,7 @@ func TestParseScopeAppliesThePathRulesInOrder(t *testing.T) {
 			t.Errorf("Paths() = %q, want %q in request order", got, paths)
 		}
 	}
-	if (Scope{}).Paths() != nil {
+	if WholeTree().Paths() != nil {
 		t.Error("the whole-tree scope must report no paths")
 	}
 }
@@ -155,7 +155,7 @@ func TestScopeCoversWholeSegments(t *testing.T) {
 			t.Errorf("covering(%q) = %q, %v; want %q", path, got, ok, want)
 		}
 	}
-	if got, ok := (Scope{}).covering("any/path"); !ok || got != "" {
+	if got, ok := WholeTree().covering("any/path"); !ok || got != "" {
 		t.Errorf("the whole-tree scope must cover every path: %q %v", got, ok)
 	}
 }
