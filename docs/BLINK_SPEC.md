@@ -217,7 +217,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - A transition to busy cancels pending idle work and aborts idle work already in flight.
 - `session.deleted` cancels work for that session and removes session state.
 - During disposal, reject new events, flush pending snapshots, abort remaining work, and close the core client.
-- Expose `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`, `agent_snap_get(id, cwd?)`, and `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)` with caller cancellation support.
+- Expose `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`, `agent_snap_get(id, cwd?)`, `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)`, and `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)` with caller cancellation support.
 - Send host `opencode` on every create, with source `session-start` (`session.created`), `session-idle` (`session.idle`), or `tool` (`agent_snap_create`).
 
 #### Pi Coding Agent
@@ -225,13 +225,16 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - At `session_start`, create a `session-start` baseline and await it as a session-start barrier. Failure is logged rather than propagated.
 - At `agent_settled`, create an `agent-settled` snapshot through the same 1.5-second coalescing policy.
 - At `session_shutdown`, flush queued work, dispose the scheduler, await tracked baselines, and close the client.
-- Expose `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`, `agent_snap_get(id, cwd?)`, `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)`, `agent-snap-create`, `agent-snap-list`, `agent-snap-get <id>`, and `agent-snap-diff <from> <to>`. The diff command shows the first 12 lines of the tool's text.
+- Expose `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`, `agent_snap_get(id, cwd?)`, `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)`, `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)`, `agent-snap-create`, `agent-snap-list`, `agent-snap-get <id>`, and `agent-snap-diff <from> <to>`. The diff command shows the first 12 lines of the tool's text.
 - Send host `pi` on every create, with source `session-start` (`session_start`), `agent-settled` (`agent_settled`), `tool` (`agent_snap_create`), or `command` (`agent-snap-create`).
 
 #### Both hosts
 
 - The diff tool returns the page as text that lists every file on the page with its status and line counts, then the included hunks, then the `offset` or `max_patch_bytes` to request next when the page does not finish the diff. It ends by naming the citation form from FR-14.
 - The diff tool result is Git evidence only. Hosts MUST NOT add generated summaries, rankings, or opinions to it.
+- The restore plan tool returns the page as text. It says whether the plan is applicable, lists each repository blocker and unmatched scope path, and gives the totals. It then lists every entry on the page with its action, flags, and blocker. When `next_offset` is present, it names the `offset` and `current_tree` to request next. It ends by saying that the plan changed nothing and that this release cannot apply a restore.
+- The restore plan tool maps `current_tree` to the client option `currentTree` and passes an option only when the caller set it. The tool schema bounds `paths` to 1 to 100 strings and `offset` to 0 through 2147483647. The binary decides every other rule on `paths`, `offset`, and `current_tree`, and the tool lets its errors reach the host.
+- The restore plan tool result is Git evidence only. Hosts MUST NOT add generated summaries, rankings, or opinions to it.
 
 ### FR-12: Snapshot lookup
 
