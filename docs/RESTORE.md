@@ -142,7 +142,7 @@ Path blockers:
 | `parent_conflict` | In a path-scoped restore, an entry the snapshot has below a scope path whose parent, outside the scope, is a file, symbolic link, or submodule in the current tree. The restore could write the entry only by changing a path the user did not select, and the plan has no `result_tree`. |
 | `submodule` | Mode `160000` on either side. Blink does not write submodules or nested repositories. |
 | `index_flag` | The real index marks the entry assume-unchanged or skip-worktree (`ls-files -v` shows a lowercase tag or `S`). A write there would be hidden from `git status`. |
-| `name_collision` | Two result paths name one file on disk, because they are equal when case is folded. It also covers a parent directory that the restore must create, when that directory exists on disk only under a name that differs by case and would survive the restore's own deletions. Git would write into that on-disk name (Phase 5 probe obs 7). A case variant at the path itself is already `untracked_in_the_way`, because the file system resolves the path to it. Checked when `core.ignorecase` is true, or when the file system resolves a tracked path with its case changed to the same file. Unicode normalization is not checked, because Go's standard library has no normalization tables. The Phase 5 capture after the write catches such a collision. |
+| `name_collision` | Two result paths name one file on disk, because they are equal when case is folded. It also covers a parent directory that the restore must create, when that directory exists on disk only under a name that differs by case and would survive the restore's own deletions. Git would write into that on-disk name (Phase 5 probe obs 7). A case variant at the path itself is already `untracked_in_the_way`, because the file system resolves the path to it. Checked when `core.ignorecase` is true, or when the file system resolves a tracked path with its case changed to the same file. Unicode normalization is not checked, because Go's standard library has no normalization tables. The capture after a Phase 5 write does not catch it either. On APFS, a path created in NFC below an existing NFD directory captured to `result_tree` (round-trip probe). |
 | `unsafe_path` | A path segment that Git refuses to check out, such as `.git` or one of its file-system aliases. Only a tampered tree reaches this. |
 | `unaddressable_path` | The path bytes are not valid UTF-8, so the JSON protocol cannot name the path exactly. |
 
@@ -160,11 +160,11 @@ The core cannot tell a person from an agent. It enforces the binding in the prev
 
 - `SnapLike`, the port that lifecycle code and agent tools receive, gains only `restorePlan`. The write is not on it.
 - The write takes a confirmation object that only `confirmRestore` creates, after a human answered yes. Each confirmation works once, and a cast or an object literal fails at run time. This stops code in the same process, such as a hook or a tool. It is not a secret.
-- The `serve` process that hooks and tools share never dispatches `snapshot.restore`. [A one-shot process applies a restore](#a-one-shot-process-applies-a-restore) says how the confirmation module reaches the core through `SnapClient`.
+- The `serve` process that hooks and tools share never dispatches `snapshot.restore`, and no `SnapClient` option or `request` call reaches the restore entry. [A one-shot process applies a restore](#a-one-shot-process-applies-a-restore) says how the confirmation module reaches the core through `SnapClient`.
 - The confirmation shows the snapshot, the scope, the totals for each action and flag, and the backup ID, and says how to list every entry. A user is never asked to confirm a move they were not shown.
 - In Pi, a restore runs only from the user-typed command `/agent-snap-restore`, and only when `ctx.hasUI` is true and `ctx.mode` is `tui`. In `rpc` mode the dialog goes to whatever drives the RPC, which may not be a person. Pi tools can open dialogs too, but a dialog that the agent opened invites a reflex yes, so no tool confirms a restore. The command pauses the extension's automatic snapshots while it applies.
 - OpenCode 1.x and 2.x get the plan tool only, and its output ends with the CLI command to run. In 1.x, `ToolContext.ask` goes through OpenCode's permission settings, which a user can set to allow without asking, so it cannot prove that a person answered. The 2.x prompt has not been checked, and Phase 5 treats it the same way until it is.
-- The CLI opens the controlling terminal, refuses when there is none, and asks the user to type the last six hex digits of the backup ID. It has no `--yes` and never reads the confirmation from standard input. The digits make the user read the backup ID. They are not a secret, because the plan prints them.
+- The CLI opens the controlling terminal, refuses when there is none or when standard input, output, or error is not that terminal, and asks the user to type the last six hex digits of the backup ID. It has no `--yes` and never reads the confirmation from standard input. The digits make the user read the backup ID. They are not a secret, because the plan prints them.
 
 Blink does not claim to stop an agent that has a shell. Such an agent can run Git itself, start its own `serve`, or give the CLI a terminal with a tool such as `script`. The guarantee covers Blink's own tools, hooks, and shared transport, and the spec will say so. Phase 5 work item 2 asks for the confirmation to be enforced "at the protocol boundary". The core enforces the plan there. It cannot enforce that a person confirmed. Review accepted that limit, and the spec pull request rewords the work item to match.
 
@@ -204,20 +204,37 @@ Phase 5 needed its own design review before any write lands. Phase 4 fixed these
 - Write through Git's checkout machinery, so smudge filters, line-ending conversion, symbolic links, and the executable bit come out as a checkout would write them. Writing blob bytes directly would skip smudge filters and change files on disk.
 - Never write through a symbolic link, and never overwrite or remove a path the plan did not list. Git's writes remove ignored files, blocking files, and whole untracked directories silently, so the `untracked_in_the_way` check runs again immediately before the first write.
 - Never write the real index.
-- Check a repeated apply first. When a fresh capture already equals `result_tree`, the write does nothing and reports success. Only then compare the capture with `current_tree`. Where a filter loses bytes, a repeat can capture to neither tree and fails as stale, which writes nothing.
-- Git has no working-tree lock. Git checks every planned path against the capture before its first write, and stops when one changed (probe obs 3). That narrows the race with a running agent but cannot close it.
+- Check a repeated apply first. A fresh capture that equals `result_tree` means the write has nothing to do, once the core has checked that `result_tree` really is the result of the request's snapshot and scope. Only then compare the capture with `current_tree`. Where a filter loses bytes, a repeat can capture to neither tree and fails as stale, which writes nothing.
+- Git has no working-tree lock. With the comparison settings that Blink pins, Git checks every planned path against the capture before its first write, and stops when one changed (probe obs 3 and the stat-pin probe). That narrows the race with a running agent but cannot close it.
 - If a write fails, report the paths written, failed, and not yet started, and the backup ID. Recovery is a normal confirmed restore of the backup.
-- After the last write, capture the working tree again. When the capture differs from `result_tree`, report the outcome as unknown. This catches what the plan cannot predict, such as a Unicode name collision or a filter that loses bytes.
+- After the last write, capture the working tree again. The outcome is `applied` only when Git exited `0` and that capture equals `result_tree`. The capture catches a filter that loses bytes and a concurrent writer. It misses the two cases at the end of the next section.
 
 ## The write is a two-way read-tree
 
-The write runs `git -c core.splitIndex=false read-tree -m -u <current_tree> <result_tree>`. `GIT_INDEX_FILE` names the scratch index that the restore's own fresh capture filled, and `GIT_OBJECT_DIRECTORY` names the private object directory. Every other `GIT_*` variable is removed, as for capture.
+The write runs this command:
+
+```sh
+git -c core.splitIndex=false -c core.trustctime=true -c core.checkStat=default \
+    -c core.ignoreStat=false -c core.fsmonitor=false \
+    read-tree -m -u <current_tree> <result_tree>
+```
+
+`GIT_INDEX_FILE` names the scratch index that the restore's own fresh capture filled, and `GIT_OBJECT_DIRECTORY` names the private object directory. Every other `GIT_*` variable is removed, as for capture. Every Git command of a restore's captures, in steps 5 and 11, passes the same five settings. [The write runs outside the core's process group](#the-write-runs-outside-the-cores-process-group) says how the process starts.
+
+Git decides whether a planned path changed after the capture from the stat data in the scratch index, and the repository's configuration decides which stat fields count. A stat-pin probe for this revision captured, waited, and then rewrote one planned file with content of the same size and its old modification time. It observed:
+
+- With `core.trustctime=false` or `core.checkStat=minimal` in the repository and no pins, Git exited `0` and overwrote the edit. The backup was taken before the edit, so the edit was lost.
+- With the four pins, Git refused with `Entry 'f3.txt' not uptodate. Cannot merge.` under the defaults, under each weakening setting, and under all three together. The edit stayed on disk.
+- `core.ignoreStat=true` did not bypass the check without the pin. A capture under it recorded the edited content with and without the pin.
+- In every row, the capture equaled the tree that `HEAD` holds, so the pins do not change the captured tree.
+
+The review of #30 also ran an fsmonitor hook that reports no changes, and it did not bypass the check, because the scratch index has no fsmonitor bits. Blink pins `core.fsmonitor=false` anyway, so no hook runs during a restore and no repository setting can turn the check off.
 
 A write-engine probe chose this engine. It ran on Git 2.54.0 (Apple Git-157) on a case-insensitive APFS volume, in fresh repositories with a private `HOME`, `GIT_CONFIG_NOSYSTEM=1`, and no inherited `GIT_*` variables. The coordinator reran observations 3, 5, 6, and 7 and got the same rows. It observed:
 
 - The real index, `HEAD`, refs, and configuration stayed byte-identical, and the real object count did not change, on SHA-1 and SHA-256 (obs 1).
 - The result matched `git checkout` of the snapshot for a smudge filter, `text=auto eol=crlf`, an executable-bit change, a deleted executable, symbolic links to a file and to a directory, and a repointed link (obs 2).
-- When one planned path changed after the capture, Git exited 128 with `Entry '<path>' not uptodate. Cannot merge.` and wrote nothing. That held when the path sorted first, when it sorted last, and when the edit kept its size and the old modification time (obs 3).
+- When one planned path changed after the capture, Git exited 128 with `Entry '<path>' not uptodate. Cannot merge.` and wrote nothing. That held when the path sorted first, when it sorted last, and when the edit kept its size and the old modification time (obs 3). The probe ran with Git's default comparison settings, which the pins now enforce.
 - The result tree's `.gitattributes` applied to every other path, in both directions, as `git checkout` applies it (obs 4).
 - A directory that became a symbolic link to an outside directory converged with nothing written outside. A swap of the directory for that link after the capture made Git refuse, both with a tracked file inside and for a plan that only creates (obs 5).
 - Directories that the deletions emptied were removed. A directory that still held an ignored file was kept (obs 11).
@@ -237,11 +254,53 @@ The window between the recomputed plan's disk checks and Git's write stays open.
 
 A two-way read-tree cannot restore the exact original bytes of a file whose clean filter loses bytes after a partial write or a kill (obs 8 and 9). [The backup section](#the-safety-backup-is-a-snapshot-of-the-planned-state) says what recovery restores instead.
 
+The capture after the write misses two cases. A round-trip probe for this revision observed both:
+
+- Unicode normalization. On APFS with `core.precomposeunicode=true`, which `git init` sets on macOS, the disk held a directory named `café` in NFD with an ignored file in it. The result tree created `café/y` in NFC. Git wrote `y` into the NFD directory and exited `0`, and the capture afterwards equaled `result_tree`. The file system treats the two spellings as one name, so no data is lost. The restore reports `applied` with the directory under a spelling that differs from the plan, and Blink does not detect it, because Go's standard library has no normalization tables.
+- Line endings after `HEAD` moved. Capture seeds its index from the current `HEAD`, and Git's safe-CRLF rule reads that seed. Under `core.autocrlf=true`, a snapshot recorded `f.txt` with CRLF content, and `HEAD` later stored it with LF. A correct write put the snapshot's bytes on disk exactly, and the capture afterwards differed from both `result_tree` and `current_tree`. The restore reports `unknown`, and a repeat refuses as stale every time.
+
+Blink documents the line-ending case and does not detect it. Detection would check out each planned path into a scratch area and clean it through the current seed, which doubles the plan's work for one configuration. The case loses no data, because the write put the snapshot's bytes on disk and the backup holds the state before it. The `unknown` text in the CLI and in Pi says that a line-ending rule causes this when `HEAD` changed since the snapshot, and that `restore-plan` toward the snapshot names the paths that differ.
+
+## The write runs outside the core's process group
+
+A terminal interrupt reaches every process in the terminal's foreground process group. The guardian's teardown signals reach every process in the guardian's group. Both groups hold the core. If they also held the write's Git and its filters, either signal could stop the write part way. Ignoring the signal in the core does not protect a filter, because a filter that installs its own handler replaces the ignore it inherited.
+
+On POSIX, the core starts the write's Git in a new session with `setsid`. Git and every filter it starts then belong to a process group that no terminal and no guardian signals, and they have no controlling terminal. The core also gives the write's Git these streams and files:
+
+- The null device as standard input and standard output.
+- A file in the scratch directory as standard error. No pipe links Git to the core, so a core that dies cannot end Git with `SIGPIPE`.
+- The restore lock's file descriptor. The lock stays held while Git, or a filter that inherited the descriptor, still runs.
+
+The Git commands of the step-11 capture start in a new session too. Git started this way keeps default signal handling, so a person can still stop it on purpose.
+
+An isolation probe for this revision ran a stand-in for the core in Go. It took the lock, caught and discarded the stop signals, and ran a 150-file write through a required smudge filter in Python that installs its own handlers for `SIGTERM`, `SIGINT`, and `SIGHUP`. It observed:
+
+- Git in the core's process group, as the control. A `^C` written to a pseudo-terminal stopped the write with 16 files at the result, 133 at the current state, and one missing. A group `SIGTERM`, as the guardian sends it, killed a filter, and the write stopped with 23 files at the result and one missing.
+- Git in its own session. Two `^C` reached only the core, which discarded both. Git exited `0` with all 150 files at the result. A group `SIGTERM` and then a group `SIGKILL` 2 seconds later killed the core. Git, now a child of `launchd`, wrote all 150 files and exited 4.6 seconds later. While it ran, `lsof` showed Git as the only holder of the lock file, and a second `flock` failed. After Git exited, the lock was free.
+- A hung filter. A `SIGTERM` sent by hand to Git's process group ended Git and the hung filter at once. The core saw Git die from the signal and still held the lock.
+
+When the core dies part way, Git and its filters finish the write. The lock stays held until the last process that inherited it exits. Nobody captures the result, removes the scratch directory, or answers the caller. `SnapClient.restore` reports that the outcome is unknown and names the backup ID, and `restore-plan` toward the snapshot shows what is left. The scratch directory stays behind, as after any hard kill. A filter that leaves a background process with the descriptors it inherited keeps the lock held, and every later restore refuses with `-32005` until that process exits. That fails closed.
+
+These shapes were rejected:
+
+- Ignoring the signals in the core and letting Git inherit the ignore, as the first version of this record did. A filter's own handler replaces the ignore, which the review of #30 measured. Git's own handler replaces it too. It removes the scratch index lock and raises the signal again into the ignore, which ended a complete write with exit `128` in the signal probe.
+- A new process group with `setpgid` in the same session. It also escapes terminal and guardian group signals. Git would keep the controlling terminal, so a filter that opens `/dev/tty` to prompt would stop on `SIGTTIN` and hang the write. In a new session, that open fails and the filter fails. This follows from POSIX job control and was not probed.
+- Holding the lock only in the core. A core that dies mid-write would release the lock while Git still writes, and a second restore could start.
+
+Windows has no sessions. The chosen mechanism starts the write's Git with `CREATE_NEW_PROCESS_GROUP` and `CREATE_NO_WINDOW`, so that Git and its filters run on their own hidden console. The person's console `Ctrl+C`, `Ctrl+Break`, and close events then never reach them. The lock is an exclusive-share open whose handle Git inherits. All of this is inferred from the Win32 documentation and was not observed. Until a Windows CI job shows that a console `Ctrl+C`, a `Ctrl+Break`, a console close, and a forced termination of the core alone each leave the write complete and the lock held until Git exits, the core refuses every restore on Windows before any Git work.
+
 ## A one-shot process applies a restore
 
-`agent-snap serve --restore` is the only protocol entry that dispatches `snapshot.restore`. It answers `ping`, answers the first `snapshot.restore` request, and exits. It answers every other method with `-32601`. The shared `serve` keeps answering `snapshot.restore` with `-32601`, as it answers any unknown method.
+`agent-snap serve --restore` is the only protocol entry that dispatches `snapshot.restore`. The binary accepts it only as that exact argument list. It answers `ping`, answers the first `snapshot.restore` request, and exits. It answers every other method with `-32601`. The shared `serve` keeps answering `snapshot.restore` with `-32601`, as it answers any unknown method.
 
-`SnapClient.restore(confirmation)` starts it. The method is on `SnapClient` and not on `SnapLike`, so lifecycle code and agent tools, which receive `SnapLike`, cannot call it. It spawns the process through the same guardian and process-group rules as the shared transport, and it never sends a request to the shared transport. It sends `ping` first. A binary older than Phase 5 rejects `serve --restore` as an argument error and exits before it answers, so the client knows that nothing was sent and reports that the installed binary cannot apply restores. After the ping, the client sends one `snapshot.restore` request built from the confirmation, reads the response, and waits until the process tree is gone.
+`SnapClient.restore(confirmation, options)` starts it. The method is on `SnapClient` and not on `SnapLike`, so lifecycle code and agent tools, which receive `SnapLike`, cannot call it. It spawns the process through its own private path, under the guardian in restore mode, and it never sends a request to the shared transport. It sends `ping` first. A binary older than Phase 5 rejects `serve --restore` as an argument error and exits before it answers, so the client knows that nothing was sent and reports that the installed binary cannot apply restores. After the ping, the client sends one `snapshot.restore` request built from the confirmation, reads the response, and waits until the core has exited and its group is empty.
+
+The rest of `SnapClient` is public, so the restore entry must be unreachable from it. Two rules close the path that the review of #30 found, `new SnapClient({serveArgs: ["serve", "--restore"]}).request("snapshot.restore", ...)`:
+
+- The constructor throws a `TypeError` when `serveArgs` holds an element that starts with `restore` after its leading `-` characters are removed.
+- `request` throws a `TypeError` for the method `snapshot.restore` before it starts or reuses a process.
+
+Neither an option nor an environment variable selects the restore entry. Code that writes its own wrapper script and passes it as `bin` can still reach it. Such code can spawn processes, so it is outside the guarantee, like an agent with a shell. These rules land before any protocol entry dispatches `snapshot.restore`, so no merged commit has a reachable write without them.
 
 The interactive CLI `restore` calls the Store in the same process, as every other CLI command does. It never starts `serve --restore`.
 
@@ -249,15 +308,16 @@ These shapes were rejected:
 
 - A long-running restore mode of `serve`. A transport that stays open after a restore is a write capability that any later code holding the client can use. A per-restore process ends with the restore, and tearing it down cannot affect a read request on the shared transport. A restore runs at the pace of a person, so one process start per restore costs nothing that matters.
 - `snapshot.restore` on the shared `serve`, guarded only by the TypeScript confirmation. Any code that reaches the shared transport, such as `SnapClient.request`, could then send the write.
+- Removing `serveArgs`. Tests use it to run a fixture, and a refusal of the restore argument closes the path without a breaking change.
 - Pi running the interactive CLI. Pi's terminal UI owns the terminal, so the CLI prompt would fight it for input.
 
-The guarantee does not grow. A program with a shell can run `agent-snap serve --restore` itself, as it can already run Git. The entry exists so that `SnapClient` has a way in, and nothing on `SnapLike` or the shared transport leads to it.
+The guarantee does not grow. A program with a shell can run `agent-snap serve --restore` itself, as it can already run Git. The entry exists so that `SnapClient` has a way in, and nothing on `SnapLike`, the shared transport, `serveArgs`, or `request` leads to it.
 
 ## Only `confirmRestore` makes a confirmation
 
 `packages/core/src/confirm.ts` exports `confirmRestore` and the `RestoreConfirmation` type. The package's `exports` map exposes only its index, so no other module can import the file's private state.
 
-`confirmRestore(snap, request, ask)` takes a `SnapLike`, a request, and an `ask` function from the host. The request holds `cwd`, the snapshot ID, a scope of either `{all: true}` or `{paths}` with 1 to 100 paths, and the host name for the backup's origin. The scope type has no empty or absent form, so no input means the whole tree by accident. `confirmRestore` runs these steps in order:
+`confirmRestore(client, request, ask)` takes a `SnapClient`, a request, and an `ask` function from the host. It throws a `TypeError` when `client` is not an instance of the package's `SnapClient`. The request holds `cwd`, the snapshot ID, a scope of either `{all: true}` or `{paths}` with 1 to 100 paths, and the host name for the backup's origin. The scope type has no empty or absent form, so no input means the whole tree by accident. `confirmRestore` runs these steps in order:
 
 1. Request the first page of the restore plan. When the plan is not applicable, return `blocked` with the plan. No backup is made.
 2. Create the backup with reason `restore backup`, source `restore-backup`, and the request's host.
@@ -267,7 +327,7 @@ The guarantee does not grow. A program with a shell can run `agent-snap serve --
 
 The confirmation is a frozen object with `cwd`, `snapshot`, `paths` (absent for the whole tree), `currentTree`, `resultTree`, and `backup`. Those are the five bound values and the directory. The module keeps every confirmation it mints in a private `WeakSet`. `SnapClient.restore` removes the confirmation from that set before it starts a process, and throws a `TypeError` before any process starts when the object is not in the set. An object literal, a cast, a copy, a confirmation that was already used, and a confirmation from another copy of the package all fail that way.
 
-`confirmRestore` builds the prompt itself, so a host cannot show one move and confirm another. The prompt holds the snapshot ID, its creation time and reason, the scope, and the totals for each action and flag. It lists at most the first 20 entries with their action and flags. It names the backup ID and the commands that list every entry and show the content, `restore-plan` and `diff <backup> <snapshot>`. Each path and reason prints under the quoting rule that host tool text uses, so a file name cannot add a line to the prompt.
+`confirmRestore` builds the prompt itself from the validated plan that `SnapClient.restorePlan` returned, so a host cannot show one move and confirm another. It takes a `SnapClient` and not a `SnapLike`, because a `SnapLike` wrapper, even a buggy one, could return entries from one plan and trees from another. The prompt holds the snapshot ID, its creation time and reason, the scope, and the totals for each action and flag. It lists at most the first 20 entries with their action and flags. It names the backup ID and the commands that list every entry and show the content, `restore-plan` and `diff <backup> <snapshot>`. Each path and reason prints under the quoting rule that host tool text uses, so a file name cannot add a line to the prompt.
 
 The confirmation stops a forged or replayed confirmation and keeps the write off `SnapLike`. It does not prove that a person typed the digits. Code that imports `confirmRestore` can pass an `ask` that returns the digits, because the prompt prints them. Blink's own hooks and tools never import `confirmRestore`. A test in each host package fails when a module other than Pi's restore command imports it. Code from another package in the same host process can spawn `agent-snap` itself, so it is outside the guarantee, like an agent with a shell.
 
@@ -276,72 +336,113 @@ These shapes were rejected:
 - `ask` returning a boolean. A typed answer that must equal the backup's digits makes the person read the backup ID, in Pi as in the CLI.
 - A class with a private constructor. A cast to the class type passes the TypeScript check and fails only where the code reads a private field. A set lookup fails at the one call that matters.
 - A host-built prompt. Each host would need its own copy of the rule about what a person must see.
+- A `SnapLike` with a check that the shown entries match the confirmed trees. The client cannot recompute a tree from entries, so the check could only compare values from the same wrapper.
 
 ## The request binds five values, and the result names every path
 
 The request is `{cwd, snapshot, paths?, current_tree, result_tree, backup}`. `snapshot` and `backup` are snapshot IDs. `paths` follows the FR-15 rules, and its absence means the whole tree, as in the plan. `current_tree` and `result_tree` are full object IDs, 40 or 64 lowercase hex digits.
 
-An absent `paths` cannot widen a scoped restore. The core recomputes the result tree from `snapshot` and the scope it was sent, and refuses when that tree differs from `result_tree`. When the two trees are equal, both scopes make the same move.
+An absent `paths` cannot widen a scoped restore. The core recomputes the result tree from `snapshot` and the scope it was sent, and refuses when that tree differs from `result_tree`. For the whole tree, that check is that `result_tree` equals the snapshot's tree, and it runs right after the lookup. When the two trees are equal, both scopes make the same move.
 
 The result is the restore result object in section 8.6 of the spec. It holds the outcome, the snapshot and the backup as `{id, commit, tree}`, the scope, the two bound trees, and `after_tree`, the tree that the capture after the write recorded. Its `totals` count the planned, written, failed, not started, and unplanned paths. Four lists name those paths. Each list holds at most the first 100 of its kind, in byte order, and a list is cut short exactly when its total is larger than its length. `restore-plan` toward the snapshot lists what is left, and `restore-plan` toward the backup lists what changed. With four lists of 100 paths of at most 4096 bytes each, and an error text of at most 4096 bytes, a result holds at most about 1.6 MiB before JSON escaping.
 
-The outcome is `applied`, `already_applied`, `stopped`, or `unknown`. A refusal is not an outcome. It is an error response, and every error response from `snapshot.restore` means that this request wrote nothing. Refusal data was rejected. The request already holds every value a refused result would carry, and the protocol has no error payloads today, so every client would need a second validator. A write that started always returns a result, never an error.
+`error` is present exactly when the write's Git exited with a status other than `0` or died from a signal. Its first line names the status or the signal. Git's standard error follows, which includes what the filters printed. A filter can print file content, so hosts MUST NOT log `error`, and show it only to the person who confirmed the restore.
+
+The outcome is `applied`, `already_applied`, `stopped`, or `unknown`. A refusal is not an outcome. It is an error response, and every error response from `snapshot.restore` means that this request wrote nothing. Refusal data was rejected. The request already holds every value a refused result would carry, and the protocol has no error payloads today, so every client would need a second validator. A write that Git started always returns a result, with one exception. When Git refused in its check phase before its first write, the core answers `-32002` (see [step 11](#a-restore-runs-in-eleven-steps)).
 
 `SnapClient.restore` resolves for `applied` and `already_applied`. It rejects with `SnapRestoreIncompleteError`, which carries the validated result, for `stopped` and `unknown`. A host that treats a resolved promise as success is then right, and a host that only logs the error message still reports a failure.
+
+After the request is sent, every failure that is not an error response rejects with `SnapRestoreOutcomeUnknownError`, which names the backup ID and says to plan again. That covers a process exit with no response, a line that is not JSON, a malformed error object, and a result that fails validation. A plain `SnapProtocolError` never reaches the caller once files may have changed. The validator skips the order and uniqueness rules for a path in `unplanned` that holds U+FFFD, because the server repairs invalid UTF-8 after it sorts. The plan validator does the same for repaired entries.
 
 ## The error codes say what to do next
 
 | Condition | Code | Message |
 | --- | --- | --- |
 | The working tree no longer captures to `current_tree` or to `result_tree` | `-32002` | `working tree changed since the plan` |
+| Git refused in its check phase, before its first write | `-32002` | `working tree changed during the restore` |
 | The recomputed plan is not applicable | `-32003` | `restore plan is not applicable` |
 | The backup's tree differs from `current_tree` | `-32004` | `backup does not match current_tree` |
 | The recomputed result tree differs from `result_tree` | `-32004` | `restore plan does not match result_tree` |
 | Another restore holds the worktree's restore lock | `-32005` | `another restore is running in this worktree` |
 
-`-32002` keeps its FR-15 meaning. Each new code names a different next step. A blocked plan needs the person to change the repository state or the scope. A mismatch means the caller sent values from different plans or backups, so it plans again. A busy worktree needs the person to wait. The parameter errors, `-32001` for a missing snapshot or backup, and `-32603` for a failure before the write follow FR-15. A failure part way is not an error code. It is a `stopped` result with its lists.
+`-32002` keeps its FR-15 meaning. Each new code names a different next step. A blocked plan needs the person to change the repository state or the scope. A mismatch means the caller sent values from different plans or backups, so it plans again. A busy worktree needs the person to wait. The parameter errors, `-32001` for a missing snapshot or backup, and `-32603` for a failure before the write follow FR-15. Three `-32603` messages are fixed, because a client or the CLI acts on them. They are `restore cancelled before the write`, `restore is not supported on Windows yet`, and `restore needs git 2.30 or later`. A failure part way is not an error code. It is a `stopped` result with its lists.
 
 ## A restore runs in eleven steps
 
 Each step names where it refuses and what is on disk when it fails.
 
-1. Validate the parameters, with no Git work. The Store's restore takes a `snapshot.Scope` and refuses an unset scope with `ErrNoScope` before any Git work.
-2. Resolve the repository, then look up `snapshot` and then `backup` through FR-12. A missing one refuses with `-32001`.
+1. Validate the parameters, with no Git work. The Store's restore takes a `snapshot.Scope` and refuses an unset scope with `ErrNoScope` before any Git work. On Windows, refuse with `restore is not supported on Windows yet`.
+2. Resolve the repository and refuse with `restore needs git 2.30 or later` when `git version` is older. Look up `snapshot` and then `backup` through FR-12. A missing one refuses with `-32001`. For the whole tree, refuse with `-32004` when `result_tree` differs from the snapshot's tree.
 3. Compare the backup's tree with `current_tree`. A difference refuses with `-32004`.
 4. Take the worktree's restore lock without waiting. A held lock refuses with `-32005`.
-5. Create the scratch directory and its private object directory, and capture the working tree into a scratch index, as the plan does.
-6. When the capture equals `result_tree`, report `already_applied` and write nothing. This check comes before the stale check.
+5. Create the scratch directory and its private object directory, and capture the working tree into a scratch index, as the plan does, with the five pinned settings.
+6. When the capture equals `result_tree`, recompute the result tree from that capture with the request's snapshot and scope. When it equals `result_tree` too, report `already_applied` and write nothing. Otherwise refuse with `-32004`. This check comes before the stale check.
 7. When the capture differs from `current_tree`, refuse with `-32002`.
 8. Recompute the whole plan from that capture, every entry and not one page, with the request's snapshot and scope. When it is not applicable, refuse with `-32003`. When its result tree differs from `result_tree`, refuse with `-32004`. The checks that read the file system run last in this step.
 9. For a scoped restore, write the result tree's tree objects into the private object directory, and check that the tree ID equals `result_tree`.
-10. Ignore the stop signals, then run the write on the scratch index from step 5.
-11. Capture the working tree into a new scratch index, decide the outcome, remove the scratch directory, and report.
+10. Start catching and discarding `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT`. Then check the request context, and refuse with `restore cancelled before the write` when it was cancelled. Then run the write on the scratch index from step 5, in a new session and on a context that cannot be cancelled.
+11. Capture the working tree into a new scratch index, in a new session and on the same context. Decide the outcome, remove the scratch directory, and write the response. Stop discarding signals, and release the lock.
 
-After a failure in steps 1 to 9, this request has written no working-tree file, no index, no ref, and no object outside its scratch directory. The lock file may now exist, and capture may have refreshed object modification times, as a plan does. The scratch directory is removed, and the lock is released. After step 10 starts, every failure ends in a result. A Git failure in step 10 leaves some planned paths written, and the result lists them. A kill during step 10 leaves the split that probe obs 9 saw, no result, possibly the scratch directory, and no held lock. A failure in step 11 leaves a finished or failed write whose outcome is `unknown`, with no `after_tree` and empty lists.
+After a failure in steps 1 to 9, or a refusal at the start of step 10, this request has written no working-tree file, no index, no ref, and no object outside its scratch directory. The lock file may now exist, and capture may have refreshed object modification times, as a plan does. The scratch directory is removed, and the lock is released. After Git starts in step 10, every failure ends in a result, except a refusal in Git's check phase. A Git failure in step 10 leaves some planned paths written, and the result lists them. A kill of the core during step 10 leaves Git running to its end, no result, the scratch directory, and the lock held until Git exits. A failure in step 11 leaves a finished or failed write whose outcome is `unknown`, with no `after_tree` and empty lists.
 
-Step 11 decides the outcome from the capture, never from Git's exit status alone. When the capture equals `result_tree`, the outcome is `applied`, even when Git failed. The signal probe in [Evidence](#evidence) saw Git write every file and then exit `128`, because its own signal handler had removed the scratch index lock. Otherwise the outcome is `stopped` when Git failed and `unknown` when Git succeeded. Each planned path is `written` when the capture holds its target, `not_started` when the capture holds its current side, and `failed` otherwise. Each other path where the capture differs from `result_tree` is `unplanned`.
+Step 11 decides the outcome from Git's exit and the capture together:
+
+- `applied` when Git exited `0` and the capture equals `result_tree`.
+- `stopped` when Git failed and the capture differs from `result_tree`.
+- `unknown` when Git exited `0` and the capture differs from `result_tree`, when Git failed and the capture equals `result_tree`, or when the capture failed.
+
+A Git failure with a capture that equals `result_tree` is not `applied`. With a filter that is not marked `required`, Git writes the raw blob when the filter dies, and the capture can clean that blob back to `result_tree`. The review of #30 measured exactly that, with a filter killed by a group `SIGTERM`. Git in its own session no longer gets that signal, and the signal probe's `index.lock write error` case no longer arises, so a correct write exits `0`.
+
+One Git failure wrote nothing, and step 11 answers it with `-32002` `working tree changed during the restore` instead of a result. That needs three things together. Git exited with status `128` and not from a signal. Its standard error holds only the refusals that `unpack-trees` prints in its check phase, which runs before any write. Each such line names an entry, as `Entry '<path>' not uptodate. Cannot merge.` does (obs 3, stat-pin probe). And the capture holds the current side at every planned path that those lines do not name. The person then plans again. The backup does not hold the change that made Git refuse, so the advice never says to restore the backup. The Store step lists the check-phase messages from Git's source and tests each one. A Git that prints translated messages does not match, and the result is then `stopped`, which is safe and only less precise.
+
+Each planned path is `written` when the capture holds its target, `not_started` when the capture holds its current side, and `failed` otherwise. Each other path where the capture differs from `result_tree` is `unplanned`.
 
 ## A started write runs to its end
 
-A stop before step 10 is honored. In the CLI, `SIGINT` or `SIGTERM` cancels the request, as it cancels every command once the scratch-cleanup fix on branch `fix/abort-scratch-cleanup` lands. The core stops its Git children, removes its scratch directory, releases the lock, and writes nothing. The CLI says that nothing was written and exits `2`.
+The core honors a cancel up to its last check before the write. It defers every stop signal after that check:
 
-A stop after step 10 starts is deferred. The core ignores `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` from just before it starts the write's Git process until the process exits. Git inherits those signals as ignored, so a terminal interrupt or the guardian's group `SIGTERM` stops neither the core nor Git. The write and the capture after it run to their end, and the response reports the outcome they observed. The ignore is process-wide, which is one more reason that only the one-shot entries call the Store's restore.
+1. Before step 10, a cancel works as it does for every request once #31 lands. `SIGINT` or `SIGTERM` cancels the request context. The core stops its Git children, removes its scratch directory, releases the lock, writes nothing, and answers `restore cancelled before the write`.
+2. At the start of step 10, the core starts catching the four stop signals and discards each one. Then it checks the request context. A cancel that already landed refuses as in rule 1, with nothing written.
+3. Steps 10 and 11 run on a context that cannot be cancelled, made with `context.WithoutCancel`. No Git command of those steps has a cancel function, so the core never sends `SIGTERM` or `SIGKILL` to it. The core keeps discarding stop signals until its response is written.
 
-`SnapClient.restore` takes no `AbortSignal` and has no timeout. A person just confirmed the restore. The capture before the write took 3.699 seconds for 10,000 files (obs 10), so the steps before the write are short. `close()` waits for a restore whose request was sent, and tears down only after that process exits.
+Rule 3 closes a race in the Git helpers that #31 adds. They send Git `SIGTERM` when the request context ends, and kill it after a 500 ms `WaitDelay`. A signal that reached the core just before rule 2, and cancelled the context just after it, would otherwise kill Git mid-write. A signal that lands that late counts as one that arrived during the write. The write runs, and the caller receives its real outcome.
 
-A hard kill cannot be deferred. `SIGKILL`, the guardian's `SIGKILL` 2 seconds after its group `SIGTERM`, a Windows forced termination, and a power loss can each stop the write part way. When `SnapClient.restore` sees the process exit without a response after it sent the request, it rejects with `SnapRestoreOutcomeUnknownError`, which names the backup ID and says to plan again. The guardian sends its group signals to a restore process only when the host process dies, because neither `SnapClient.restore` nor `close()` starts a teardown of a restore process that is still running.
+The core catches the signals and does not ignore them. A Go program passes an ignored signal on to the processes it starts (signal probe), and the write's Git needs default handling so that a person can stop it on purpose. In the isolation probe, the core caught the signals, and Git died from a `SIGTERM` sent by hand to its group.
 
-For a write that has started, failing closed means that no caller is told that nothing changed when files may have changed. An error means nothing was written. A result reports what a capture saw. A missing result is `unknown`, never "cancelled".
+`SnapClient.restore` honors an `AbortSignal` and the client's timeout, as every client method does. A per-call `timeoutMs` can replace the client's default of 30 seconds. An abort and a timeout act the same way:
+
+| When it comes | What the client does | What the caller receives |
+| --- | --- | --- |
+| Before the request is sent | Tears the process down as for any request. Nothing was sent. | `AbortError`, or the timeout error. The confirmation is spent. |
+| After the request is sent, before step 10 | Asks the guardian for one `SIGTERM` to the core's group, keeps standard input open, and waits for the response. The core answers `restore cancelled before the write`. | `AbortError`, or the timeout error, saying that nothing was written. |
+| During steps 10 and 11 | Sends the same one `SIGTERM`, which the core discards, and waits for the response. | The real outcome. The promise resolves for `applied` and `already_applied`, and rejects with `SnapRestoreIncompleteError` for `stopped` and `unknown`. |
+
+The client cannot tell the second row from the third when it sends the signal. The response tells it. An error response means nothing was written, and a result means the write ran. The wait after the signal has no time limit, because the only way to end it early is to tear the write.
+
+No client path tears down a running write:
+
+- `SnapClient.restore` starts the guardian in restore mode. In that mode, the guardian never sends `SIGKILL`. It sends one group `SIGTERM` only on a `cancel` command from the client, and it does nothing when its standard input ends or its control channel closes. It exits after the core exits and its group is empty.
+- `SnapClient.restore` keeps the core's standard input open until the response arrives or the core exits.
+- A `child-exit` report from a restore process starts no teardown. The client only observes the group until it is empty.
+- `close()` waits for a restore whose request was sent.
+
+When the host exits during a restore, the guardian's standard input ends and its control channel closes, and in restore mode it signals nothing. The core finishes the write and the capture, and its response has no reader.
+
+A filter that never ends keeps the write from ending, and neither a cancel nor a timeout ends it. Blink does not kill it, because a kill tears the write. The person decides. On the first interrupt during the write, the CLI prints that the interrupt does not stop the write. It also prints the command that does, `kill -TERM -<pgid>`, with the process group ID of the write's Git. That command ends Git and its filters and leaves the working tree part way. The core then reports `stopped` with its lists. In Pi, the person stops the same group from another terminal, where `pgrep -f 'read-tree -m -u'` finds the write's Git. The CLI step adds both recipes to `docs/DIAGNOSTICS.md`.
+
+A hard kill of Git, such as a `kill -9` of its group or a power loss, can still stop the write part way, and so can the person's stop above. A kill of the core alone no longer stops the write. When `SnapClient.restore` sees the core exit without a response after it sent the request, it rejects with `SnapRestoreOutcomeUnknownError`.
+
+For a write that has started, failing closed means that no caller is told that nothing changed when files may have changed. An error means nothing was written. A result reports what Git's exit and a capture saw. A missing or unreadable result is `unknown`, never "cancelled".
 
 These shapes were rejected:
 
-- Tearing down on cancel or timeout. A torn write leaves a tree that equals neither side (obs 9), and the caller cannot tell which paths it wrote. Without the ignored signals, a `SIGTERM` 0.6 seconds into a 20,000-file write left 5807 files written (signal probe).
-- A cooperative cancel through a new guardian command, honored until the write starts. It needs a guardian change and another error code. It buys a cancel of a capture that takes seconds, right after a person confirmed.
-- The default 30-second timeout. A large restore, or one that runs a network smudge filter such as Git LFS, can exceed it, and the timeout would then tear the write.
+- Tearing down on cancel or timeout. A torn write leaves a tree that equals neither side (obs 9), and the caller cannot tell which paths it wrote. Without protection, a `SIGTERM` 0.6 seconds into a 20,000-file write left 5807 files written (signal probe).
+- No `AbortSignal` and no timeout, as the first version of this record chose. A hung filter would hang the Pi command with no way out. A cancel before the write is safe to honor, so the exception to the AGENTS.md rule bought nothing.
+- A timeout that ends the wait during the write. The caller would be told something before the core knows what the write did.
 
 ## One restore at a time in a worktree
 
-Two restores in one worktree write the same files, so the core serializes them. Step 4 takes an exclusive lock on the file that `git rev-parse --git-path agent-snap-restore.lock` names. That path is in the worktree's own Git directory, so linked worktrees restore independently. The lock is one that the operating system releases when the process ends, such as `flock` on POSIX and an exclusive-share open on Windows. A killed restore never leaves a lock that blocks the next one. The file stays after the lock is released, and it is the only file a restore writes in the Git directory. A second restore does not wait. It refuses with `-32005`.
+Two restores in one worktree write the same files, so the core serializes them. Step 4 takes an exclusive lock on the file that `git rev-parse --git-path agent-snap-restore.lock` names. That path is in the worktree's own Git directory, so linked worktrees restore independently. The lock is one that the operating system releases when the last holder of its file descriptor ends, such as `flock` on POSIX and an exclusive-share open on Windows. The core passes that descriptor to the write's Git, so a core that dies mid-write leaves the lock held until Git exits (isolation probe). A killed restore never leaves a lock that blocks the next one after its processes end. The file stays after the lock is released, and it is the only file Blink writes in the Git directory during a restore. A second restore does not wait. It refuses with `-32005`.
 
 An automatic snapshot that runs during a restore reads the working tree and writes only objects and hidden refs. It needs no lock. At worst it records a half-written state, which a later snapshot replaces. Its capture cannot affect the restore, which binds trees and never reads `latest`. A restore plan during a restore can see a half-written state. Any restore bound to that plan then fails as stale.
 
@@ -358,7 +459,7 @@ The command is `agent-snap restore <id> [--cwd <dir>] (--all | --path <path>...)
 It runs in this order:
 
 1. Parse the arguments. Bad arguments exit `1`.
-2. Open the controlling terminal, `/dev/tty` on POSIX or the console on Windows. When it cannot, it prints that a restore needs a terminal, makes no backup, and exits `2`.
+2. Check that standard input, standard output, and standard error are each a terminal, and that each is the controlling terminal. Then open the controlling terminal, `/dev/tty` on POSIX or the console on Windows. When any check fails, it prints that a restore needs a terminal, makes no backup, and exits `2`.
 3. Plan. A plan that is not applicable prints its blockers and the command that lists them, and exits `2` with no backup.
 4. Create the backup, as `confirmRestore` does with source `restore-backup` and no host. When its tree differs from `current_tree`, it says that the working tree changed and exits `2`.
 5. Print the prompt to the terminal. FR-16 defines its content, which is the content that `confirmRestore` shows.
@@ -368,13 +469,17 @@ It runs in this order:
 
 It never reads the confirmation from standard input. The digits are not a secret, because the prompt prints them. They make the person read the backup ID.
 
+The three stream checks stop an agent's shell tool from raising the prompt in the person's terminal. Such a tool usually starts the CLI with pipes on all three streams, and the process can still open `/dev/tty`, so the terminal check alone would let the agent put a prompt in front of the person. A person at a shell has the terminal on all three. A wrapper such as `script` gives an agent a terminal, and it stays outside the guarantee, as in [A human confirms outside the agent's reach](#a-human-confirms-outside-the-agents-reach).
+
+An interrupt before the write prints that nothing was written and exits `2`. An interrupt during the write prints the stop command described in [A started write runs to its end](#a-started-write-runs-to-its-end), and the CLI keeps waiting.
+
 Exit codes:
 
 | Code | When |
 | --- | --- |
 | `0` | `applied` or `already_applied`. |
-| `1` | An error before any write. Bad arguments, an unresolved repository, a missing snapshot, or `-32603`. |
-| `2` | A refusal that wrote nothing. No terminal, blocked, stale, a mismatch, a busy worktree, a decline, or an interrupt before the write. |
+| `1` | An error before any write. Bad arguments, an unresolved repository, a missing snapshot, Windows, an old Git, or another `-32603` that is not a cancel. |
+| `2` | A refusal that wrote nothing. No terminal, blocked, stale, `working tree changed during the restore`, a mismatch, a busy worktree, a decline, or `restore cancelled before the write`. |
 | `3` | `stopped` or `unknown`. |
 
 ## Pi restores only from a typed command in its terminal UI
@@ -388,46 +493,57 @@ The handler then runs in this order:
 1. Refuse unless `ctx.mode` is `tui` and `ctx.hasUI` is true. In `rpc` mode, dialogs go to whatever drives the RPC, which may not be a person.
 2. Refuse while `ctx.isIdle()` is false, and ask the person to wait for the agent to finish.
 3. Pause the extension's automatic snapshots. The scheduler holds new triggers and runs one coalesced snapshot when the pause ends.
-4. Call `confirmRestore` with host `pi`. Its `ask` shows the prompt with `ctx.ui.confirm`, and after a yes, reads the digits with `ctx.ui.input`.
-5. On `confirmed`, call the restore function, then report the outcome, the backup ID, and the first lines of each list with `ctx.ui.notify`.
+4. Call `confirmRestore` with the extension's `SnapClient` and host `pi`. Its `ask` shows the prompt with `ctx.ui.confirm`, and after a yes, reads the digits with `ctx.ui.input`.
+5. On `confirmed`, call `SnapClient.restore` with a `timeoutMs` of 10 minutes, then report the outcome, the backup ID, and the first lines of each list with `ctx.ui.notify`. The timeout ends only the steps before the write, and a large tree's capture alone took 3.7 seconds per 10,000 files (obs 10).
 6. End the pause, on every path out of the handler.
 
-Only this handler receives the restore function. The extension's dependencies gain a `restore` function, which the default factory binds to `SnapClient.restore`. Tools and hooks keep receiving `SnapLike`.
+Only this handler receives the `SnapClient` that can restore. The extension's dependencies gain that client, which the default factory creates. Tools and hooks keep receiving `SnapLike`.
 
 ## OpenCode prints the CLI command
 
 OpenCode keeps the plan tool and gets no restore. The plan tool's text ends with the CLI command a person runs in a terminal to apply the plan, `agent-snap restore <id> --all`, or one `--path` for each scope path. When a scope path holds any character other than ASCII letters, digits, `.`, `_`, `/`, `@`, `+`, and `-`, or starts with `-`, the text names the command without the paths and says to add one `--path` for each scope path listed above. A path pasted into a shell can then never run as a command. Pi's plan tool ends the same way, naming `/agent-snap-restore`. Nothing else changes in OpenCode.
 
+An agent that reads the plan tool's text learns the command. If it runs the command through its shell tool, the stream checks in step 2 refuse before any backup, because the tool gives the CLI pipes.
+
 ## Phase 5 lands in this order
 
 Each step is one pull request that ends in a check. The step that simplifies existing code comes before the steps that add to it. Each step that adds a method, an error code, a CLI command, or a host command updates FR-8 through FR-11, `README.md`, `docs/COMPATIBILITY.md`, and `docs/DIAGNOSTICS.md` in the same pull request.
 
-1. This record and FR-16. The check is review and a link check of the relative links.
-2. Store. The second rule of `name_collision`. On a case-insensitive volume, a snapshot `dir/y` with `Dir/` and an ignored file on disk blocks as `name_collision`, and so does the mirror case, each whole-tree and scoped. A case-only directory rename whose old directory the plan empties does not block. The check is `go test ./...`.
-3. Store. Move the plan computation out of `PlanRestore` into one function that computes every entry from a capture, with no change in behavior. The check is that the existing plan tests pass unchanged.
-4. Store. `Store.Restore`, with the adversarial suite below. The check is `go test ./...` on macOS, Linux, and Windows.
-5. Protocol. `serve --restore`, `snapshot.restore` validation, and codes `-32003` to `-32005`. Table-driven tests cover every parameter rule, a shared `serve` that answers `-32601`, a `serve --restore` that answers `ping` and then exits after one restore, and an error for every other method.
-6. TypeScript types for section 8.6, result validation with every cross-field rule, and `SnapClient.restore`. Tests cover ping first, an old binary that exits before the ping, a missing response after the request, no timeout, a `close()` that waits, a malformed result, and the typed errors.
-7. The confirmation module. Tests cover an object literal, a cast, a copy, and a reuse, each refused before a process starts. They also cover a blocked plan that makes no backup, a changed backup that never calls `ask`, wrong digits, and a prompt with quoted paths.
-8. CLI `restore`. Tests cover no terminal, which exits `2` with no backup, the scope arguments, a decline, every exit code, and a run under a pseudo-terminal in the smoke test.
-9. Pi `/agent-snap-restore` and the Pi plan tool's last line. Tests cover argument parsing, `rpc` and `print` modes, a busy agent, the paused scheduler, and the import test.
-10. OpenCode plan tool's last line, with the shell-safe path rule.
+1. This record and FR-16 (#30). The check was review and a link check.
+2. This revision, after the review of #30. The check is review and a link check of the relative links.
+3. Prerequisite. #31 (`fix/abort-scratch-cleanup`) lands, so that a cancel before the write stops Git and removes the scratch directory. Steps 7 and 9 depend on its signal handling and its Git helpers.
+4. TypeScript. `SnapClient` refuses `--restore` in `serveArgs` and `snapshot.restore` in `request`. Tests `serveArgs refuses the restore entry` and `request refuses snapshot.restore` check that each throws a `TypeError` before a process starts, with `["serve", "--restore"]`, `["serve", "-restore"]`, `["serve", "--restore=1"]`, and `"snapshot.restore"`. This lands before step 8, so no merged commit has a reachable write without it.
+5. Store. The second rule of `name_collision` (#32). On a case-insensitive volume, a snapshot `dir/y` with `Dir/` and an ignored file on disk blocks as `name_collision`, and so does the mirror case, each whole-tree and scoped. The second rule does not block the create entry of a case-only directory rename. The first rule still blocks that rename's delete entry, as `TestPlanRestoreBlocksTheDeleteOfACaseOnlyDirectoryRename` shows. The check is `go test ./...`.
+6. Store. Move the plan computation out of `PlanRestore` into one function that computes every entry from a capture, with no change in behavior. The check is that the existing plan tests pass unchanged.
+7. Store. `Store.Restore`, with the adversarial suite below, and a refusal on Windows. The check is `go test ./...` on macOS and Linux, and on Windows for the refusal, plus one Linux CI job with Git 2.30.
+8. Protocol. `serve --restore`, `snapshot.restore` validation, and codes `-32003` to `-32005`. Table-driven tests cover every parameter rule, a shared `serve` that answers `-32601`, a `serve --restore` that answers `ping` and then exits after one restore, an error for every other method, and argument lists other than exactly `serve --restore`, which fail.
+9. TypeScript types for section 8.6, result validation with every cross-field rule, `SnapClient.restore`, and the guardian's restore mode. Tests cover ping first, an old binary that exits before the ping, a missing response after the request, a malformed result that becomes `SnapRestoreOutcomeUnknownError`, a repaired `unplanned` path out of order, a whole-tree result whose `result_tree` differs from `snapshot.tree`, `close()` waiting, and the typed errors. Named tests cover the abort table (`abort before send`, `abort before the write`, `abort during the write`, and the same three for a timeout), `host exit during the write`, `stdin end during the write`, and `core death during the write`. Each of the last three shows that the write finishes and that no `SIGKILL` reaches the core.
+10. The confirmation module. Tests cover an object literal, a cast, a copy, and a reuse, each refused before a process starts, and a `confirmRestore` that refuses a `SnapLike` that is not a `SnapClient`. They also cover a blocked plan that makes no backup, a changed backup that never calls `ask`, wrong digits, and a prompt with quoted paths.
+11. CLI `restore`. Tests cover no terminal, which exits `2` with no backup, and each of the three streams as a pipe while `/dev/tty` opens, each refused with no backup. They also cover the scope arguments, a decline, every exit code, an interrupt before the write that exits `2`, an interrupt during the write that prints the stop command and ends in `applied`, and a run under a pseudo-terminal in the smoke test.
+12. Pi `/agent-snap-restore` and the Pi plan tool's last line. Tests cover argument parsing, `rpc` and `print` modes, a busy agent, the paused scheduler, the 10-minute timeout, and the import test.
+13. OpenCode plan tool's last line, with the shell-safe path rule.
+14. Windows. A Windows CI job runs the cases in [The write runs outside the core's process group](#the-write-runs-outside-the-cores-process-group). When it passes, this step removes the Windows refusal. Until then, Windows release notes say that restore is not supported.
 
 The Store step's adversarial suite runs on real repositories, SHA-1 and SHA-256, with these cases:
 
 - A dirty tree with staged, unstaged, untracked, ignored, assume-unchanged, and skip-worktree entries, deletions, mode changes, and renames, which the plan holds as a deletion and a creation, including a case-only rename.
 - Nested repositories, which the plan blocks as `submodule`, and linked worktrees. A restore in one linked worktree leaves every other worktree byte-identical, and the locks of two worktrees do not block each other.
 - Symbolic links. A directory swapped for a link to an outside directory after the plan refuses, and the outside directory is unchanged.
-- Each refusal. Stale after an edit, blocked after an ignored file appears at a created path with the file kept, a backup mismatch, a result mismatch, a busy lock, and a lock that a `kill -9` released.
-- The step order. A repeat apply returns `already_applied` and writes nothing, although its capture differs from `current_tree`. A request with a backup mismatch and a busy lock refuses with `-32004`. A stale request with a busy lock refuses with `-32005`.
-- Cancellation. A cancel before step 10 writes nothing. `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT`, each sent to the process group during a 10,000-file write that runs a smudge filter, end in `applied`. On Windows, a console interrupt during the write ends in `applied`.
+- Each refusal. Stale after an edit, blocked after an ignored file appears at a created path with the file kept, a backup mismatch, a result mismatch, a whole-tree `result_tree` that is not the snapshot's tree, a busy lock, and a lock that a `kill -9` released.
+- The step order. A repeat apply returns `already_applied` and writes nothing, although its capture differs from `current_tree`. A repeat apply with a scoped `result_tree` and `paths` omitted refuses with `-32004`. A request with a backup mismatch and a busy lock refuses with `-32004`. A stale request with a busy lock refuses with `-32005`.
+- Weak stat settings. `TestRestoreKeepsAnEditUnderWeakStatConfig` sets `core.trustctime=false`, `core.checkStat=minimal`, `core.ignoreStat=true`, and an fsmonitor hook that reports no changes, one per case. In each, an edit after the capture that keeps the size and the modification time makes Git refuse, the edit stays, and the restore answers `working tree changed during the restore`.
+- Git's check-phase refusal. A planned path changed after step 8 answers `-32002` with nothing written. A read-only directory, which fails after Git started writing, ends in `stopped`.
+- Cancellation. A cancel before step 10 writes nothing. A cancel that lands between the signal catch and the context check refuses with nothing written. A cancel of the request context after the check does not stop Git.
+- Signals during the write, each with a required smudge filter that installs its own `SIGTERM`, `SIGINT`, and `SIGHUP` handlers, during a 10,000-file write. `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` sent to the core's process group, and a `^C` on a pseudo-terminal, each end in `applied`. A `SIGKILL` of the core's group leaves Git running to the result, with the lock held until Git exits. A `SIGTERM` sent to Git's own group ends in `stopped`.
 - Failure between the backup and the write. A fault injected after each of steps 2 to 9 leaves the working tree, the real index, refs, `HEAD`, and configuration byte-identical.
-- Failure during the write. A read-only directory ends in `stopped` with correct lists. A capture failure injected in step 11 ends in `unknown` with no `after_tree`. A `kill -9` part way leaves a working tree that a new plan, backup, and restore bring to `result_tree`.
+- Failure during the write. A read-only directory ends in `stopped` with correct lists and an `error`. A Git failure whose capture equals `result_tree` ends in `unknown`. A capture failure injected in step 11 ends in `unknown` with no `after_tree`, and keeps Git's `error` when Git also failed. A `kill -9` of Git part way leaves a working tree that a new plan, backup, and restore bring to `result_tree`.
 - `.gitattributes` changes, smudge filters, line endings, and the executable bit match `git checkout` of the result.
+- A `HEAD` that moved from CRLF to LF content under `core.autocrlf=true` since the snapshot ends in `unknown`, with the snapshot's bytes on disk.
+- A created path below an existing NFD directory on APFS ends in `applied`, as documented.
 - A write that a concurrent change makes differ from `result_tree` ends in `unknown`, with the change in `unplanned`.
-- An unset scope fails with `ErrNoScope` before Git starts.
+- An unset scope fails with `ErrNoScope` before Git starts. Git older than 2.30 refuses before any Git work other than `git version`.
 
-One test fingerprints the whole worktree, the real index, every ref, `HEAD`, the configuration, and every other worktree before and after each case. It fails when any path outside the plan, any index entry, any ref, or any other worktree changed. In the Git directory, only the lock file and object modification times may differ.
+One test fingerprints the whole worktree, the real index, every ref, `HEAD`, the configuration, and every other worktree before and after each case. It fails when any path outside the plan, any index entry, any ref, or any other worktree changed. Parent directories that Git creates for created paths, and directories that the deletions emptied, are part of the plan for this test. In the Git directory, only the lock file and object modification times may differ. A configured filter program can write elsewhere, as FR-15 allows, so the fingerprint cases use filters that write nothing in the Git directory.
 
 ## How the design meets the spec's restore requirements
 
@@ -437,9 +553,9 @@ One test fingerprints the whole worktree, the real index, every ref, `HEAD`, the
 | 2. Preflight | `snapshot.restore_plan` and its blockers, recomputed from a fresh capture immediately before the write (FR-16). |
 | 3. Preview | Plan entries with their flags, and `snapshot.diff` between the backup and the snapshot. |
 | 4. Backup | `snapshot.create` before the confirmation, checked again by tree before the write (FR-16). "Fresh" is read as above. |
-| 5. Conflict preservation | Per-path `staged`, `unstaged`, and `untracked` flags, an index that is never written, and the backup. "Preserved" is read as above. |
-| 6. Atomicity | Every refusal comes before the first write. A write that started reports its written, failed, and not-started paths, and recovery is a restore of the backup (FR-16). |
-| 7. Confirmation | The host rules above, the one-shot entry, `confirmRestore`, and no write path for hooks or tools. |
+| 5. Conflict preservation | Per-path `staged`, `unstaged`, and `untracked` flags, an index that is never written, the backup, and pinned stat settings so that Git refuses to overwrite a later edit. "Preserved" is read as above. |
+| 6. Atomicity | Every refusal comes before the first write. A write that started runs in its own session and reports its written, failed, and not-started paths, and recovery is a restore of the backup (FR-16). |
+| 7. Confirmation | The host rules above, the one-shot entry that no `SnapClient` option or request reaches, `confirmRestore`, and no write path for hooks or tools. |
 | 8. Auditability | The restore result object (section 8.6), which names the snapshot, the backup, the scope, both bound trees, the tree after the write, and the outcome. |
 | 9. Testing | The Phase 4 pull requests above, then the Phase 5 adversarial suite. |
 
@@ -452,6 +568,8 @@ Review settled five product questions on 2026-11-01, each as this record propose
 3. The confirmation guarantee covers Blink's own tools, hooks, and shared transport, and not an agent with a shell. Such an agent can already run Git, so no Blink mechanism would protect more.
 4. OpenCode gets the plan tool only. Its permission prompt can be set to allow without asking, so it cannot prove that a person answered.
 5. `snapshot.restore_plan` and `snapshot.restore` replace the roadmap's "`snapshot.restore` dry-run API".
+
+#30 merged before its adversarial review finished. Two reviewers on different models then showed that the merged design could lose an edit under weak stat settings, write without a confirmation through public `SnapClient` options, and report `applied` after a filter died. This revision answers that review. It pins the stat settings, runs the write in its own session, refuses the restore entry everywhere outside `SnapClient.restore`, honors an `AbortSignal` before the write, and requires Git's exit status for `applied`. It also sets a minimum Git version and refuses on Windows until CI proves the write there.
 
 ## Evidence
 
@@ -470,14 +588,20 @@ Four things were assumed and not yet observed in Phase 4. They are what Git LFS 
 
 ### Phase 5 evidence
 
-The write-engine probe is summarized in [The write is a two-way read-tree](#the-write-is-a-two-way-read-tree). Its report numbers observations 1 to 11 and two extra rows, and this record cites them by those numbers. It did not observe Windows and NTFS, Git LFS and long-running process filters, `core.fsmonitor`, Unicode normalization collisions, Git older than 2.54, racy-clean index timestamps, or case-sensitive volumes. Its timing runs slept 1.1 seconds before each capture, so no index entry was racily clean.
+The write-engine probe is summarized in [The write is a two-way read-tree](#the-write-is-a-two-way-read-tree). Its report numbers observations 1 to 11 and two extra rows, and this record cites them by those numbers. It did not observe Windows and NTFS, Git LFS and long-running process filters, `core.fsmonitor`, Git older than 2.54, racy-clean index timestamps, or case-sensitive volumes. Its timing runs slept 1.1 seconds before each capture, so no index entry was racily clean.
 
-A signal probe for this record ran on the same Git and macOS. It built a 20,000-file repository, captured it into a scratch index, slept 1.1 seconds, and sent a signal to `read-tree -m -u` 0.6 seconds after it started. It observed:
+A signal probe for the first version of this record ran on the same Git and macOS. It built a 20,000-file repository, captured it into a scratch index, slept 1.1 seconds, and sent a signal to `read-tree -m -u` 0.6 seconds after it started. It observed:
 
 - With default signal handling, `SIGTERM` stopped Git with exit `143`. 5807 files held the result, 14192 held the current state, and one was in flight.
 - With `SIGTERM` ignored by the parent shell and so inherited by Git, every one of the 20,000 files held the result. Git then exited `128` with `index.lock write error: Bad file descriptor`. Git's own handler had removed the scratch index lock, then the inherited ignore swallowed the signal it raised again.
 - With `SIGINT` ignored the same way, the result was the same as for `SIGTERM`.
 - A Go 1.27.3 program that called `signal.Ignore` for `SIGINT` and `SIGTERM` after `signal.NotifyContext`, then ran `sh -c 'kill -TERM $$; kill -INT $$; echo child-survived'`, printed `child-survived`. Without `signal.Ignore`, the child died from `SIGTERM`. So a Go parent passes an ignored signal to its children.
+
+This revision ran three more probes on Git 2.54.0 (Apple Git-157), Go 1.27.3, and Python 3.14 on macOS, each in fresh repositories under `mktemp -d` with a private `HOME`, `GIT_CONFIG_NOSYSTEM=1`, and no inherited `GIT_*` variables. They are summarized where the record uses them:
+
+- The stat-pin probe, in [The write is a two-way read-tree](#the-write-is-a-two-way-read-tree). It also checked that `core.ignoreStat=true` leaves the captured content alone.
+- The isolation probe, in [The write runs outside the core's process group](#the-write-runs-outside-the-cores-process-group). It drove the stand-in core through a pseudo-terminal for `^C`, and through `killpg` for the guardian's signals.
+- The round-trip probe, at the end of [The write is a two-way read-tree](#the-write-is-a-two-way-read-tree). Its line-ending case reproduced the trees that the review of #30 reported, `8702e9fc` after the write against `2cd5cf83` for the snapshot.
 
 The Pi API facts in [Pi restores only from a typed command in its terminal UI](#pi-restores-only-from-a-typed-command-in-its-terminal-ui) come from reading the installed Pi 0.84.1 type declarations and `agent-session.js`. They were not run.
 
@@ -488,18 +612,26 @@ Each assumption the Phase 5 design relies on is listed with its label. An observ
 | Assumption | Label | Proven by |
 | --- | --- | --- |
 | A two-way read-tree on the capture's scratch index never writes the real index, `HEAD`, refs, configuration, or the real object store. | Observed (obs 1) | Store step fingerprint test. |
-| Git refuses before its first write when a tracked planned path changed after the capture. | Observed (obs 3) | Store step stale-in-window test. |
+| Git refuses before its first write when a tracked planned path changed after the capture, with the four stat settings pinned. | Observed (obs 3, stat-pin probe) | `TestRestoreKeepsAnEditUnderWeakStatConfig`. |
+| Without the pins, `core.trustctime=false` or `core.checkStat=minimal` lets Git overwrite an edit that kept its size and modification time. | Observed (stat-pin probe) | The same test, which fails if a pin is dropped. |
+| The pins do not change the captured tree. | Observed (stat-pin probe) | Store step test that a `create` after a restore plan records `current_tree` under each setting. |
+| Every check-phase refusal of `unpack-trees` comes before Git's first write. | Observed for `not uptodate` (obs 3). Inferred from Git's source for the others. | Store step test per check-phase message. |
 | Git refuses an untracked, not ignored path that appears at a created path after the capture. | Observed for one symbolic link (obs 5). Inferred for other untracked files. | Store step test with an untracked file. |
 | An ignored file or empty directory that appears between the plan's disk checks and the write can be overwritten. | Observed (obs 6). Accepted as a known window. | None. The window is documented. |
 | The capture after a successful write equals `result_tree`, including a file whose clean filter loses bytes. | Observed (extra row 2) | Store step repeat-apply test. |
-| An inherited ignored `SIGINT` or `SIGTERM` keeps `read-tree -m -u` running to its end. | Observed (signal probe) | Store step group-signal test. |
-| An inherited ignore reaches smudge filters and process filters that Git starts. | Inferred | Store step test with a smudge filter. |
-| A Go parent passes an ignored signal to the processes it starts. | Observed (signal probe) | Store step group-signal test. |
-| `SIGHUP` and `SIGQUIT` behave as `SIGINT` and `SIGTERM` do. | Inferred | Store step group-signal test. |
-| On Windows, ignoring the console interrupt in the core also protects the write's Git process. | Inferred, not observed | Store step on Windows CI. Until it passes, Windows release notes say that an interrupt can stop a write part way. |
-| A `flock` lock on POSIX and an exclusive-share open on Windows are released when the process ends. | Inferred from the operating-system documentation | Store step busy-lock and `kill -9` test. |
+| The capture after a correct write differs from `result_tree` when `HEAD` moved from CRLF to LF content under `core.autocrlf=true`. | Observed (round-trip probe, and the review of #30) | Store step `autocrlf` case. |
+| A path created below an existing NFD directory on APFS captures to `result_tree`. | Observed (round-trip probe) | Store step NFD case. |
+| Git in its own session receives no terminal `^C` and no group signal sent to the core's group, and a filter with its own handlers finishes. | Observed (isolation probe) | Store step signal cases. |
+| Git in the core's process group stops part way on a terminal `^C` or a group `SIGTERM` when its filter installs its own handler. | Observed (isolation probe, and the review of #30) | None. This is why the session exists. |
+| An `flock` lock stays held while a child that inherited its descriptor runs, after the parent died. | Observed on macOS (isolation probe) | Store step `SIGKILL` case, on macOS and Linux. |
+| Git started from a core that catches the stop signals has default signal handling. | Observed for `SIGTERM` (isolation probe) | Store step case that stops Git's group by hand. |
+| A Go parent passes an ignored signal to the processes it starts. | Observed (signal probe) | None. This is why the core catches the signals. |
+| The core discards `SIGHUP` and `SIGQUIT` as it does `SIGINT` and `SIGTERM`. | Inferred from the Go `os/signal` documentation | Store step signal cases. |
+| In a new session, a filter that opens `/dev/tty` fails instead of stopping on `SIGTTIN`. | Inferred from POSIX job control | Store step case with such a filter. |
+| On Windows, `CREATE_NEW_PROCESS_GROUP` and `CREATE_NO_WINDOW` keep console events from Git and its filters, and an exclusive-share handle that Git inherits keeps the lock. | Inferred, not observed | Windows step CI job. Until it passes, the core refuses every restore on Windows. |
+| `core.fsmonitor=false` turns the hook off on every supported Git. Git before 2.36 reads the value as a hook path and runs `false`, which fails, so Git falls back to a full check. | Inferred | Store step CI job at Git 2.30. |
+| An agent's shell tool starts the CLI with pipes on standard input, output, and error. | Inferred | CLI step stream tests. A tool that gives the CLI a terminal is outside the guarantee. |
 | An old binary rejects `serve --restore` before it answers, and its shared `serve` answers `snapshot.restore` with `-32601`. | Observed on a binary built from `6d3629e`. It printed `command "serve" takes no arguments`, exited `1`, and wrote nothing to standard output. | Protocol step test with an older binary. |
 | Pi runs a slash command only from text a person typed in TUI mode, and never from `sendUserMessage`. | Inferred from `agent-session.js` 0.84.1 | Pi step test of the mode checks. |
 | No agent turn starts while the Pi command handler runs. | Inferred, not verified | Pi step test. If it fails, the handler waits with `waitForIdle()` and refuses when a turn starts. |
-| A host shell tool can start the CLI with the host's controlling terminal, so the prompt can appear inside the host's terminal. | Inferred | None. A person still has to type the digits. |
 | `restore-plan` toward the snapshot lists every path a stopped write left behind. | Observed (obs 9) | Store step `kill -9` test. |
