@@ -922,6 +922,40 @@ func TestPlanRestoreFailsOnASnapshotTreeNoRestoreCouldProduce(t *testing.T) {
 	}
 }
 
+func TestPlanRestoreFailsOnAMissingTargetBlobWithoutFetchingIt(t *testing.T) {
+	dir := testRepo(t)
+	writeFile(t, dir, "lost.txt", "only in the snapshot\n")
+	store := newStore(t, dir)
+	snap := create(t, store, "snap")
+	blob := git(t, dir, "rev-parse", snap.Commit+":lost.txt")
+	if err := os.Remove(filepath.Join(dir, "lost.txt")); err != nil {
+		t.Fatal(err)
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	git(t, dir, "clone", "--quiet", "--mirror", dir, remote)
+	git(t, dir, "config", "core.repositoryformatversion", "1")
+	git(t, dir, "config", "extensions.partialClone", "origin")
+	git(t, dir, "remote", "add", "origin", remote)
+	git(t, dir, "config", "remote.origin.promisor", "true")
+	gitDir := git(t, dir, "rev-parse", "--absolute-git-dir")
+	if err := os.Remove(filepath.Join(gitDir, "objects", blob[:2], blob[2:])); err != nil {
+		t.Skipf("blob is not a loose object: %v", err)
+	}
+
+	for _, q := range []PlanQuery{{}, {Scope: scopeOf(t, "lost.txt")}} {
+		plan, err := store.PlanRestore(context.Background(), snap.ID, q)
+		if err == nil || !strings.Contains(err.Error(), blob) || !reflect.DeepEqual(plan, RestorePlan{}) {
+			t.Fatalf("scope %v: got %v and %+v, want an error that names the missing blob", q.Scope.Paths(), err, plan)
+		}
+	}
+	if plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: scopeOf(t, "tracked.txt")}); !plan.Applicable {
+		t.Fatalf("a scope that writes no missing blob must plan: %+v", plan)
+	}
+	if gitCommand(dir, append(sanitizedEnv(), "GIT_NO_LAZY_FETCH=1"), "cat-file", "-e", blob).Run() == nil {
+		t.Fatalf("the plan fetched the missing object %s", blob)
+	}
+}
+
 func TestPlanRestoreIgnoresReplaceRefs(t *testing.T) {
 	dir := testRepo(t)
 	writeFile(t, dir, "a.txt", "a\n")

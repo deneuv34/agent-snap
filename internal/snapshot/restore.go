@@ -161,6 +161,9 @@ func (s *Store) planRestore(ctx context.Context, id string, q PlanQuery) (Restor
 		return RestorePlan{}, err
 	}
 	p := buildPlan(q.Scope, cur, tgt)
+	if err := ev.requireBlobs(ctx, p); err != nil {
+		return RestorePlan{}, err
+	}
 	index, err := s.readIndex(ctx, p.paths())
 	if err != nil {
 		return RestorePlan{}, err
@@ -202,9 +205,14 @@ type evidence struct {
 }
 
 func (e evidence) git(ctx context.Context, args ...string) (string, error) {
+	return e.gitStdin(ctx, "", args...)
+}
+
+func (e evidence) gitStdin(ctx context.Context, stdin string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir=" + e.gitDir}, args...)...)
 	cmd.Dir = e.dir
 	cmd.Env = e.env
+	cmd.Stdin = strings.NewReader(stdin)
 	stderr := &cappedBuffer{limit: diffStderrLimit}
 	cmd.Stderr = stderr
 	out, err := cmd.Output()
@@ -233,6 +241,30 @@ func (e evidence) listTree(ctx context.Context, tree string) (listing, error) {
 		return nil, fmt.Errorf("read tree %s: %w", tree, err)
 	}
 	return leaves, nil
+}
+
+// The evidence repository has no promisor remote, so a missing blob fails
+// instead of being fetched. A gitlink's commit lives in another repository.
+func (e evidence) requireBlobs(ctx context.Context, p *plan) error {
+	var oids strings.Builder
+	for _, c := range p.changes {
+		if c.tgt != nil && c.tgt.mode != modeGitlink {
+			oids.WriteString(c.tgt.oid + "\n")
+		}
+	}
+	if oids.Len() == 0 {
+		return nil
+	}
+	out, err := e.gitStdin(ctx, oids.String(), "cat-file", "--batch-check=%(objectname) %(objecttype)")
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if oid, objectType, _ := strings.Cut(line, " "); objectType != "blob" {
+			return fmt.Errorf("read snapshot blob %s: %s", oid, objectType)
+		}
+	}
+	return nil
 }
 
 func (e evidence) headView(ctx context.Context, head, currentTree string, current listing) (headView, error) {
