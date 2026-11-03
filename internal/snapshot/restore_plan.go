@@ -287,8 +287,10 @@ var pathRules = [...]struct {
 	{BlockSubmodule, func(_ *plan, _ *world, c *change) bool { return c.hasMode(modeGitlink) }},
 	{BlockParentConflict, func(p *plan, _ *world, c *change) bool { return p.parentConflict(c) }},
 	{BlockIndexFlag, func(_ *plan, w *world, c *change) bool { return w.index.stage0[c.path].flagged }},
-	{BlockNameCollision, func(_ *plan, w *world, c *change) bool { return w.collision(c) }},
-	{BlockUntrackedInTheWay, func(_ *plan, w *world, c *change) bool { return c.writesTarget() && w.disk.inTheWay(c.path) }},
+	{BlockNameCollision, func(p *plan, w *world, c *change) bool { return w.collision(p, c) }},
+	{BlockUntrackedInTheWay, func(p *plan, w *world, c *change) bool {
+		return c.writesTarget() && (w.disk.inTheWay(c.path) || w.caseSpelling(p, c) == spellingUnreadable)
+	}},
 }
 
 func (p *plan) decide(ctx context.Context, w *world) error {
@@ -322,14 +324,21 @@ func (p *plan) parentConflict(c *change) bool {
 	return false
 }
 
-func (w *world) collision(c *change) bool {
+func (w *world) collision(p *plan, c *change) bool {
 	if w.nodes == nil {
 		return false
 	}
 	if c.writesTarget() && w.foldsOnto(c.path) {
 		return true
 	}
-	return slices.ContainsFunc(parents(c.path), w.foldsOnto)
+	return slices.ContainsFunc(parents(c.path), w.foldsOnto) || w.caseSpelling(p, c) == spellingByCase
+}
+
+func (w *world) caseSpelling(p *plan, c *change) caseSpelling {
+	if !c.writesTarget() {
+		return spellingClear
+	}
+	return w.disk.caseSpelling(c.path, p.current.hasDir)
 }
 
 func (w *world) foldsOnto(node string) bool {

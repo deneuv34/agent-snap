@@ -3,6 +3,7 @@ package snapshot
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -127,5 +128,101 @@ func TestPlanRestoreDoesNotBlockAWriteWhenTheTreeDoesNotFoldCase(t *testing.T) {
 	plan := planAndCheck(t, dir, store, id, PlanQuery{Scope: WholeTree()})
 	if got := entryAt(t, plan, "dir/y").Blocker; got != "" {
 		t.Fatalf("dir/y: blocker %q, want none", got)
+	}
+}
+
+func neverHeld(string) bool { return false }
+
+func TestCaseSpellingReadsEachDirectoryOnce(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "a", "Dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	probe := newDiskProbe(root, nil, true)
+	paths := []string{"a/dir/y", "a/dir/z", "a/dir/sub/w"}
+	for _, path := range paths {
+		if got := probe.caseSpelling(path, neverHeld); got != spellingByCase {
+			t.Fatalf("%s: %v, want spellingByCase", path, got)
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(root, "a")); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range paths {
+		if got := probe.caseSpelling(path, neverHeld); got != spellingByCase {
+			t.Errorf("%s after the directory is gone: %v, want the first reading", path, got)
+		}
+	}
+}
+
+func TestCaseSpellingReadsNothingWhenTheTreeDoesNotFoldCase(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "Dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	probe := newDiskProbe(root, nil, false)
+	if got := probe.caseSpelling("dir/y", neverHeld); got != spellingClear {
+		t.Fatalf("got %v, want spellingClear", got)
+	}
+	if probe.listed != nil {
+		t.Fatal("the probe kept directory listings")
+	}
+}
+
+func TestCaseSpellingLeavesTheExemptionsToTheirRules(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "Held", "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "exact"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "File"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Mkdir(filepath.Join(outside, "target"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	symlinkOrSkip(t, outside, filepath.Join(root, "Link"))
+	probe := newDiskProbe(root, nil, true)
+	held := func(dir string) bool { return dir == "held" }
+	cases := []struct {
+		path string
+		want caseSpelling
+	}{
+		{"exact/y", spellingClear},
+		{"held/y", spellingClear},
+		{"held/inner/y", spellingClear},
+		{"file/y", spellingClear},
+		{"link/target/y", spellingClear},
+		{"held/Inner/y", spellingByCase},
+		{"held/inner/z/y", spellingClear},
+	}
+	for _, c := range cases {
+		if got := probe.caseSpelling(c.path, held); got != c.want {
+			t.Errorf("%s: %v, want %v", c.path, got, c.want)
+		}
+	}
+	if got := probe.caseSpelling("held/inner/y", func(string) bool { return false }); got != spellingByCase {
+		t.Errorf("held/inner/y with no held directory: %v, want spellingByCase", got)
+	}
+}
+
+func TestCaseSpellingReportsAnUnreadableDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("directory permissions do not stop this user")
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(root, "a"), 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(filepath.Join(root, "a"), 0o755) })
+	probe := newDiskProbe(root, nil, true)
+	if got := probe.caseSpelling("a/dir/y", neverHeld); got != spellingUnreadable {
+		t.Fatalf("got %v, want spellingUnreadable", got)
 	}
 }
