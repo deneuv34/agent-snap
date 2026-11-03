@@ -710,3 +710,56 @@ func TestCreateFailsFastOnAStaleRefLock(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateGivesUpOnAnUncreatableRefDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix directory permissions")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := testRepo(t)
+	store := newStore(t, dir)
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim := t.TempDir()
+	runs := filepath.Join(shim, "update-ref-runs")
+	writeFile(t, shim, "git", fmt.Sprintf("#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = update-ref ] && echo >> '%s'; done\nexec '%s' \"$@\"\n", runs, realGit))
+	if err := os.Chmod(filepath.Join(shim, "git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+	refs := filepath.Join(dir, ".git", "refs")
+	if err := os.Chmod(refs, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(refs, 0o755) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err = store.Create(ctx, "denied", Origin{})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("a create that cannot make its ref directory must fail")
+	}
+	if !strings.HasPrefix(err.Error(), "update refs: ") || !strings.Contains(err.Error(), "unable to create directory for") {
+		t.Fatalf("after %s the error is not the update refs failure: %v", elapsed, err)
+	}
+	logged, err := os.ReadFile(runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts := strings.Count(string(logged), "\n"); attempts != refDirAttempts {
+		t.Fatalf("the create ran update-ref %d times, want %d", attempts, refDirAttempts)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("the create took %s to give up", elapsed)
+	}
+	t.Logf("the create gave up after %d attempts in %s", refDirAttempts, elapsed)
+	if refs := git(t, dir, "for-each-ref", refsPrefix); refs != "" {
+		t.Fatalf("the failed create left refs %q", refs)
+	}
+}

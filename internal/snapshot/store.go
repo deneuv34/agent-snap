@@ -29,6 +29,8 @@ const (
 	originLimit       = 64
 	gitStopGrace      = 500 * time.Millisecond
 	refLockTimeout    = time.Second
+	refDirAttempts    = 5
+	refDirDelay       = 10 * time.Millisecond
 	MaxPageOffset     = 1<<31 - 1
 	pageSize          = 200
 )
