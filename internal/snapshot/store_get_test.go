@@ -404,3 +404,35 @@ func TestReadersSkipItemRefsWhoseNameIsNotAnID(t *testing.T) {
 		})
 	}
 }
+
+func TestListAndReuseParseOnlyGitStdout(t *testing.T) {
+	for _, format := range objectFormats {
+		t.Run(format, func(t *testing.T) {
+			dir := testRepoIn(t, format)
+			store := newStore(t, dir)
+			first := create(t, store, "first")
+			writeFile(t, dir, "tracked.txt", "edited\n")
+			latest := create(t, store, "latest")
+			gitDir := git(t, dir, "rev-parse", "--absolute-git-dir")
+			if _, err := os.Stat(filepath.Join(gitDir, filepath.FromSlash(store.itemsRef()+latest.ID))); err != nil {
+				t.Skipf("item refs are not loose files in this ref backend: %v", err)
+			}
+			writeFile(t, gitDir, filepath.FromSlash(store.itemsRef()+"20000101T000000.000000000Z-"+latest.Commit[:12]+"\tforged"), latest.Commit+"\n")
+
+			items, err := store.List(context.Background(), 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 2 || items[0].ID != latest.ID || items[1].ID != first.ID {
+				t.Errorf("a warning about a broken ref name must not hide a snapshot: %+v", items)
+			}
+			again, err := store.Create(context.Background(), "again", Origin{})
+			if err != nil {
+				t.Fatalf("a reused create must not fail on a warning about a broken ref name: %v", err)
+			}
+			if !again.Reused || again.ID != latest.ID {
+				t.Fatalf("a reused create must report the latest real snapshot: %+v", again)
+			}
+		})
+	}
+}
