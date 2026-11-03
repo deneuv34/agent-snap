@@ -105,9 +105,11 @@ func TestCreateCancelledWhileWaitingOnARefLockReturnsPromptly(t *testing.T) {
 		if err == nil {
 			t.Fatal("a cancelled create must fail")
 		}
-		if waited := time.Since(cancelled); waited > 100*time.Millisecond {
+		waited := time.Since(cancelled)
+		if waited > 100*time.Millisecond {
 			t.Fatalf("the cancelled create returned %s after the cancel", waited)
 		}
+		t.Logf("the cancelled create returned %s after the cancel", waited)
 	case <-time.After(10 * time.Second):
 		t.Fatal("the cancelled create did not return")
 	}
