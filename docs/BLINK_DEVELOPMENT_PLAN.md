@@ -178,6 +178,8 @@ All commands pass on the supported platform matrix, and package artifacts instal
 
 **Objective:** Restore selected snapshot content only after an explicit, informed confirmation.
 
+**Design:** [docs/RESTORE.md](RESTORE.md) and FR-16 in [docs/BLINK_SPEC.md](BLINK_SPEC.md). RESTORE.md lists the Phase 5 pull requests in landing order, each with its check.
+
 ### Deliverables
 
 - Confirmed full-tree and path-scoped restore operations.
@@ -189,7 +191,7 @@ All commands pass on the supported platform matrix, and package artifacts instal
 1. Implement restore writes through a narrowly scoped core API; do not expose raw Git commands directly through host plugins.
 2. Enforce the validated dry-run plan at the protocol boundary, and the person's confirmation in the hosts and the CLI ([docs/RESTORE.md](RESTORE.md)).
 3. Apply the documented preservation and conflict rules; refuse rather than overwrite anything outside the approved plan.
-4. Provide an abort and recovery path that references the newly created safety snapshot.
+4. Provide an abort and recovery path that references the newly created safety snapshot. A cancel before the write writes nothing. A cancel after the write starts waits for the write to end, and recovery is a restore of the safety snapshot ([docs/RESTORE.md](RESTORE.md)).
 5. Add end-to-end tests that prove no unrelated files, index entries, refs, or worktrees are modified.
 
 ### Exit criteria

@@ -14,12 +14,14 @@ Identity is frozen: executable `agent-snap`, packages `@agent-snap/*`, JSONL met
 These are non-negotiable. Capture, list, and inspect must never modify `HEAD`, the real index, normal refs, or the working tree.
 
 - Snapshot creation uses a private scratch `GIT_INDEX_FILE` outside the repository. Fail closed if that cannot be guaranteed.
-- A restore plan also sets `GIT_OBJECT_DIRECTORY` to a private object directory beside its scratch index, whose `info/alternates` names the real object directory. It never writes the real object store.
+- A restore plan and a restore also set `GIT_OBJECT_DIRECTORY` to a private object directory beside their scratch index, whose `info/alternates` names the real object directory. Neither writes the real object store.
+- A restore (FR-16) writes working-tree files only through `read-tree -m -u` on the scratch index that its own fresh capture filled, after it recomputes the plan from that capture. It never writes the real index, `HEAD`, or refs, and its only file in the Git directory is its restore lock. Only `serve --restore` and the CLI `restore` command run it.
 - Every Git invocation strips inherited `GIT_*` repository-redirect variables and runs against the resolved repo. The one exception is `Store.Diff`: it runs Git in a private bare evidence repository outside the worktree whose only link to the resolved repo is a read-only `objects/info/alternates` entry, so attributes, configuration, and replace refs cannot shape the evidence.
 - `Store` owns every hidden-ref path. Callers never construct `refs/agent-snapshots/...` themselves.
 - Host plugins and extensions never invoke Git and never spawn `agent-snap` except through `SnapClient`.
 - Any operation that would write working-tree files needs a dedicated design review, adversarial tests, and explicit user confirmation UX that lifecycle hooks cannot manufacture.
 - Timeout, cancellation, teardown, and concurrency fail closed. A timed-out create must not produce an unobserved checkpoint.
+- Once a restore's write starts, cancellation and teardown signals wait until its process exits, and a caller is never told that nothing changed when files may have changed. For `SnapClient.restore` only, this replaces the `AbortSignal` and timeout rule under TypeScript.
 - Public protocol results are runtime-validated at the TypeScript boundary before they reach a host.
 
 ## Architecture
