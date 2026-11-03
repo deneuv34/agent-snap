@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/deneuv34/agent-snap/internal/protocol"
 	"github.com/deneuv34/agent-snap/internal/snapshot"
@@ -31,13 +33,19 @@ Snapshots are stored as hidden git refs (refs/agent-snapshots/...). HEAD and the
 real index are never touched.`
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// After the first signal, restore default handling so a second one kills at once.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	if err := run(ctx, os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "agent-snap:", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string, stdout io.Writer) error {
+func run(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		fmt.Fprintln(stdout, usage)
 		return nil
@@ -47,7 +55,7 @@ func run(args []string, stdout io.Writer) error {
 		if len(args) > 1 {
 			return fmt.Errorf("command %q takes no arguments", args[0])
 		}
-		return protocol.Serve(context.Background(), os.Stdin, stdout)
+		return protocol.Serve(ctx, os.Stdin, stdout)
 	case "ping":
 		if len(args) > 1 {
 			return fmt.Errorf("command %q takes no arguments", args[0])
@@ -71,7 +79,7 @@ func run(args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		snap, err := store.Create(context.Background(), reason, snapshot.Origin{Source: "cli"})
+		snap, err := store.Create(ctx, reason, snapshot.Origin{Source: "cli"})
 		if err != nil {
 			return err
 		}
@@ -85,7 +93,7 @@ func run(args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		items, err := store.List(context.Background(), limit)
+		items, err := store.List(ctx, limit)
 		if err != nil {
 			return err
 		}
@@ -99,7 +107,7 @@ func run(args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		detail, err := store.Get(context.Background(), id)
+		detail, err := store.Get(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -113,7 +121,7 @@ func run(args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		diff, err := store.Diff(context.Background(), from, to, page)
+		diff, err := store.Diff(ctx, from, to, page)
 		if err != nil {
 			return err
 		}
@@ -127,7 +135,7 @@ func run(args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		plan, err := store.PlanRestore(context.Background(), id, query)
+		plan, err := store.PlanRestore(ctx, id, query)
 		if err != nil {
 			return err
 		}

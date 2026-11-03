@@ -211,7 +211,7 @@ func (e evidence) git(ctx context.Context, args ...string) (string, error) {
 }
 
 func (e evidence) gitStdin(ctx context.Context, stdin string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir=" + e.gitDir}, args...)...)
+	cmd := gitCmd(ctx, append([]string{"--git-dir=" + e.gitDir}, args...)...)
 	cmd.Dir = e.dir
 	cmd.Env = e.env
 	cmd.Stdin = strings.NewReader(stdin)

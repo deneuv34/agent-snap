@@ -10,9 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -25,6 +27,7 @@ const (
 	addAttempts       = 5
 	changedFilesLimit = 1000
 	originLimit       = 64
+	gitStopGrace      = 500 * time.Millisecond
 	MaxPageOffset     = 1<<31 - 1
 	pageSize          = 200
 )
@@ -387,7 +390,7 @@ func scratchRootOutside(repo string) (string, error) {
 
 // isSymref reports whether ref is a symbolic reference.
 func (s *Store) isSymref(ctx context.Context, ref string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "-q", ref)
+	cmd := gitCmd(ctx, "symbolic-ref", "-q", ref)
 	cmd.Dir = s.repo
 	cmd.Env = sanitizedEnv()
 	err := cmd.Run()
@@ -663,6 +666,20 @@ func sanitizedEnv() []string {
 	return out
 }
 
+// gitCmd stops Git with SIGTERM when ctx ends, because a SIGKILL can land
+// while Git removes its ref lock files and leave them in the repository. A
+// Git or a hook that still holds the pipes gitStopGrace later is killed and
+// its pipes are closed, so cleanup finishes inside the client's kill grace.
+// Windows has no SIGTERM, so cancellation kills Git there.
+func gitCmd(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if runtime.GOOS != "windows" {
+		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	}
+	cmd.WaitDelay = gitStopGrace
+	return cmd
+}
+
 func (s *Store) git(ctx context.Context, extraEnv []string, args ...string) (string, error) {
 	out, err := s.gitMaybe(ctx, extraEnv, args...)
 	if err != nil {
@@ -680,7 +697,7 @@ func (s *Store) gitStdin(ctx context.Context, extraEnv []string, stdin string, a
 }
 
 func (s *Store) gitMaybe(ctx context.Context, extraEnv []string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := gitCmd(ctx, args...)
 	cmd.Dir = s.repo
 	cmd.Env = append(sanitizedEnv(), extraEnv...)
 	out, err := cmd.CombinedOutput()
@@ -692,7 +709,7 @@ func (s *Store) gitMaybe(ctx context.Context, extraEnv []string, args ...string)
 // only: a warning Git prints to stderr, such as one about an unrelated broken
 // ref, must never be parsed as a path or a ref record.
 func (s *Store) gitRaw(ctx context.Context, extraEnv []string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := gitCmd(ctx, args...)
 	cmd.Dir = s.repo
 	cmd.Env = append(sanitizedEnv(), extraEnv...)
 	var stderr strings.Builder
@@ -705,7 +722,7 @@ func (s *Store) gitRaw(ctx context.Context, extraEnv []string, args ...string) (
 }
 
 func (s *Store) gitStdinMaybe(ctx context.Context, extraEnv []string, stdin string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := gitCmd(ctx, args...)
 	cmd.Dir = s.repo
 	cmd.Env = append(sanitizedEnv(), extraEnv...)
 	cmd.Stdin = strings.NewReader(stdin)
