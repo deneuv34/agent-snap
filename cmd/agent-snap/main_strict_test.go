@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -88,6 +89,58 @@ func TestCLIDiffRejectsBadArgumentsBeforeResolvingTheRepository(t *testing.T) {
 	var out bytes.Buffer
 	if err := run([]string{"diff", id, other, "--offset", "2147483647", "--max-patch-bytes", "1048576", "--cwd", "/not/a/repo"}, &out); err == nil || !strings.Contains(err.Error(), "find git repository") {
 		t.Errorf("in-range values reach the repository lookup, got: %v", err)
+	}
+}
+
+func TestCLIRestorePlanRejectsBadArgumentsBeforeResolvingTheRepository(t *testing.T) {
+	const id = "20260101T000000.000000000Z-0123456789ab"
+	tree := strings.Repeat("a", 40)
+	var tooMany []string
+	for i := 0; i <= 100; i++ {
+		tooMany = append(tooMany, "--path", fmt.Sprintf("p%d", i))
+	}
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{}, "exactly one snapshot id, got 0"},
+		{[]string{id, id}, "exactly one snapshot id, got 2"},
+		{[]string{"HEAD"}, "invalid snapshot id"},
+		{[]string{"0123456789abcdef0123456789abcdef01234567"}, "invalid snapshot id"},
+		{[]string{id, "--limit", "5"}, "unknown flag"},
+		{[]string{id, "--cwd"}, "requires a value"},
+		{[]string{id, "--path"}, "requires a value"},
+		{[]string{id, "--offset"}, "requires a value"},
+		{[]string{id, "--current-tree"}, "requires a value"},
+		{[]string{id, "--offset", "-1", "--current-tree", tree}, "invalid value for --offset"},
+		{[]string{id, "--offset", "2147483648", "--current-tree", tree}, "invalid value for --offset"},
+		{[]string{id, "--offset", "1.5", "--current-tree", tree}, "invalid value for --offset"},
+		{[]string{id, "--offset", "1"}, "--offset above 0 requires --current-tree"},
+		{[]string{id, "--current-tree", "HEAD"}, "invalid value for --current-tree"},
+		{[]string{id, "--current-tree", strings.ToUpper(tree)}, "invalid value for --current-tree"},
+		{[]string{id, "--current-tree", strings.Repeat("a", 41)}, "invalid value for --current-tree"},
+		{[]string{id, "--path", ""}, "invalid --path"},
+		{[]string{id, "--path", "/abs"}, "invalid --path"},
+		{[]string{id, "--path", "../up"}, "invalid --path"},
+		{[]string{id, "--path", "a/../b"}, "invalid --path"},
+		{[]string{id, "--path", "a", "--path", "a"}, "invalid --path"},
+		{[]string{id, "--path", "a", "--path", "a/b"}, "invalid --path"},
+		{append([]string{id}, tooMany...), "invalid --path"},
+	} {
+		var out bytes.Buffer
+		if err := run(append([]string{"restore-plan", "--cwd", "/not/a/repo"}, tc.args...), &out); err == nil || !strings.Contains(err.Error(), tc.want) || out.Len() != 0 {
+			t.Errorf("%v: expected an error containing %q and no output, got: %v", tc.args, tc.want, err)
+		}
+	}
+	for _, args := range [][]string{
+		{id},
+		{id, "--path", "a", "--path", "b/c", "--offset", "2147483647", "--current-tree", tree},
+		{id, "--current-tree", strings.Repeat("a", 64)},
+	} {
+		var out bytes.Buffer
+		if err := run(append([]string{"restore-plan", "--cwd", "/not/a/repo"}, args...), &out); err == nil || !strings.Contains(err.Error(), "find git repository") {
+			t.Errorf("%v: in-range values reach the repository lookup, got: %v", args, err)
+		}
 	}
 }
 

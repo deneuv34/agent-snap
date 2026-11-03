@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { SnapClient, type SnapDiff, type SnapSnapshot, type SnapSnapshotDetail } from "@agent-snap/core"
+import { SnapClient, type SnapDiff, type SnapRestorePlan, type SnapSnapshot, type SnapSnapshotDetail } from "@agent-snap/core"
 
 const bin = process.env.AGENT_SNAP_BIN?.trim() ?? "agent-snap"
 
@@ -29,6 +29,11 @@ function git(dir: string, args: string[]): string {
 function runJson(args: string[]): unknown {
   const result = execFileSync(bin, args, { encoding: "utf8" })
   return JSON.parse(result)
+}
+
+function runStatus(args: string[]): { status: number | null; stdout: string; stderr: string } {
+  const { status, stdout, stderr } = spawnSync(bin, args, { encoding: "utf8" })
+  return { status, stdout, stderr }
 }
 
 async function main(): Promise<void> {
@@ -139,6 +144,44 @@ async function runChecks(dir: string): Promise<void> {
   } finally {
     await client.close()
   }
+
+  const cliWhole = runJson(["restore-plan", created.id, "--cwd", dir]) as SnapRestorePlan
+  if (cliWhole.applicable !== true || cliWhole.paths !== undefined || cliWhole.entries.length !== 1 || cliWhole.entries[0]?.path !== "file.txt" || cliWhole.entries[0].action !== "modify") {
+    fail(`direct whole-tree restore plan mismatch: ${JSON.stringify(cliWhole)}`)
+  }
+  const cliScoped = runJson(["restore-plan", created.id, "--cwd", dir, "--path", "file.txt", "--path", "absent.txt"]) as SnapRestorePlan
+  if (cliScoped.applicable !== false || cliScoped.paths?.join(",") !== "file.txt,absent.txt" || cliScoped.unmatched.join(",") !== "absent.txt" || cliScoped.entries.length !== 1) {
+    fail(`direct scoped restore plan mismatch: ${JSON.stringify(cliScoped)}`)
+  }
+  const missingId = created.id.slice(0, -12) + "000000000000"
+  const cliMissing = runStatus(["restore-plan", missingId, "--cwd", dir])
+  if (cliMissing.status !== 1 || cliMissing.stdout !== "" || !cliMissing.stderr.includes(`snapshot not found: ${missingId}`)) {
+    fail(`direct restore plan of an unknown id must exit 1: ${JSON.stringify(cliMissing)}`)
+  }
+  const staleTree = "0".repeat(cliWhole.current_tree.length)
+  const cliStale = runStatus(["restore-plan", created.id, "--cwd", dir, "--current-tree", staleTree])
+  if (cliStale.status !== 1 || cliStale.stdout !== "" || !cliStale.stderr.includes("working tree changed since the plan")) {
+    fail(`direct restore plan with a stale current tree must exit 1: ${JSON.stringify(cliStale)}`)
+  }
+  const planInput =
+    [
+      JSON.stringify({ id: 1, method: "snapshot.restore_plan", params: { cwd: dir, id: created.id } }),
+      JSON.stringify({ id: 2, method: "snapshot.restore_plan", params: { cwd: dir, id: created.id, paths: ["file.txt", "absent.txt"] } }),
+      JSON.stringify({ id: 3, method: "snapshot.restore_plan", params: { cwd: dir, id: missingId } }),
+      JSON.stringify({ id: 4, method: "snapshot.restore_plan", params: { cwd: dir, id: created.id, current_tree: staleTree } }),
+    ].join("\n") + "\n"
+  const planProc = spawnSync(bin, ["serve"], { input: planInput, encoding: "utf8" })
+  if (planProc.status !== 0) fail(`serve mode exited with ${planProc.status}: ${planProc.stderr}`)
+  const planLines = planProc.stdout.trim().split("\n")
+  if (planLines.length !== 4) fail(`serve mode returned ${planLines.length} restore plan lines: ${planProc.stdout}`)
+  const jsonlWhole = (JSON.parse(planLines[0] ?? "{}") as { result?: SnapRestorePlan }).result
+  if (JSON.stringify(jsonlWhole) !== JSON.stringify(cliWhole)) fail(`whole-tree restore plan differs between JSONL and CLI: ${planLines[0]}`)
+  const jsonlScoped = (JSON.parse(planLines[1] ?? "{}") as { result?: SnapRestorePlan }).result
+  if (JSON.stringify(jsonlScoped) !== JSON.stringify(cliScoped)) fail(`scoped restore plan differs between JSONL and CLI: ${planLines[1]}`)
+  const jsonlMissing = JSON.parse(planLines[2] ?? "{}") as { error?: { code?: number } }
+  if (jsonlMissing.error?.code !== -32001) fail(`a restore plan of an unknown id must answer -32001: ${planLines[2]}`)
+  const jsonlStale = JSON.parse(planLines[3] ?? "{}") as { error?: { code?: number } }
+  if (jsonlStale.error?.code !== -32002) fail(`a restore plan with a stale current tree must answer -32002: ${planLines[3]}`)
 
   // 4. Safety invariants: HEAD and the real index are untouched.
   if (git(dir, ["rev-parse", "HEAD"]) !== headBefore) fail("HEAD moved")

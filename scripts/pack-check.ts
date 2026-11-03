@@ -98,6 +98,10 @@ const snap = await client.create(repo, "pack-check")
 if (!snap.changed_files?.includes("file.txt")) throw new Error("changed_files mismatch: " + JSON.stringify(snap))
 const items = await client.list(repo, 10)
 if (items.length !== 1) throw new Error("list mismatch")
+const plan = await client.restorePlan(repo, snap.id)
+if (plan.snapshot.id !== snap.id || plan.entries.length !== 0 || plan.applicable !== true) throw new Error("restore plan mismatch: " + JSON.stringify(plan))
+const cliPlan = JSON.parse(execFileSync(bin, ["restore-plan", snap.id, "--cwd", repo], { encoding: "utf8" }))
+if (JSON.stringify(cliPlan) !== JSON.stringify(plan)) throw new Error("restore-plan CLI differs from the client plan: " + JSON.stringify(cliPlan))
 await client.close()
 
 // opencode tarball: one default export that OpenCode 1.x (server) and 2.x (setup) both load

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -229,5 +230,78 @@ func TestCLIDiff(t *testing.T) {
 	var out bytes.Buffer
 	if err := run([]string{"diff", missing, missing[:len(missing)-1] + "1", "--cwd", dir}, &out); err == nil || err.Error() != "snapshot not found: "+missing {
 		t.Fatalf("expected not found naming from, got: %v", err)
+	}
+}
+
+func TestCLIRestorePlan(t *testing.T) {
+	dir := cliRepo(t)
+	var out bytes.Buffer
+	if err := run([]string{"create", "--cwd", dir}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var snap struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &snap); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	type plan struct {
+		Snapshot    struct{ ID string } `json:"snapshot"`
+		Paths       []string            `json:"paths"`
+		CurrentTree string              `json:"current_tree"`
+		Applicable  bool                `json:"applicable"`
+		Unmatched   []string            `json:"unmatched"`
+		NextOffset  int                 `json:"next_offset"`
+		Totals      struct{ Entries, Modify, Delete int }
+		Entries     []struct{ Path, Action string }
+	}
+	planOf := func(args ...string) plan {
+		t.Helper()
+		var out bytes.Buffer
+		if err := run(append([]string{"restore-plan", snap.ID, "--cwd", dir}, args...), &out); err != nil {
+			t.Fatal(err)
+		}
+		var p plan
+		if err := json.Unmarshal(out.Bytes(), &p); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	whole := planOf()
+	if whole.Snapshot.ID != snap.ID || whole.Paths != nil || !whole.Applicable || whole.CurrentTree == "" || whole.Totals.Entries != 2 || whole.Totals.Modify != 1 || whole.Totals.Delete != 1 || len(whole.Entries) != 2 {
+		t.Fatalf("unexpected whole-tree plan: %+v", whole)
+	}
+	if e := whole.Entries[0]; e.Path != "file.txt" || e.Action != "modify" {
+		t.Fatalf("unexpected first entry: %+v", e)
+	}
+
+	scoped := planOf("--path", "file.txt", "--path", "missing.txt")
+	if !reflect.DeepEqual(scoped.Paths, []string{"file.txt", "missing.txt"}) || scoped.Applicable || !reflect.DeepEqual(scoped.Unmatched, []string{"missing.txt"}) || len(scoped.Entries) != 1 || scoped.Entries[0].Path != "file.txt" {
+		t.Fatalf("unexpected scoped plan: %+v", scoped)
+	}
+
+	if again := planOf("--current-tree", whole.CurrentTree); again.CurrentTree != whole.CurrentTree {
+		t.Fatalf("a matching current tree should plan, got: %+v", again)
+	}
+	if next := planOf("--offset", "5", "--current-tree", whole.CurrentTree); len(next.Entries) != 0 || next.NextOffset != 0 {
+		t.Fatalf("a page past the end should be empty, got: %+v", next)
+	}
+
+	var stale bytes.Buffer
+	if err := run([]string{"restore-plan", snap.ID, "--cwd", dir, "--current-tree", strings.Repeat("0", len(whole.CurrentTree))}, &stale); err == nil || err.Error() != "working tree changed since the plan" || stale.Len() != 0 {
+		t.Fatalf("expected a stale error and no output, got: %v %q", err, stale.String())
+	}
+
+	missing := snap.ID[:len(snap.ID)-12] + "000000000000"
+	var none bytes.Buffer
+	if err := run([]string{"restore-plan", missing, "--cwd", dir}, &none); err == nil || err.Error() != "snapshot not found: "+missing || none.Len() != 0 {
+		t.Fatalf("expected not found naming the id, got: %v", err)
 	}
 }

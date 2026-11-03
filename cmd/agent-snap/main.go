@@ -21,6 +21,8 @@ Usage:
   agent-snap get <id> [--cwd <dir>]            show one snapshot, print JSON
   agent-snap diff <from> <to> [--cwd <dir>] [--offset <n>] [--max-patch-bytes <n>]
                                                show one page of the diff between two snapshots, print JSON
+  agent-snap restore-plan <id> [--cwd <dir>] [--path <path>]... [--offset <n>] [--current-tree <oid>]
+                                               show one page of the plan to restore a snapshot, print JSON. Writes nothing.
   agent-snap ping                              print protocol version info
   agent-snap serve                             JSONL request/response server on stdin/stdout
   agent-snap version                           print version
@@ -116,6 +118,20 @@ func run(args []string, stdout io.Writer) error {
 			return err
 		}
 		return printJSON(stdout, diff)
+	case "restore-plan":
+		cwd, id, query, err := restorePlanFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		store, err := snapshot.New(cwd)
+		if err != nil {
+			return err
+		}
+		plan, err := store.PlanRestore(context.Background(), id, query)
+		if err != nil {
+			return err
+		}
+		return printJSON(stdout, plan)
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", args[0], usage)
 	}
@@ -257,6 +273,60 @@ func diffFlags(args []string) (cwd, from, to string, page snapshot.DiffPage, err
 		}
 	}
 	return cwd, positional[0], positional[1], page, nil
+}
+
+func restorePlanFlags(args []string) (cwd, id string, query snapshot.PlanQuery, err error) {
+	cwd, err = os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	var positional, paths []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--cwd", "--path", "--offset", "--current-tree":
+			if i+1 >= len(args) {
+				return "", "", query, fmt.Errorf("flag %s requires a value", args[i])
+			}
+			value := args[i+1]
+			switch args[i] {
+			case "--cwd":
+				cwd = value
+			case "--path":
+				paths = append(paths, value)
+			case "--offset":
+				if query.Offset, err = intFlag(args[i], value, 0, snapshot.MaxPageOffset); err != nil {
+					return "", "", query, err
+				}
+			default:
+				if !snapshot.ValidObjectID(value) {
+					return "", "", query, fmt.Errorf("invalid value for --current-tree: %q (want a lowercase object id)", value)
+				}
+				query.CurrentTree = value
+			}
+			i++
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return "", "", query, fmt.Errorf("unknown flag %q", args[i])
+			}
+			positional = append(positional, args[i])
+		}
+	}
+	if len(positional) != 1 {
+		return "", "", query, fmt.Errorf("expected exactly one snapshot id, got %d", len(positional))
+	}
+	if !snapshot.ValidID(positional[0]) {
+		return "", "", query, fmt.Errorf("invalid snapshot id %q", positional[0])
+	}
+	if query.Offset > 0 && query.CurrentTree == "" {
+		return "", "", query, fmt.Errorf("--offset above 0 requires --current-tree from the first page")
+	}
+	query.Scope = snapshot.WholeTree()
+	if len(paths) > 0 {
+		if query.Scope, err = snapshot.ParseScope(paths); err != nil {
+			return "", "", query, fmt.Errorf("invalid --path: %w", err)
+		}
+	}
+	return cwd, positional[0], query, nil
 }
 
 func intFlag(name, value string, min, max int) (int, error) {

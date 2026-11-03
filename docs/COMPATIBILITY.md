@@ -25,6 +25,7 @@ Executable name: `agent-snap`.
 | `list [--cwd <dir>] [--limit <n>]` | Print `{"snapshots":[...]}` newest first. |
 | `get <id> [--cwd <dir>]` | Print the snapshot detail object. A missing snapshot fails with `snapshot not found: <id>`. |
 | `diff <from> <to> [--cwd <dir>] [--offset <n>] [--max-patch-bytes <n>]` | Print one page of the diff result object. `--offset` is 0 through 2147483647 and `--max-patch-bytes` is 1024 through 1048576. |
+| `restore-plan <id> [--cwd <dir>] [--path <path>]... [--offset <n>] [--current-tree <oid>]` | Print one page of the restore plan object. `--path` may repeat, and with none the plan covers the whole tree. `--offset` is 0 through 2147483647 and needs `--current-tree` when above 0. `--current-tree` is a lowercase object ID. It exits `0` when it prints a plan, including one that is not applicable. A missing snapshot fails with `snapshot not found: <id>`, and a `--current-tree` the working tree no longer captures to fails with `working tree changed since the plan`. Both exit `1`. It writes nothing. |
 | `ping` | Print `{"status":"ok","version":"<version>"}`. |
 | `version` | Print the version string and a newline. |
 | `serve` | JSONL server on stdin/stdout. Takes no arguments. |
@@ -139,8 +140,15 @@ outside the worktree that reads the repository's objects through
 refs do not change the result, and the diff writes nothing to the repository.
 
 Mixed versions: a binary without `snapshot.diff` answers `-32601`. So does a
-binary without `snapshot.restore_plan`. `SnapClient`, the CLI, and the host
-tools do not expose that method.
+binary without `snapshot.restore_plan`. `SnapClient` and the CLI expose that
+method. The host tools do not.
+
+A core that carries `restorePlan` needs a binary that answers
+`snapshot.restore_plan`. Against an older binary, only `restorePlan` rejects.
+The new `SnapRestorePlanUnsupportedError` export is additive, and
+`instanceof SnapRpcError` still matches. `SnapLike` gains a required
+`restorePlan` method, so an outside implementation must add it. `-32002`
+reaches callers as a plain `SnapRpcError`.
 
 ### Snapshot origin
 
@@ -192,10 +200,12 @@ get and diff also write no refs or objects.
 Public surface:
 
 - `SnapClient` / `SnapClient.fromEnv()` / `SnapClient.defaultBin()`
-- `SnapLike` (`create(cwd, reason?, signal?, origin?)`, `list`, `get`, `diff(cwd, from, to, page?, signal?)`, `close`)
+- `SnapLike` (`create(cwd, reason?, signal?, origin?)`, `list`, `get`, `diff(cwd, from, to, page?, signal?)`, `restorePlan(cwd, id, options?, signal?)`, `close`)
 - `SnapOrigin`, `SnapSnapshot`, `SnapSnapshotDetail`, `SnapListResult`, `PingResult`
 - `SnapDiff`, `SnapDiffFile`, `SnapDiffHunk`, `SnapDiffSide`, `SnapDiffPage`, `SnapDiffStatus`, `SnapDiffPatch`
+- `SnapRestorePlan`, `SnapRestorePlanOptions`
 - `SnapRpcError` (JSON-RPC `code` + `message`)
+- `SnapRestorePlanUnsupportedError` (extends `SnapRpcError`, code `-32601`)
 - `SnapProtocolError` (malformed child output)
 
 `AGENT_SNAP_BIN` overrides the executable. Default timeout is **30 seconds**.
