@@ -46,7 +46,7 @@ Request:
 
 Unknown keys on the request or in `params` are rejected. `cwd` is required and
 must be a non-empty string for `snapshot.create`, `snapshot.list`,
-`snapshot.get`, and `snapshot.diff`.
+`snapshot.get`, `snapshot.diff`, and `snapshot.restore_plan`.
 
 | Method | Params | Result |
 | --- | --- | --- |
@@ -55,6 +55,7 @@ must be a non-empty string for `snapshot.create`, `snapshot.list`,
 | `snapshot.list` | `cwd`, `limit?` | `{"snapshots":[...]}` |
 | `snapshot.get` | `cwd`, `id` | snapshot detail object |
 | `snapshot.diff` | `cwd`, `from`, `to`, `offset?`, `max_patch_bytes?` | diff result object |
+| `snapshot.restore_plan` | `cwd`, `id`, `paths?`, `offset?`, `current_tree?` | restore plan object |
 
 `limit` is an integer from **1 through 100**. Omitted `limit` uses the store
 default of **20**, newest first.
@@ -69,9 +70,10 @@ checked before the repository is resolved, and it resolves only inside the
 | --- | --- |
 | `-32700` | Parse error (malformed JSON or oversized line) |
 | `-32601` | Method not found |
-| `-32602` | Invalid params (unknown key, missing/blank `cwd`, bad types, bad `limit`, malformed snapshot `id`, `from`, or `to`, bad diff `offset` or `max_patch_bytes`, invalid origin value, a reason that contains a NUL byte or ends with an origin paragraph) |
+| `-32602` | Invalid params (unknown key, missing/blank `cwd`, bad types, bad `limit`, malformed snapshot `id`, `from`, or `to`, bad diff `offset` or `max_patch_bytes`, bad restore plan `paths`, `offset`, or `current_tree`, `offset` above 0 without `current_tree`, invalid origin value, a reason that contains a NUL byte or ends with an origin paragraph) |
 | `-32603` | Internal error (repository resolution, Git, scratch index or evidence repository, ref update, tampered snapshot ref, missing object, a diff that fails its integrity check) |
 | `-32001` | Snapshot not found: a well-formed `id`, `from`, or `to` with no snapshot in this worktree |
+| `-32002` | Stale restore plan: `snapshot.restore_plan` got a `current_tree` that the working tree no longer captures to |
 
 Error messages name the operation. They must not include working-tree file
 contents.
@@ -136,7 +138,9 @@ outside the worktree that reads the repository's objects through
 `objects/info/alternates`. Git configuration, attribute files, and replace
 refs do not change the result, and the diff writes nothing to the repository.
 
-Mixed versions: a binary without `snapshot.diff` answers `-32601`.
+Mixed versions: a binary without `snapshot.diff` answers `-32601`. So does a
+binary without `snapshot.restore_plan`. `SnapClient`, the CLI, and the host
+tools do not expose that method.
 
 ### Snapshot origin
 
