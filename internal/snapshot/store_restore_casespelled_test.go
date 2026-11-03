@@ -1,6 +1,7 @@
 package snapshot
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -225,4 +226,125 @@ func TestCaseSpellingReportsAnUnreadableDirectory(t *testing.T) {
 	if got := probe.caseSpelling("a/dir/y", neverHeld); got != spellingUnreadable {
 		t.Fatalf("got %v, want spellingUnreadable", got)
 	}
+}
+
+func TestPlanRestoreBlocksAWriteBelowACaseSpelledParentUnlessAHEADPathTheRestoreKeepsSpellsIt(t *testing.T) {
+	type scoped struct {
+		paths []string
+		want  PathBlocker
+	}
+	cases := []struct {
+		name               string
+		head, snap, onDisk map[string]string
+		scopes             []scoped
+	}{
+		{
+			"the restore deletes the only HEAD path below the parent",
+			map[string]string{"dir/a": "head\n"},
+			map[string]string{"dir/y": "snapshot\n"},
+			map[string]string{"Dir/a": "head\n", "Dir/x.log": "ignored\n"},
+			[]scoped{{nil, BlockNameCollision}, {[]string{"dir/y", "dir/a"}, BlockNameCollision}, {[]string{"dir/y"}, ""}},
+		},
+		{
+			"an untracked path below the parent stays",
+			map[string]string{"dir/a": "head\n"},
+			map[string]string{"dir/q": "untracked\n", "dir/y": "snapshot\n"},
+			map[string]string{"Dir/a": "head\n", "Dir/q": "untracked\n"},
+			[]scoped{{nil, BlockNameCollision}, {[]string{"dir/y", "dir/a"}, BlockNameCollision}, {[]string{"dir/y"}, ""}},
+		},
+		{
+			"the restore modifies the HEAD path below the parent",
+			map[string]string{"dir/a": "head\n"},
+			map[string]string{"dir/a": "snapshot\n", "dir/y": "snapshot\n"},
+			map[string]string{"Dir/a": "current\n"},
+			[]scoped{{nil, ""}, {[]string{"dir/y", "dir/a"}, ""}},
+		},
+		{
+			"the restore creates the HEAD path below the parent",
+			map[string]string{"dir/z": "head\n"},
+			map[string]string{"dir/y": "snapshot\n", "dir/z": "head\n"},
+			map[string]string{"Dir/x.log": "ignored\n"},
+			[]scoped{{nil, ""}, {[]string{"dir/y", "dir/z"}, ""}, {[]string{"dir/y"}, BlockNameCollision}},
+		},
+	}
+	for _, c := range cases {
+		for _, s := range c.scopes {
+			t.Run(fmt.Sprintf("%s %q", c.name, s.paths), func(t *testing.T) {
+				dir := testRepo(t)
+				if !foldsCase(t, dir) {
+					t.Skip("the current tree spells dir/a over a Dir/ on disk only when the volume folds case")
+				}
+				git(t, dir, "config", "core.ignorecase", "true")
+				writeFile(t, dir, ".gitignore", "*.log\n")
+				writeFiles(t, dir, c.head)
+				git(t, dir, "add", ".")
+				git(t, dir, "commit", "-q", "-m", "head")
+				store := newStore(t, dir)
+				removeAll(t, dir, "dir")
+				writeFiles(t, dir, c.snap)
+				id := create(t, store, "snapshot").ID
+				removeAll(t, dir, "dir")
+				writeFiles(t, dir, c.onDisk)
+
+				scope := WholeTree()
+				if s.paths != nil {
+					scope = scopeOf(t, s.paths...)
+				}
+				plan := planAndCheck(t, dir, store, id, PlanQuery{Scope: scope})
+				if got := entryAt(t, plan, "dir/y").Blocker; got != s.want {
+					t.Fatalf("dir/y: blocker %q, want %q", got, s.want)
+				}
+				applyWithGit(t, dir, plan)
+				captured := get(t, store, create(t, store, "after").ID).Tree
+				if blocked := s.want != ""; blocked == (captured == plan.ResultTree) {
+					t.Fatalf("blocked %v, but Git's apply captures %s and the result tree is %s", blocked, captured, plan.ResultTree)
+				}
+			})
+		}
+	}
+}
+
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, content := range files {
+		writeFile(t, dir, name, content)
+	}
+}
+
+func removeAll(t *testing.T, dir, name string) {
+	t.Helper()
+	if err := os.RemoveAll(filepath.Join(dir, filepath.FromSlash(name))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func applyWithGit(t *testing.T, dir string, plan RestorePlan) {
+	t.Helper()
+	env := append(sanitizedEnv(), "GIT_INDEX_FILE="+filepath.Join(t.TempDir(), "index"))
+	run := func(stdin string, args ...string) string {
+		t.Helper()
+		cmd := gitCommand(dir, env, args...)
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	var info strings.Builder
+	for _, e := range plan.Entries {
+		if e.Target == nil {
+			fmt.Fprintf(&info, "0 %s\t%s\n", strings.Repeat("0", len(plan.CurrentTree)), e.Path)
+		} else {
+			fmt.Fprintf(&info, "%s %s\t%s\n", e.Target.Mode, e.Target.OID, e.Path)
+		}
+	}
+	run("", "read-tree", plan.CurrentTree)
+	run(info.String(), "update-index", "--index-info")
+	if tree := run("", "write-tree"); tree != plan.ResultTree {
+		t.Fatalf("the entries build %s, the result tree is %s", tree, plan.ResultTree)
+	}
+	run("", "read-tree", plan.CurrentTree)
+	run("", "update-index", "-q", "--refresh")
+	run("", "read-tree", "-m", "-u", plan.CurrentTree, plan.ResultTree)
 }
