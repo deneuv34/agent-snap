@@ -1,6 +1,16 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import type { SnapDiff, SnapDiffFile, SnapDiffPage, SnapLike, SnapOrigin, SnapSnapshot, SnapSnapshotDetail } from "@agent-snap/core"
+import type {
+  SnapDiff,
+  SnapDiffFile,
+  SnapDiffPage,
+  SnapLike,
+  SnapOrigin,
+  SnapRestorePlan,
+  SnapRestorePlanOptions,
+  SnapSnapshot,
+  SnapSnapshotDetail,
+} from "@agent-snap/core"
 import { createAgentSnapPlugin } from "../src/v1.js"
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -64,6 +74,9 @@ function fakeClient() {
     async diff() {
       throw new Error("unexpected diff")
     },
+    async restorePlan() {
+      throw new Error("unexpected restorePlan")
+    },
     async close() {
       closed = true
     },
@@ -86,6 +99,9 @@ function detailClient(detail: SnapSnapshotDetail) {
     },
     async diff() {
       throw new Error("unexpected diff")
+    },
+    async restorePlan() {
+      throw new Error("unexpected restorePlan")
     },
     async close() {},
   }
@@ -131,6 +147,7 @@ test("exposes create, list, get, and diff tools", async () => {
   assert.ok(plugin.tool?.agent_snap_list)
   assert.ok(plugin.tool?.agent_snap_get)
   assert.ok(plugin.tool?.agent_snap_diff)
+  assert.ok(plugin.tool?.agent_snap_restore_plan)
   await plugin.dispose?.()
 })
 
@@ -304,6 +321,9 @@ test("a rejected baseline is logged and never unhandled", async () => {
     async diff() {
       throw new Error("unexpected diff")
     },
+    async restorePlan() {
+      throw new Error("unexpected restorePlan")
+    },
     async close() {},
   }
   const plugin = createAgentSnapPlugin({ client, directory: "/fallback", log: (m) => logs.push(m) })
@@ -371,6 +391,9 @@ test("list and get show a stored origin and omit an absent one", async () => {
     },
     async diff() {
       throw new Error("unexpected diff")
+    },
+    async restorePlan() {
+      throw new Error("unexpected restorePlan")
     },
     async close() {},
   }
@@ -596,6 +619,9 @@ function diffClient(result: SnapDiff) {
       diffs.push({ cwd, from, to, page, signal })
       return result
     },
+    async restorePlan() {
+      throw new Error("unexpected restorePlan")
+    },
     async close() {},
   }
   return { client, diffs }
@@ -664,4 +690,286 @@ test("agent_snap_diff rejects while closing", async () => {
     /closing/,
   )
   assert.equal(diffs.length, 0)
+})
+
+const planID = "20261029T101500.123456789Z-1a2b3c4d5e6f"
+const planTree = "9c1e7a3f00000000000000000000000000000000"
+const planSnapshot = { id: planID, commit: "1a2b3c4d5e6f0000000000000000000000000000", tree: "7f3e9b2a00000000000000000000000000000000" }
+const side = (oid: string, mode = "100644") => ({ mode, oid })
+const noTotals = { entries: 0, create: 0, modify: 0, type_change: 0, delete: 0, staged: 0, unstaged: 0, untracked: 0, blocked: 0 }
+const planNotice = "This plan changed nothing. This release cannot apply a restore."
+
+const applicablePlan: SnapRestorePlan = {
+  snapshot: planSnapshot,
+  current_tree: planTree,
+  result_tree: planSnapshot.tree,
+  applicable: true,
+  blockers: [],
+  unmatched: [],
+  offset: 0,
+  totals: { entries: 3, create: 1, modify: 1, type_change: 0, delete: 1, staged: 1, unstaged: 1, untracked: 0, blocked: 0 },
+  entries: [
+    { path: "README.md", action: "modify", current: side("8792505e"), target: side("83db48f8"), unstaged: true },
+    { path: "docs/old.md", action: "delete", current: side("e69de29b"), staged: true },
+    { path: "src/server.go", action: "create", target: side("5716ca59") },
+  ],
+}
+
+const applicableLines = [
+  "Git evidence: restore plan (read-only)",
+  `snapshot ${planID}`,
+  "scope: whole tree",
+  `current_tree ${planTree}`,
+  "applicable: yes",
+  "3 entries: 1 create, 1 modify, 0 type_change, 1 delete. 1 staged, 1 unstaged, 0 untracked, 0 blocked.",
+  "Entries 1-3 of 3.",
+  "",
+  "1  modify  README.md  flags: unstaged",
+  "2  delete  docs/old.md  flags: staged",
+  "3  create  src/server.go",
+  "",
+  planNotice,
+]
+
+const blockedPlan: SnapRestorePlan = {
+  snapshot: planSnapshot,
+  paths: ["src", "docs/missing"],
+  current_tree: planTree,
+  applicable: false,
+  blockers: ["operation_in_progress", "sparse_checkout"],
+  unmatched: ["docs/missing"],
+  offset: 0,
+  totals: { entries: 4, create: 1, modify: 1, type_change: 1, delete: 1, staged: 2, unstaged: 1, untracked: 1, blocked: 2 },
+  entries: [
+    { path: "src/a.go", action: "modify", current: side("8792505e"), target: side("83db48f8"), staged: true, unstaged: true, blocker: "index_flag" },
+    { path: "src/b.go", action: "type_change", current: side("8792505e"), target: side("a1b2c3d4", "120000"), untracked: true },
+    { path: "src/cache.log", action: "create", target: side("5716ca59"), blocker: "untracked_in_the_way" },
+    { path: "src/gone.go", action: "delete", current: side("e69de29b"), staged: true },
+  ],
+}
+
+const blockedLines = [
+  "Git evidence: restore plan (read-only)",
+  `snapshot ${planID}`,
+  "scope: paths",
+  "  src",
+  "  docs/missing",
+  `current_tree ${planTree}`,
+  "applicable: no",
+  "repository blockers:",
+  "  operation_in_progress",
+  "  sparse_checkout",
+  "unmatched paths:",
+  "  docs/missing",
+  "4 entries: 1 create, 1 modify, 1 type_change, 1 delete. 2 staged, 1 unstaged, 1 untracked, 2 blocked.",
+  "Entries 1-4 of 4.",
+  "",
+  "1  modify  src/a.go  flags: staged, unstaged  blocker: index_flag",
+  "2  type_change  src/b.go  flags: untracked",
+  "3  create  src/cache.log  blocker: untracked_in_the_way",
+  "4  delete  src/gone.go  flags: staged",
+  "",
+  planNotice,
+]
+
+const middleTotals = { entries: 9, create: 3, modify: 3, type_change: 1, delete: 2, staged: 0, unstaged: 1, untracked: 0, blocked: 0 }
+
+const middlePage: SnapRestorePlan = {
+  snapshot: planSnapshot,
+  paths: ["src"],
+  current_tree: planTree,
+  result_tree: planSnapshot.tree,
+  applicable: true,
+  blockers: [],
+  unmatched: [],
+  offset: 2,
+  next_offset: 4,
+  totals: middleTotals,
+  entries: [
+    { path: "src/m.go", action: "modify", current: side("8792505e"), target: side("83db48f8"), unstaged: true },
+    { path: "src/n.go", action: "modify", current: side("8792505e"), target: side("83db48f8") },
+  ],
+}
+
+const middleHead = [
+  "Git evidence: restore plan (read-only)",
+  `snapshot ${planID}`,
+]
+
+const middleTail = (call: string) => [
+  `current_tree ${planTree}`,
+  "applicable: yes",
+  "9 entries: 3 create, 3 modify, 1 type_change, 2 delete. 0 staged, 1 unstaged, 0 untracked, 0 blocked.",
+  "Entries 3-4 of 9.",
+  "",
+  "3  modify  src/m.go  flags: unstaged",
+  "4  modify  src/n.go",
+  "",
+  `Entries from 5 on are not shown. Call agent_snap_restore_plan with ${call}, offset 4, and current_tree ${planTree}.`,
+  "",
+  planNotice,
+]
+
+const middleLines = [...middleHead, "scope: paths", "  src", ...middleTail("the same id and paths")]
+
+const { paths: _scope, ...wholeMiddlePage } = middlePage
+
+const wholeMiddleLines = [...middleHead, "scope: whole tree", ...middleTail("the same id")]
+
+const emptyPlan: SnapRestorePlan = {
+  snapshot: planSnapshot,
+  current_tree: planTree,
+  result_tree: planSnapshot.tree,
+  applicable: true,
+  blockers: [],
+  unmatched: [],
+  offset: 0,
+  totals: noTotals,
+  entries: [],
+}
+
+const emptyPlanLines = [
+  "Git evidence: restore plan (read-only)",
+  `snapshot ${planID}`,
+  "scope: whole tree",
+  `current_tree ${planTree}`,
+  "applicable: yes",
+  "0 entries: 0 create, 0 modify, 0 type_change, 0 delete. 0 staged, 0 unstaged, 0 untracked, 0 blocked.",
+  "No entries.",
+  "",
+  planNotice,
+]
+
+const pastEndPlan: SnapRestorePlan = { ...applicablePlan, offset: 5, entries: [] }
+
+const pastEndLines = [...applicableLines.slice(0, 6), "No entries at offset 5.", "", planNotice]
+
+interface RestorePlanCall {
+  cwd: string
+  id: string
+  options?: SnapRestorePlanOptions
+  signal?: AbortSignal
+}
+
+function restorePlanClient(result: SnapRestorePlan, failure?: Error) {
+  const plans: RestorePlanCall[] = []
+  const client: SnapLike = {
+    async create() {
+      throw new Error("unexpected create")
+    },
+    async list() {
+      return []
+    },
+    async get() {
+      throw new Error("unexpected get")
+    },
+    async diff() {
+      throw new Error("unexpected diff")
+    },
+    async restorePlan(cwd, id, options, signal) {
+      plans.push({ cwd, id, options, signal })
+      if (failure !== undefined) throw failure
+      return result
+    },
+    async close() {},
+  }
+  return { client, plans }
+}
+
+async function runRestorePlan(result: SnapRestorePlan): Promise<string> {
+  const { client } = restorePlanClient(result)
+  const plugin = createAgentSnapPlugin({ client, directory: "/repo" })
+  try {
+    return String(await plugin.tool?.agent_snap_restore_plan.execute({ id: planID }, { directory: "/repo", abort: new AbortController().signal } as never))
+  } finally {
+    await plugin.dispose?.()
+  }
+}
+
+test("agent_snap_restore_plan renders an applicable whole-tree plan", async () => {
+  assert.equal(await runRestorePlan(applicablePlan), applicableLines.join("\n"))
+})
+
+test("agent_snap_restore_plan lists repository blockers, unmatched paths, every flag, and every blocker", async () => {
+  assert.equal(await runRestorePlan(blockedPlan), blockedLines.join("\n"))
+})
+
+test("agent_snap_restore_plan names the offset and current_tree of the next page", async () => {
+  assert.equal(await runRestorePlan(middlePage), middleLines.join("\n"))
+  assert.equal(await runRestorePlan(wholeMiddlePage), wholeMiddleLines.join("\n"))
+})
+
+test("agent_snap_restore_plan reports an empty plan and an offset past the end", async () => {
+  assert.equal(await runRestorePlan(emptyPlan), emptyPlanLines.join("\n"))
+  assert.equal(await runRestorePlan(pastEndPlan), pastEndLines.join("\n"))
+})
+
+test("agent_snap_restore_plan passes cwd, id, options only when given, and the abort signal", async () => {
+  const { client, plans } = restorePlanClient(emptyPlan)
+  const plugin = createAgentSnapPlugin({ client, directory: "/fallback" })
+  const abort = new AbortController().signal
+  try {
+    await plugin.tool?.agent_snap_restore_plan.execute({ id: planID }, { directory: "/repo", abort } as never)
+    await plugin.tool?.agent_snap_restore_plan.execute(
+      { id: planID, cwd: "/other", paths: ["src", "docs"], offset: 200, current_tree: planTree },
+      { directory: "/repo", abort } as never,
+    )
+    await plugin.tool?.agent_snap_restore_plan.execute({ id: planID, offset: 0 }, { directory: "/repo", abort } as never)
+    assert.deepEqual(plans, [
+      { cwd: "/repo", id: planID, options: {}, signal: abort },
+      { cwd: "/other", id: planID, options: { paths: ["src", "docs"], offset: 200, currentTree: planTree }, signal: abort },
+      { cwd: "/repo", id: planID, options: { offset: 0 }, signal: abort },
+    ])
+  } finally {
+    await plugin.dispose?.()
+  }
+})
+
+test("agent_snap_restore_plan forwards an aborted signal to the client", async () => {
+  const { client, plans } = restorePlanClient(emptyPlan)
+  const plugin = createAgentSnapPlugin({ client, directory: "/repo" })
+  const controller = new AbortController()
+  controller.abort()
+  try {
+    await plugin.tool?.agent_snap_restore_plan.execute({ id: planID }, { directory: "/repo", abort: controller.signal } as never)
+    assert.equal(plans[0]?.signal?.aborted, true)
+  } finally {
+    await plugin.dispose?.()
+  }
+})
+
+test("agent_snap_restore_plan lets client errors reach the host", async () => {
+  const failure = new Error("agent-snap cannot plan restores")
+  const { client } = restorePlanClient(emptyPlan, failure)
+  const plugin = createAgentSnapPlugin({ client, directory: "/repo" })
+  try {
+    await assert.rejects(() => plugin.tool!.agent_snap_restore_plan.execute({ id: planID }, { directory: "/repo", abort: new AbortController().signal } as never), failure)
+  } finally {
+    await plugin.dispose?.()
+  }
+})
+
+test("agent_snap_restore_plan bounds paths and offset in its schema", async () => {
+  const { client } = restorePlanClient(emptyPlan)
+  const plugin = createAgentSnapPlugin({ client, directory: "/repo" })
+  try {
+    const { paths, offset } = plugin.tool?.agent_snap_restore_plan.args as unknown as Record<string, { safeParse: (value: unknown) => { success: boolean } }>
+    const accepts = (schema: { safeParse: (value: unknown) => { success: boolean } } | undefined, value: unknown) => schema?.safeParse(value).success
+    const many = (count: number) => Array.from({ length: count }, (_, index) => `p${index}`)
+    assert.deepEqual([[], many(1), many(100), many(101), [1]].map((value) => accepts(paths, value)), [false, true, true, false, false])
+    assert.deepEqual([-1, 0, 2147483647, 2147483648, 1.5].map((value) => accepts(offset, value)), [false, true, true, false, false])
+  } finally {
+    await plugin.dispose?.()
+  }
+})
+
+test("agent_snap_restore_plan rejects while closing", async () => {
+  const { client, plans } = restorePlanClient(emptyPlan)
+  const plugin = createAgentSnapPlugin({ client, directory: "/repo" })
+  await plugin.dispose?.()
+  await assert.rejects(
+    () => plugin.tool!.agent_snap_restore_plan.execute({ id: planID }, { directory: "/repo", abort: new AbortController().signal } as never),
+    /closing/,
+  )
+  assert.equal(plans.length, 0)
 })

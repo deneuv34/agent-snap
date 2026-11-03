@@ -1,6 +1,6 @@
 import type { Plugin } from "@opencode/plugin"
 import { SnapClient } from "@agent-snap/core"
-import { createAgentSnap, DESCRIPTIONS, DIFF_BOUNDS, type AgentSnap, type AgentSnapDeps } from "./snapshots.js"
+import { createAgentSnap, DESCRIPTIONS, DIFF_BOUNDS, RESTORE_PLAN_BOUNDS, type AgentSnap, type AgentSnapDeps } from "./snapshots.js"
 
 /** The parts of the OpenCode 2.x plugin context the adapter uses. */
 export interface AgentSnapHost {
@@ -37,6 +37,13 @@ function optionalInteger(input: Input, key: string): number | undefined {
   if (value === undefined) return undefined
   if (typeof value === "number" && Number.isInteger(value)) return value
   throw new TypeError(`${key} must be an integer`)
+}
+
+function optionalStringArray(input: Input, key: string): string[] | undefined {
+  const value = input[key]
+  if (value === undefined) return undefined
+  if (Array.isArray(value) && value.every((item) => typeof item === "string")) return value
+  throw new TypeError(`${key} must be an array of strings`)
 }
 
 function objectSchema(properties: Record<string, object>, required: string[] = []) {
@@ -107,6 +114,37 @@ function registerTools(editor: ToolEditor, snap: AgentSnap, cwdOf: (cwd: string 
       }
       const cwd = optionalString(input, "cwd")
       return { content: await snap.diff(await cwdOf(cwd, context), args, context.signal) }
+    },
+  })
+  editor.add({
+    name: "agent_snap_restore_plan",
+    description: DESCRIPTIONS.restorePlan,
+    input: objectSchema(
+      {
+        id: { type: "string", description: DESCRIPTIONS.id },
+        paths: {
+          type: "array",
+          items: { type: "string" },
+          minItems: RESTORE_PLAN_BOUNDS.paths.min,
+          maxItems: RESTORE_PLAN_BOUNDS.paths.max,
+          description: DESCRIPTIONS.restorePaths,
+        },
+        offset: { type: "integer", minimum: RESTORE_PLAN_BOUNDS.offset.min, maximum: RESTORE_PLAN_BOUNDS.offset.max, description: DESCRIPTIONS.restoreOffset },
+        current_tree: { type: "string", description: DESCRIPTIONS.currentTree },
+        cwd: cwdSchema,
+      },
+      ["id"],
+    ),
+    async execute(raw, context) {
+      const input = inputObject(raw)
+      const args = {
+        id: requiredString(input, "id"),
+        paths: optionalStringArray(input, "paths"),
+        offset: optionalInteger(input, "offset"),
+        current_tree: optionalString(input, "current_tree"),
+      }
+      const cwd = optionalString(input, "cwd")
+      return { content: await snap.restorePlan(await cwdOf(cwd, context), args, context.signal) }
     },
   })
 }

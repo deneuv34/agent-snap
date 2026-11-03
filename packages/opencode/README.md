@@ -14,9 +14,13 @@ OpenCode plugin for agent-snap, for OpenCode 1.x (>= 1.18.18) and 2.x
   subprocess.
 - Tools: `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
   `agent_snap_get(id, cwd?)`,
-  `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)` — all honour
-  the caller's abort signal. `agent_snap_diff` returns one page of Git
+  `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)`,
+  `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)`. Every
+  tool honours the caller's abort signal. `agent_snap_diff` returns one page of Git
   evidence and names the `offset` of the next page.
+  `agent_snap_restore_plan` returns one page of a read-only restore plan,
+  names the `offset` and `current_tree` of the next page, and changes
+  nothing. This release cannot apply a restore.
 - Every snapshot records host `opencode` and source `session-start`,
   `session-idle`, or `tool`. No session identifier is stored.
 

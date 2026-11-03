@@ -5,6 +5,9 @@ import {
   type SnapDiffPage,
   type SnapLike,
   type SnapOrigin,
+  type SnapRestoreEntry,
+  type SnapRestorePlan,
+  type SnapRestorePlanOptions,
   type SnapSnapshot,
   type SnapSnapshotDetail,
 } from "@agent-snap/core"
@@ -17,6 +20,8 @@ export const DESCRIPTIONS = {
   list: "List agent-snap snapshots for a repository, newest first.",
   get: "Describe one agent-snap snapshot by id: its commit, tree, parent, and the files changed since its parent. Read-only. Snapshot ids come from agent_snap_list or agent_snap_create.",
   diff: "Show what changed between two agent-snap snapshots as Git hunks. Read-only. Snapshot ids come from agent_snap_list. Large diffs are paged: pass the offset the output names. Cite findings by path and hunk header.",
+  restorePlan:
+    "Show what restoring a snapshot would change in the working tree, and what would block it. Read-only: it changes nothing, and this release cannot apply a restore. Snapshot ids come from agent_snap_list. Large plans are paged: pass the offset and current_tree the output names.",
   reason: "Why the snapshot is being taken",
   cwd: "Repository directory; defaults to the session directory",
   limit: "Maximum number of snapshots to return",
@@ -25,11 +30,19 @@ export const DESCRIPTIONS = {
   to: "Snapshot id from agent_snap_list to diff to",
   offset: "Index of the first file to show; use the offset the previous page named",
   maxPatchBytes: "Patch byte budget for this page, 1024 to 1048576",
+  restorePaths: "Repository paths to plan, 1 to 100; omit to plan the whole tree",
+  restoreOffset: "Index of the first entry to show; use the offset the previous page named",
+  currentTree: "The current_tree the previous page named; required when offset is above 0",
 } as const
 
 export const DIFF_BOUNDS = {
   offset: { min: 0, max: 2147483647 },
   maxPatchBytes: { min: 1024, max: 1048576 },
+} as const
+
+export const RESTORE_PLAN_BOUNDS = {
+  paths: { min: 1, max: 100 },
+  offset: { min: 0, max: 2147483647 },
 } as const
 
 function formatCreated(snap: SnapSnapshot): string {
@@ -103,6 +116,43 @@ function formatDiff(diff: SnapDiff): string {
   return `${out}\nCite a finding as \`<path> @@ -a,b +c,d @@\` from this output. Lines not shown here are not evidence.`
 }
 
+function formatRestoreEntry(entry: SnapRestoreEntry, number: number): string {
+  const flags = [entry.staged === true ? "staged" : "", entry.unstaged === true ? "unstaged" : "", entry.untracked === true ? "untracked" : ""].filter((flag) => flag !== "")
+  const flagText = flags.length === 0 ? "" : `  flags: ${flags.join(", ")}`
+  const blockerText = entry.blocker === undefined ? "" : `  blocker: ${entry.blocker}`
+  return `${number}  ${entry.action}  ${entry.path}${flagText}${blockerText}\n`
+}
+
+function formatRestorePlan(plan: SnapRestorePlan): string {
+  const { snapshot, paths, totals, entries, offset } = plan
+  let out = `Git evidence: restore plan (read-only)\nsnapshot ${snapshot.id}\n`
+  out += paths === undefined ? "scope: whole tree\n" : `scope: paths\n${paths.map((path) => `  ${path}\n`).join("")}`
+  out += `current_tree ${plan.current_tree}\napplicable: ${plan.applicable ? "yes" : "no"}\n`
+  if (plan.blockers.length > 0) out += `repository blockers:\n${plan.blockers.map((blocker) => `  ${blocker}\n`).join("")}`
+  if (plan.unmatched.length > 0) out += `unmatched paths:\n${plan.unmatched.map((path) => `  ${path}\n`).join("")}`
+  out += `${totals.entries} entries: ${totals.create} create, ${totals.modify} modify, ${totals.type_change} type_change, ${totals.delete} delete. `
+  out += `${totals.staged} staged, ${totals.unstaged} unstaged, ${totals.untracked} untracked, ${totals.blocked} blocked.\n`
+  if (totals.entries === 0) {
+    out += "No entries.\n"
+  } else {
+    out += entries.length === 0 ? `No entries at offset ${offset}.\n` : `Entries ${offset + 1}-${offset + entries.length} of ${totals.entries}.\n`
+    if (entries.length > 0) out += `\n${entries.map((entry, index) => formatRestoreEntry(entry, offset + index + 1)).join("")}`
+  }
+  if (plan.next_offset !== undefined) {
+    const same = paths === undefined ? "the same id" : "the same id and paths"
+    out += `\nEntries from ${plan.next_offset + 1} on are not shown. Call agent_snap_restore_plan with ${same}, offset ${plan.next_offset}, and current_tree ${plan.current_tree}.\n`
+  }
+  return `${out}\nThis plan changed nothing. This release cannot apply a restore.`
+}
+
+function restorePlanOptions(paths: string[] | undefined, offset: number | undefined, currentTree: string | undefined): SnapRestorePlanOptions {
+  const options: SnapRestorePlanOptions = {}
+  if (paths !== undefined) options.paths = paths
+  if (offset !== undefined) options.offset = offset
+  if (currentTree !== undefined) options.currentTree = currentTree
+  return options
+}
+
 function diffPage(offset: number | undefined, maxPatchBytes: number | undefined): SnapDiffPage {
   const page: SnapDiffPage = {}
   if (offset !== undefined) page.offset = offset
@@ -123,6 +173,13 @@ export interface DiffArgs {
   max_patch_bytes?: number
 }
 
+export interface RestorePlanArgs {
+  id: string
+  paths?: string[]
+  offset?: number
+  current_tree?: string
+}
+
 /** Host-neutral session lifecycle and tool operations shared by the OpenCode 1.x and 2.x adapters. */
 export interface AgentSnap {
   sessionCreated(sessionID: string, dir: string): void
@@ -133,6 +190,7 @@ export interface AgentSnap {
   list(cwd: string, limit: number | undefined, signal: AbortSignal): Promise<string>
   get(cwd: string, id: string, signal: AbortSignal): Promise<string>
   diff(cwd: string, args: DiffArgs, signal: AbortSignal): Promise<string>
+  restorePlan(cwd: string, args: RestorePlanArgs, signal: AbortSignal): Promise<string>
   dispose(): Promise<void>
 }
 
@@ -233,6 +291,10 @@ export function createAgentSnap(deps: AgentSnapDeps): AgentSnap {
     async diff(cwd, args, signal) {
       open()
       return formatDiff(await client.diff(cwd, args.from, args.to, diffPage(args.offset, args.max_patch_bytes), signal))
+    },
+    async restorePlan(cwd, args, signal) {
+      open()
+      return formatRestorePlan(await client.restorePlan(cwd, args.id, restorePlanOptions(args.paths, args.offset, args.current_tree), signal))
     },
     async dispose() {
       closing = true
