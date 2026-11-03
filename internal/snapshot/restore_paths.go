@@ -256,7 +256,8 @@ func onDisk(root, p string) string { return filepath.Join(root, filepath.FromSla
 
 // diskProbe never follows a symbolic link. It reads a directory only after
 // Lstat reports a real one, and a path it cannot inspect is in the way. On a
-// working tree that folds case it reads each directory at most once.
+// working tree that folds case, caseSpelling lists each directory's names at
+// most once and checks at most once whether the restore keeps a directory.
 type diskProbe struct {
 	root    string
 	removed map[string]bool
@@ -324,7 +325,7 @@ const (
 // caseSpelling finds parents by the names a real directory stores. Resolving
 // a name on a volume that folds case would hide the spelling that Git writes
 // into.
-func (d diskProbe) caseSpelling(path string, heldDir func(string) bool) caseSpelling {
+func (d diskProbe) caseSpelling(path string, spelled func(string) bool) caseSpelling {
 	if d.listed == nil {
 		return spellingClear
 	}
@@ -340,7 +341,7 @@ func (d diskProbe) caseSpelling(path string, heldDir func(string) bool) caseSpel
 			return spellingClear
 		}
 		disk = joinPath(disk, entry.Name())
-		if entry.Name() != name && !heldDir(dir) {
+		if entry.Name() != name && !spelled(dir) {
 			if d.keeps(disk) {
 				return spellingByCase
 			}
