@@ -77,6 +77,67 @@ export interface SnapDiffPage {
   maxPatchBytes?: number
 }
 
+export type SnapRestoreAction = "create" | "modify" | "type_change" | "delete"
+
+export type SnapRestoreRepoBlocker = "operation_in_progress" | "unmerged_index" | "sparse_checkout"
+
+export type SnapRestorePathBlocker =
+  | "unaddressable_path"
+  | "unsafe_path"
+  | "submodule"
+  | "parent_conflict"
+  | "index_flag"
+  | "name_collision"
+  | "untracked_in_the_way"
+
+export interface SnapRestoreSide {
+  mode: string
+  oid: string
+}
+
+export interface SnapRestoreEntry {
+  path: string
+  action: SnapRestoreAction
+  current?: SnapRestoreSide
+  target?: SnapRestoreSide
+  staged?: true
+  unstaged?: true
+  untracked?: true
+  blocker?: SnapRestorePathBlocker
+}
+
+export interface SnapRestoreTotals {
+  entries: number
+  create: number
+  modify: number
+  type_change: number
+  delete: number
+  staged: number
+  unstaged: number
+  untracked: number
+  blocked: number
+}
+
+export interface SnapRestorePlan {
+  snapshot: { id: string; commit: string; tree: string }
+  paths?: string[]
+  current_tree: string
+  result_tree?: string
+  applicable: boolean
+  blockers: SnapRestoreRepoBlocker[]
+  unmatched: string[]
+  offset: number
+  next_offset?: number
+  totals: SnapRestoreTotals
+  entries: SnapRestoreEntry[]
+}
+
+export interface SnapRestorePlanOptions {
+  paths?: string[]
+  offset?: number
+  currentTree?: string
+}
+
 export interface SnapListResult {
   snapshots: SnapSnapshot[]
 }
@@ -91,5 +152,6 @@ export interface SnapLike {
   list(cwd: string, limit?: number, signal?: AbortSignal): Promise<SnapSnapshot[]>
   get(cwd: string, id: string, signal?: AbortSignal): Promise<SnapSnapshotDetail>
   diff(cwd: string, from: string, to: string, page?: SnapDiffPage, signal?: AbortSignal): Promise<SnapDiff>
+  restorePlan(cwd: string, id: string, options?: SnapRestorePlanOptions, signal?: AbortSignal): Promise<SnapRestorePlan>
   close(): Promise<void>
 }

@@ -6,8 +6,15 @@
   restore plan (FR-15). It lists what restoring a snapshot would change and
   what would block it, and it writes nothing to the repository. A request
   that carries a `current_tree` the working tree no longer captures to fails
-  with the new error code `-32002`. `SnapClient`, the CLI, and the host tools
-  do not expose it yet.
+  with the new error code `-32002`. The CLI and the host tools do not expose
+  it yet.
+- `SnapClient.restorePlan(cwd, id, options?, signal?)` sends
+  `snapshot.restore_plan` and returns the validated restore plan. It rejects a
+  plan that breaks the section 8.5 rules with `SnapProtocolError`. When the
+  installed `agent-snap` answers `-32601`, it rejects with the new
+  `SnapRestorePlanUnsupportedError`, which extends `SnapRpcError`. `SnapLike`
+  gains `restorePlan`. The CLI and the host tools do not expose restore plans
+  yet.
 - `snapshot.create` no longer writes or deletes shared index files in a
   repository with `core.splitIndex=true`. Each create wrote a new
   `sharedindex.<oid>` file into the Git directory. Git also deleted every

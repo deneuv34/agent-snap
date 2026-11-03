@@ -21,6 +21,14 @@ import type {
   SnapDiffStatus,
   SnapListResult,
   SnapOrigin,
+  SnapRestoreAction,
+  SnapRestoreEntry,
+  SnapRestorePathBlocker,
+  SnapRestorePlan,
+  SnapRestorePlanOptions,
+  SnapRestoreRepoBlocker,
+  SnapRestoreSide,
+  SnapRestoreTotals,
   SnapSnapshot,
   SnapSnapshotDetail,
 } from "./types.js"
@@ -33,6 +41,13 @@ export class SnapRpcError extends Error {
     super(message)
     this.name = "SnapRpcError"
     this.code = code
+  }
+}
+
+export class SnapRestorePlanUnsupportedError extends SnapRpcError {
+  constructor() {
+    super(-32601, "the installed agent-snap cannot plan restores; upgrade agent-snap")
+    this.name = "SnapRestorePlanUnsupportedError"
   }
 }
 
@@ -411,6 +426,207 @@ function validateDiff(result: unknown): SnapDiff {
   }
 }
 
+const MAX_RESTORE_ENTRIES = 200
+const MAX_RESTORE_PATHS = 100
+const MAX_RESTORE_PATH_BYTES = 4096
+const RESTORE_ACTIONS: readonly string[] = ["create", "modify", "type_change", "delete"]
+const RESTORE_REPO_BLOCKERS: readonly string[] = ["operation_in_progress", "unmerged_index", "sparse_checkout"]
+const RESTORE_PATH_BLOCKERS: readonly string[] = [
+  "unaddressable_path",
+  "unsafe_path",
+  "submodule",
+  "parent_conflict",
+  "index_flag",
+  "name_collision",
+  "untracked_in_the_way",
+]
+const ACTION_TOTALS = ["create", "modify", "type_change", "delete"] as const
+const FLAG_TOTALS = ["staged", "unstaged", "untracked", "blocked"] as const
+const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
+const FILE_MODE = /^[0-7]{6}$/
+const utf8 = new TextEncoder()
+
+function restorePlanError(message: string): SnapProtocolError {
+  return new SnapProtocolError(`snapshot.restore_plan result ${message}`)
+}
+
+function isObjectId(value: unknown, length?: number): value is string {
+  return typeof value === "string" && OBJECT_ID.test(value) && (length === undefined || value.length === length)
+}
+
+function compareBytes(a: string, b: string): number {
+  const left = utf8.encode(a)
+  const right = utf8.encode(b)
+  const shared = Math.min(left.length, right.length)
+  for (let i = 0; i < shared; i++) {
+    if (left[i] !== right[i]) return (left[i] as number) - (right[i] as number)
+  }
+  return left.length - right.length
+}
+
+function isRepositoryPath(path: string): boolean {
+  if (path.length === 0 || path.includes("\0") || utf8.encode(path).length > MAX_RESTORE_PATH_BYTES) return false
+  return path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..")
+}
+
+function validateRestoreScope(paths: unknown): string[] | undefined {
+  if (paths === undefined) return undefined
+  if (!isStringArray(paths) || paths.length < 1 || paths.length > MAX_RESTORE_PATHS) {
+    throw restorePlanError("has malformed paths")
+  }
+  if (!paths.every(isRepositoryPath)) throw restorePlanError("has a path that is not a repository path")
+  const overlaps = paths.some((path, i) =>
+    paths.some((other, j) => i !== j && (path === other || other.startsWith(`${path}/`))),
+  )
+  if (overlaps) throw restorePlanError("has overlapping paths")
+  return paths
+}
+
+function validateRestoreSide(side: unknown, oidLength: number): SnapRestoreSide {
+  if (!isRecord(side) || typeof side.mode !== "string" || !FILE_MODE.test(side.mode) || !isObjectId(side.oid, oidLength)) {
+    throw restorePlanError("has a malformed mode or object ID")
+  }
+  return { mode: side.mode, oid: side.oid }
+}
+
+function isOptionalTrue(value: unknown): value is true | undefined {
+  return value === undefined || value === true
+}
+
+function validateRestoreEntry(entry: unknown, oidLength: number): SnapRestoreEntry {
+  if (!isRecord(entry)) throw restorePlanError("has a malformed entry")
+  const { path, action, current, target, staged, unstaged, untracked, blocker } = entry
+  if (typeof path !== "string" || path.length === 0) throw restorePlanError("has a malformed entry path")
+  if (typeof action !== "string" || !RESTORE_ACTIONS.includes(action)) throw restorePlanError("has a malformed entry action")
+  if ((action === "create") !== (current === undefined)) {
+    throw restorePlanError("entry current must be absent exactly for create")
+  }
+  if ((action === "delete") !== (target === undefined)) {
+    throw restorePlanError("entry target must be absent exactly for delete")
+  }
+  if (!isOptionalTrue(staged) || !isOptionalTrue(unstaged) || !isOptionalTrue(untracked)) {
+    throw restorePlanError("has a malformed entry flag")
+  }
+  if (unstaged !== undefined && untracked !== undefined) {
+    throw restorePlanError("entry cannot be both unstaged and untracked")
+  }
+  if (blocker !== undefined && (typeof blocker !== "string" || !RESTORE_PATH_BLOCKERS.includes(blocker))) {
+    throw restorePlanError("has a malformed entry blocker")
+  }
+  if (blocker === "unaddressable_path" && !path.includes("\uFFFD")) {
+    throw restorePlanError("unaddressable_path entry must carry a repaired path")
+  }
+  return {
+    path,
+    action: action as SnapRestoreAction,
+    current: current === undefined ? undefined : validateRestoreSide(current, oidLength),
+    target: target === undefined ? undefined : validateRestoreSide(target, oidLength),
+    staged,
+    unstaged,
+    untracked,
+    blocker: blocker as SnapRestorePathBlocker | undefined,
+  }
+}
+
+function validateRestoreTotals(totals: unknown): SnapRestoreTotals {
+  if (!isRecord(totals) || !["entries", ...ACTION_TOTALS, ...FLAG_TOTALS].every((key) => isCount(totals[key]))) {
+    throw restorePlanError("has malformed totals")
+  }
+  const counts = totals as unknown as SnapRestoreTotals
+  if (ACTION_TOTALS.reduce((sum, key) => sum + counts[key], 0) !== counts.entries) {
+    throw restorePlanError("totals.entries must equal the sum of the actions")
+  }
+  if (FLAG_TOTALS.some((key) => counts[key] > counts.entries)) throw restorePlanError("has a flag total above totals.entries")
+  return {
+    entries: counts.entries,
+    create: counts.create,
+    modify: counts.modify,
+    type_change: counts.type_change,
+    delete: counts.delete,
+    staged: counts.staged,
+    unstaged: counts.unstaged,
+    untracked: counts.untracked,
+    blocked: counts.blocked,
+  }
+}
+
+function validateRestoreBlockers(blockers: unknown): SnapRestoreRepoBlocker[] {
+  if (!Array.isArray(blockers)) throw restorePlanError("has malformed blockers")
+  let previous = -1
+  for (const blocker of blockers) {
+    const rank = typeof blocker === "string" ? RESTORE_REPO_BLOCKERS.indexOf(blocker) : -1
+    if (rank === -1) throw restorePlanError("has a malformed repository blocker")
+    if (rank <= previous) throw restorePlanError("repository blockers must be unique and in FR-15 order")
+    previous = rank
+  }
+  return blockers as SnapRestoreRepoBlocker[]
+}
+
+// Entries are in byte order before the server repairs invalid UTF-8, so a
+// repaired path can sit anywhere. Only the addressable paths are comparable.
+function requireIncreasingPaths(entries: SnapRestoreEntry[]): void {
+  let previous: string | undefined
+  for (const entry of entries) {
+    if (entry.blocker === "unaddressable_path") continue
+    if (previous !== undefined && compareBytes(previous, entry.path) >= 0) {
+      throw restorePlanError("entry paths must be strictly increasing in byte order")
+    }
+    previous = entry.path
+  }
+}
+
+function validateRestorePlan(result: unknown): SnapRestorePlan {
+  if (!isRecord(result)) throw restorePlanError("must be an object")
+  const { snapshot, paths, current_tree, result_tree, applicable, blockers, unmatched, offset, next_offset, totals, entries } = result
+  if (!isObjectId(current_tree)) throw restorePlanError("has a malformed current_tree")
+  const oidLength = current_tree.length
+  if (
+    !isRecord(snapshot) ||
+    typeof snapshot.id !== "string" ||
+    typeof snapshot.commit !== "string" ||
+    !isObjectId(snapshot.tree, oidLength)
+  ) {
+    throw restorePlanError("has a malformed snapshot")
+  }
+  if (result_tree !== undefined && !isObjectId(result_tree, oidLength)) throw restorePlanError("has a malformed result_tree")
+  const scope = validateRestoreScope(paths)
+  if (typeof applicable !== "boolean") throw restorePlanError("has a malformed applicable flag")
+  const repoBlockers = validateRestoreBlockers(blockers)
+  if (!isStringArray(unmatched) || !unmatched.every((path) => scope?.includes(path))) {
+    throw restorePlanError("has malformed unmatched paths")
+  }
+  if (!isCount(offset) || (next_offset !== undefined && !isCount(next_offset))) {
+    throw restorePlanError("has a malformed offset")
+  }
+  const checkedTotals = validateRestoreTotals(totals)
+  if (!Array.isArray(entries) || entries.length > MAX_RESTORE_ENTRIES) throw restorePlanError("has malformed entries")
+  const checkedEntries = entries.map((entry) => validateRestoreEntry(entry, oidLength))
+  requireIncreasingPaths(checkedEntries)
+  if (entries.length > 0 && offset + entries.length > checkedTotals.entries) {
+    throw restorePlanError("page extends past totals.entries")
+  }
+  const end = offset + entries.length
+  if (end < checkedTotals.entries ? next_offset !== end : next_offset !== undefined) {
+    throw restorePlanError("next_offset must be offset plus the page length exactly when entries remain")
+  }
+  const expectApplicable = repoBlockers.length === 0 && unmatched.length === 0 && checkedTotals.blocked === 0
+  if (applicable !== expectApplicable) throw restorePlanError("applicable disagrees with its blockers, unmatched paths, and totals")
+  if (applicable && result_tree === undefined) throw restorePlanError("applicable plan must carry a result_tree")
+  return {
+    snapshot: { id: snapshot.id, commit: snapshot.commit, tree: snapshot.tree },
+    paths: scope,
+    current_tree,
+    result_tree,
+    applicable,
+    blockers: repoBlockers,
+    unmatched,
+    offset,
+    next_offset,
+    totals: checkedTotals,
+    entries: checkedEntries,
+  }
+}
+
 function validateResult(method: string, result: unknown): unknown {
   switch (method) {
     case "ping": {
@@ -432,6 +648,8 @@ function validateResult(method: string, result: unknown): unknown {
       return validateDetail(result)
     case "snapshot.diff":
       return validateDiff(result)
+    case "snapshot.restore_plan":
+      return validateRestorePlan(result)
     default:
       throw new SnapProtocolError(`response for "${method}" has a result this client cannot validate`)
   }
@@ -542,6 +760,19 @@ export class SnapClient {
     if (page?.offset !== undefined) params.offset = page.offset
     if (page?.maxPatchBytes !== undefined) params.max_patch_bytes = page.maxPatchBytes
     return this.request<SnapDiff>("snapshot.diff", params, { signal })
+  }
+
+  async restorePlan(cwd: string, id: string, options?: SnapRestorePlanOptions, signal?: AbortSignal): Promise<SnapRestorePlan> {
+    const params: Record<string, unknown> = { cwd, id }
+    if (options?.paths !== undefined) params.paths = options.paths
+    if (options?.offset !== undefined) params.offset = options.offset
+    if (options?.currentTree !== undefined) params.current_tree = options.currentTree
+    try {
+      return await this.request<SnapRestorePlan>("snapshot.restore_plan", params, { signal })
+    } catch (error) {
+      if (error instanceof SnapRpcError && error.code === -32601) throw new SnapRestorePlanUnsupportedError()
+      throw error
+    }
   }
 
   /**
