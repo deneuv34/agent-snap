@@ -224,7 +224,12 @@ func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snaps
 	if err != nil {
 		return Snapshot{}, err
 	}
+	return s.recordTree(ctx, env, tree, head, reason, origin)
+}
 
+// recordTree records tree as the newest snapshot, or returns latest when it
+// already holds tree.
+func (s *Store) recordTree(ctx context.Context, env []string, tree, head, reason string, origin Origin) (Snapshot, error) {
 	for {
 		if symref, err := s.isSymref(ctx, s.latestRef()); err != nil {
 			return Snapshot{}, err

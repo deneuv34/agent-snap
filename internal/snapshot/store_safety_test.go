@@ -587,3 +587,54 @@ func TestCreateUnderSplitIndexLeavesTheGitDirectoryUnchanged(t *testing.T) {
 	}
 	git(t, dir, "ls-files", "--stage")
 }
+
+func TestConcurrentRecordsLandEveryDistinctTree(t *testing.T) {
+	dir := testRepo(t)
+	store := newStore(t, dir)
+	head := git(t, dir, "rev-parse", "HEAD")
+	const n = 16
+	trees := make([]string, n)
+	for i := range trees {
+		entry := fmt.Sprintf("100644 blob %s\tfile.txt\n", blobOf(t, dir, fmt.Sprintf("content-%d\n", i)))
+		tree, err := store.gitStdin(context.Background(), nil, entry, "mktree")
+		if err != nil {
+			t.Fatal(err)
+		}
+		trees[i] = tree
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	snaps := make([]Snapshot, n)
+	for i := range trees {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			snaps[i], errs[i] = store.recordTree(context.Background(), nil, trees[i], head, fmt.Sprintf("record-%d", i), Origin{})
+		}(i)
+	}
+	wg.Wait()
+
+	ids, commits := map[string]bool{}, map[string]bool{}
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("record %d failed: %v", i, err)
+		}
+		if snaps[i].Reused {
+			t.Fatalf("record %d of a distinct tree was reused", i)
+		}
+		ids[snaps[i].ID], commits[snaps[i].Commit] = true, true
+	}
+	if len(ids) != n || len(commits) != n {
+		t.Fatalf("got %d ids and %d commits, want %d distinct snapshots", len(ids), len(commits), n)
+	}
+	chain := strings.Fields(git(t, dir, "rev-list", store.latestRef(), "^"+head))
+	if len(chain) != n {
+		t.Fatalf("latest chain holds %d commits, want %d", len(chain), n)
+	}
+	for _, commit := range chain {
+		if !commits[commit] {
+			t.Fatalf("latest chain holds %s, which no record returned", commit)
+		}
+	}
+}
