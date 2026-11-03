@@ -116,6 +116,14 @@
   request in flight, stops its Git children, removes the directory, and
   exits. SIGKILL and Windows `taskkill /F` still run no cleanup. See
   docs/DIAGNOSTICS.md.
+- `snapshot.create` fails within about a second when a snapshot ref lock
+  stays held. Before, a `latest.lock` or item lock that no process held made
+  every later create retry until the client timed out. Git leaves such a lock
+  when it dies inside its ref transaction, for example after `kill -9`. The
+  `-32603` error names the lock file by its path in the Git directory and says
+  to remove it only when no `agent-snap` or Git process is running. Blink
+  never removes the lock itself. Creates that contend with each other still
+  succeed. See docs/DIAGNOSTICS.md.
 
 ## 0.1.0
 

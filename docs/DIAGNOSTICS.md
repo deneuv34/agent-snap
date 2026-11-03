@@ -35,6 +35,7 @@ blob or working-tree payload to host logs.
 | `snapshot ref … is a symbolic ref; refusing to update it` / `refusing to read it` | A hidden ref is a symlink into another ref | Do not retarget `refs/agent-snapshots/*`. Inspect the ref name only. |
 | `snapshot ref … points at a …, not a commit` / `does not match its id` / `has more than one parent` / `which agent-snap did not write` | An item ref was edited by hand or repointed at a commit agent-snap did not create | Lookup refuses tampered item refs. Delete the bad ref with `git update-ref -d`; do not repoint it. |
 | `update refs` / CAS failure | Concurrent create lost the compare-and-swap | Retry is the client's job on the next create. Confirm the ref namespace is the worktree's. |
+| `snapshot ref lock refs/agent-snapshots/<namespace>/latest.lock in the Git directory stayed held for 1s` (or an `items/<id>.lock`) | A Git process died inside its ref transaction and left the lock, or another process held it for over a second | Check that no `agent-snap` or `git` process runs for this repository. Then remove that one file, under the directory that `git rev-parse --git-common-dir` prints. Remove no other file. Blink never removes the lock itself. |
 | `git …` with object-format / git-dir errors | Broken Git dir or unsupported repo | Confirm SHA-1 or SHA-256 repo; inherited `GIT_*` must not redirect the repo. |
 | `create evidence repository: …` | Git could not create the private bare repository that `snapshot.diff` runs in | The temp directory outside the worktree is writable, and Git is 2.30 or newer. The repository is unchanged. |
 | `object directory … cannot be written to an alternates file` | The repository's object directory path contains a line break | Move the repository to a path without line breaks. |
@@ -116,9 +117,11 @@ Do not attach it to a report.
 
 On POSIX the guardian sends SIGTERM to the process group. `agent-snap`
 cancels the request in flight and sends SIGTERM to its Git child, so Git
-removes its own ref lock files. A Git or hook still running 500 ms later is
-killed. `agent-snap` then removes the directory and exits. The guardian sends SIGKILL to the group
-`KILL_GRACE_MS` (2 seconds) later. A directory that is still being removed
+removes its own ref lock files. When its Git child still runs 500 ms later,
+`agent-snap` kills that child. It kills no hook or filter that Git started.
+`agent-snap` then removes the directory and exits. The guardian sends SIGKILL
+to the group `KILL_GRACE_MS` (2 seconds) later, which ends a hook or filter
+that ignored SIGTERM. A directory that is still being removed
 then stays behind, in part or in full. A restore plan over a working tree
 with tens of thousands of new or changed files can need that long.
 A SIGKILL sent straight to `agent-snap` also leaves its directory.
