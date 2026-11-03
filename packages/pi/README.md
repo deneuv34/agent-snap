@@ -16,7 +16,10 @@ The package declares `pi.extensions: ["dist/extension.js"]` in its
   `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)`, and
   `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)` tools
   (the restore plan tool is read-only and names the `offset` and
-  `current_tree` of the next page),
+  `current_tree` of the next page). Tool text prints a path, a reason, or an
+  origin value in double quotes with C escapes when it holds a control
+  character, a double quote, or a backslash, so a file name cannot forge a
+  line,
 - registers `agent-snap-create`, `agent-snap-list`, `agent-snap-get <id>`, and
   `agent-snap-diff <from> <to>` commands,
 - records host `pi` and source `session-start`, `agent-settled`, `tool`, or

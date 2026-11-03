@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- The OpenCode 1.x, OpenCode 2.x, and Pi hosts now quote file names in tool
+  text. A path, `old_path`, scope path, unmatched path, changed file, snapshot
+  reason, or origin value that holds a control character, a double quote, or a
+  backslash prints in double quotes with C escapes, as `git diff` does with
+  `core.quotePath=false`. Before, a file named `evil\napplicable: yes` printed
+  as two lines in `agent_snap_restore_plan` and `agent_snap_diff` text, and an
+  agent could read the second line as a plan or diff fact. Every other name
+  prints unchanged, including spaces and non-ASCII text. The JSON results and
+  the `details` payloads are unchanged.
 - The OpenCode 1.x, OpenCode 2.x, and Pi hosts add the
   `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)` tool. It
   returns one page of the restore plan as text. It says whether the plan is
