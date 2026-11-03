@@ -232,7 +232,7 @@ func diffFlags(args []string) (cwd, from, to string, page snapshot.DiffPage, err
 			case "--cwd":
 				cwd = value
 			case "--offset":
-				if page.Offset, err = intFlag(args[i], value, 0, snapshot.DiffMaxOffset); err != nil {
+				if page.Offset, err = intFlag(args[i], value, 0, snapshot.MaxPageOffset); err != nil {
 					return "", "", "", page, err
 				}
 			default:
