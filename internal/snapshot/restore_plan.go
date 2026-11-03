@@ -242,15 +242,17 @@ func (p *plan) removed() []string {
 }
 
 type world struct {
-	index   indexView
-	head    headView
-	disk    diskProbe
-	nodes   map[string][]string
-	spelled map[string]bool
+	index      indexView
+	head       headView
+	disk       diskProbe
+	ignoreCase bool
+	nodes      map[string][]string
+	spelled    map[string]bool
 }
 
-func newWorld(root string, p *plan, index indexView, head headView, folds bool) *world {
-	w := &world{index: index, head: head, disk: newDiskProbe(root, p.removed(), folds)}
+func newWorld(root string, p *plan, index indexView, head headView, ignoreCase bool) *world {
+	folds := ignoreCase || foldingProbe(root, p.current)
+	w := &world{index: index, head: head, disk: newDiskProbe(root, p.removed(), folds), ignoreCase: ignoreCase}
 	if folds {
 		w.nodes = foldNodes(p.result)
 		w.spelled = map[string]bool{}
@@ -344,10 +346,15 @@ func (w *world) caseSpelling(p *plan, c *change) caseSpelling {
 }
 
 // headSpells reports whether a capture after the restore spells dir as the
-// result tree does. The capture seeds its index from HEAD, and Git spells a
-// new path's parent as an index directory does. Only a HEAD path that the
-// result tree holds below dir keeps that spelling in the index.
+// result tree does. The capture seeds its index from HEAD. With core.ignorecase
+// true, Git spells a new path's parent as an index directory does. Only a HEAD
+// path that the result tree holds below dir keeps that spelling in the index.
+// With core.ignorecase false on a volume that folds case, Git matches index
+// paths by bytes and records the disk spelling.
 func (w *world) headSpells(result listing, dir string) bool {
+	if !w.ignoreCase {
+		return false
+	}
 	spelled, ok := w.spelled[dir]
 	if !ok {
 		for i, _ := result.find(dir + "/"); !spelled && i < len(result) && strings.HasPrefix(result[i].path, dir+"/"); i++ {
