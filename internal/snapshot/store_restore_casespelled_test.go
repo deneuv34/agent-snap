@@ -348,3 +348,62 @@ func applyWithGit(t *testing.T, dir string, plan RestorePlan) {
 	run("", "update-index", "-q", "--refresh")
 	run("", "read-tree", "-m", "-u", plan.CurrentTree, plan.ResultTree)
 }
+
+func TestPlanRestoreBlocksAWriteBelowACaseSpelledParentHEADHoldsWhenCoreIgnorecaseIsFalse(t *testing.T) {
+	cases := []struct {
+		name       string
+		head, snap map[string]string
+		scopes     [][]string
+	}{
+		{
+			"the restore creates the HEAD path below the parent",
+			map[string]string{"dir/z": "head\n"},
+			map[string]string{"dir/y": "snapshot\n"},
+			[][]string{nil, {"dir/y", "dir/z"}},
+		},
+		{
+			"the restore recreates a HEAD path gone from disk",
+			map[string]string{"dir/a": "head\n"},
+			map[string]string{"dir/y": "snapshot\n"},
+			[][]string{nil, {"dir/a"}},
+		},
+	}
+	for _, c := range cases {
+		for _, paths := range c.scopes {
+			t.Run(fmt.Sprintf("%s %q", c.name, paths), func(t *testing.T) {
+				dir := testRepo(t)
+				if !foldsCase(t, dir) {
+					t.Skip("Git writes into a parent spelled by case on disk only when the volume folds case")
+				}
+				git(t, dir, "config", "core.ignorecase", "false")
+				writeFile(t, dir, ".gitignore", "*.log\n")
+				writeFiles(t, dir, c.head)
+				git(t, dir, "add", ".")
+				git(t, dir, "commit", "-q", "-m", "head")
+				store := newStore(t, dir)
+				writeFiles(t, dir, c.snap)
+				id := create(t, store, "snapshot").ID
+				removeAll(t, dir, "dir")
+				writeFile(t, dir, "Dir/x.log", "ignored\n")
+
+				scope := WholeTree()
+				if paths != nil {
+					scope = scopeOf(t, paths...)
+				}
+				plan := planAndCheck(t, dir, store, id, PlanQuery{Scope: scope})
+				if len(plan.Entries) == 0 {
+					t.Fatal("the plan has no entries")
+				}
+				for _, e := range plan.Entries {
+					if e.Blocker != BlockNameCollision {
+						t.Errorf("%s: blocker %q, want %q", e.Path, e.Blocker, BlockNameCollision)
+					}
+				}
+				applyWithGit(t, dir, plan)
+				if captured := get(t, store, create(t, store, "after").ID).Tree; captured == plan.ResultTree {
+					t.Fatal("Git's apply captures the result tree, so the block is not needed")
+				}
+			})
+		}
+	}
+}
