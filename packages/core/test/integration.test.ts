@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SnapClient, SnapRpcError } from "../src/index.js"
@@ -420,3 +420,67 @@ test(
     }
   },
 )
+
+for (const operation of ["create", "restorePlan"] as const) {
+  test(
+    `abort mid-git ${operation} removes its scratch directory, kills its git tree, and lands no ref`,
+    { skip: bin === undefined ? "AGENT_SNAP_BIN not set" : process.platform === "win32" ? "Windows teardown is taskkill /F, which runs no cleanup" : false },
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "agent-snap-abort-"))
+      const scratch = mkdtempSync(join(tmpdir(), "agent-snap-abort-scratch-"))
+      const started = join(mkdtempSync(join(tmpdir(), "agent-snap-abort-signal-")), "started")
+      let client: SnapClient | undefined
+      try {
+        git(dir, ["init", "-b", "main"])
+        writeFileSync(join(dir, "slow.txt"), "one\n")
+        git(dir, ["add", "slow.txt"])
+        git(dir, ["commit", "-m", "initial"])
+        const seeder = new SnapClient({ bin })
+        const seed = await seeder.create(dir, "seed").finally(() => seeder.close())
+        git(dir, ["config", "filter.sleepy.clean", `touch "${started}"; sleep 37; cat`])
+        writeFileSync(join(dir, ".gitattributes"), "*.txt filter=sleepy\n")
+        writeFileSync(join(dir, "slow.txt"), "two\n")
+        const refsBefore = git(dir, ["for-each-ref", "refs/agent-snapshots/"])
+
+        client = new SnapClient({ bin, env: { TMPDIR: scratch } })
+        const controller = new AbortController()
+        const pending =
+          operation === "create"
+            ? client.create(dir, "aborted", controller.signal)
+            : client.restorePlan(dir, seed.id, undefined, controller.signal)
+        const deadline = Date.now() + 10_000
+        while (!existsSync(started)) {
+          if (Date.now() > deadline) throw new Error("the sleepy filter never started")
+          await new Promise((resolve) => setTimeout(resolve, 25))
+        }
+        const agentPid = client.pid
+        assert.ok(agentPid !== undefined, "client pid must be known while the request is in flight")
+        const tracked = pgrep(["-g", String(agentPid)]).map(Number)
+        assert.ok(
+          tracked.some((pid) => commandOf(pid).includes("sleep 37")),
+          `expected the sleepy filter in process group ${agentPid}`,
+        )
+        assert.equal(readdirSync(scratch).filter((name) => name.startsWith("agent-snap-index-")).length, 1)
+
+        controller.abort()
+        await assert.rejects(() => pending, { name: "AbortError" })
+        const refsAtCancel = git(dir, ["for-each-ref", "refs/agent-snapshots/"])
+        await client.close()
+
+        assert.deepEqual(readdirSync(scratch), [], "the aborted request left its scratch directory behind")
+        assert.deepEqual(
+          tracked.filter((pid) => processState(pid) === "live"),
+          [],
+          "a git child outlived the aborted request",
+        )
+        assert.equal(refsAtCancel, refsBefore, "the aborted request landed a snapshot ref")
+        assert.equal(git(dir, ["for-each-ref", "refs/agent-snapshots/"]), refsBefore, "a snapshot ref appeared after the cancel was reported")
+      } finally {
+        await client?.close().catch(() => {})
+        rmSync(dir, { recursive: true, force: true })
+        rmSync(scratch, { recursive: true, force: true })
+        rmSync(join(started, ".."), { recursive: true, force: true })
+      }
+    },
+  )
+}

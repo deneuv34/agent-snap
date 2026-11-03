@@ -10,7 +10,6 @@ import (
 	"hash"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -181,7 +180,7 @@ func (s *Store) evidenceRepo(ctx context.Context, dir string) (string, []string,
 		format = "sha256"
 	}
 	gitDir := filepath.Join(dir, "evidence.git")
-	cmd := exec.CommandContext(ctx, "git", "init", "--quiet", "--bare", "--template=", "--object-format="+format, gitDir)
+	cmd := gitCmd(ctx, "init", "--quiet", "--bare", "--template=", "--object-format="+format, gitDir)
 	cmd.Dir = dir
 	cmd.Env = env
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -218,7 +217,7 @@ func diffArgs(gitDir, fromTree, toTree string) []string {
 func runDiff(ctx context.Context, dir string, env, args []string, offset, budget int) (diffPage, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, "git", args...)
+	cmd := gitCmd(runCtx, args...)
 	cmd.Dir = dir
 	cmd.Env = env
 	stderr := &cappedBuffer{limit: diffStderrLimit}

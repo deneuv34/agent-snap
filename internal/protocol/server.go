@@ -43,12 +43,40 @@ const (
 	CodeStalePlan        = -32002
 )
 
+// Serve returns only after the request in flight when ctx ends has seen the
+// cancelled ctx and removed its scratch directories.
 func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
-	scanner := bufio.NewScanner(in)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	lines := make(chan string)
+	var readErr error
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(in)
+		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			select {
+			case lines <- scanner.Text():
+			case <-ctx.Done():
+				return
+			}
+		}
+		readErr = scanner.Err()
+	}()
 	enc := json.NewEncoder(out)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for ctx.Err() == nil {
+		var text string
+		var ok bool
+		select {
+		case <-ctx.Done():
+			return nil
+		case text, ok = <-lines:
+		}
+		if !ok {
+			if readErr != nil {
+				return fmt.Errorf("read requests: %w", readErr)
+			}
+			return nil
+		}
+		line := strings.TrimSpace(text)
 		if line == "" {
 			continue
 		}
@@ -63,9 +91,6 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		if err := writeResponse(enc, req.ID, result, rerr); err != nil {
 			return fmt.Errorf("write response: %w", err)
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read requests: %w", err)
 	}
 	return nil
 }

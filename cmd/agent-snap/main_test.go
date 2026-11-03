@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -37,7 +38,7 @@ func cliRepo(t *testing.T) string {
 
 func TestCLIPingAndVersion(t *testing.T) {
 	var out bytes.Buffer
-	if err := run([]string{"ping"}, &out); err != nil {
+	if err := run(context.Background(), []string{"ping"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	var ping struct {
@@ -52,7 +53,7 @@ func TestCLIPingAndVersion(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := run([]string{"version"}, &out); err != nil {
+	if err := run(context.Background(), []string{"version"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.TrimSpace(out.String()); got != ping.Version {
@@ -63,7 +64,7 @@ func TestCLIPingAndVersion(t *testing.T) {
 func TestCLICreateAndList(t *testing.T) {
 	dir := cliRepo(t)
 	var out bytes.Buffer
-	if err := run([]string{"create", "cli-test", "--cwd", dir}, &out); err != nil {
+	if err := run(context.Background(), []string{"create", "cli-test", "--cwd", dir}, &out); err != nil {
 		t.Fatal(err)
 	}
 	var snap struct {
@@ -81,7 +82,7 @@ func TestCLICreateAndList(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := run([]string{"list", "--cwd", dir, "--limit", "5"}, &out); err != nil {
+	if err := run(context.Background(), []string{"list", "--cwd", dir, "--limit", "5"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	var listed struct {
@@ -102,13 +103,13 @@ func TestCLICreateRejectsAReasonThatReadsAsOrigin(t *testing.T) {
 	dir := cliRepo(t)
 	var out bytes.Buffer
 	for _, cwd := range []string{dir, t.TempDir()} {
-		err := run([]string{"create", "x\n\nAgent-Snap-Host: pi", "--cwd", cwd}, &out)
+		err := run(context.Background(), []string{"create", "x\n\nAgent-Snap-Host: pi", "--cwd", cwd}, &out)
 		if err == nil || !strings.Contains(err.Error(), "invalid snapshot reason") {
 			t.Fatalf("cwd %s: want an invalid reason error before the repository is resolved, got %v", cwd, err)
 		}
 	}
 	out.Reset()
-	if err := run([]string{"list", "--cwd", dir}, &out); err != nil {
+	if err := run(context.Background(), []string{"list", "--cwd", dir}, &out); err != nil {
 		t.Fatal(err)
 	}
 	var listed struct {
@@ -125,7 +126,7 @@ func TestCLIGet(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := run([]string{"create", "--cwd", dir}, &out); err != nil {
+	if err := run(context.Background(), []string{"create", "--cwd", dir}, &out); err != nil {
 		t.Fatal(err)
 	}
 	var snap struct {
@@ -137,7 +138,7 @@ func TestCLIGet(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := run([]string{"get", snap.ID, "--cwd", dir}, &out); err != nil {
+	if err := run(context.Background(), []string{"get", snap.ID, "--cwd", dir}, &out); err != nil {
 		t.Fatal(err)
 	}
 	var detail struct {
@@ -156,14 +157,14 @@ func TestCLIGet(t *testing.T) {
 	}
 
 	missing := snap.ID[:len(snap.ID)-12] + "000000000000"
-	if err := run([]string{"get", missing, "--cwd", dir}, &out); err == nil || err.Error() != "snapshot not found: "+missing {
+	if err := run(context.Background(), []string{"get", missing, "--cwd", dir}, &out); err == nil || err.Error() != "snapshot not found: "+missing {
 		t.Fatalf("expected not found for %s, got: %v", missing, err)
 	}
 }
 
 func TestCLIUnknownCommand(t *testing.T) {
 	var out bytes.Buffer
-	if err := run([]string{"frobnicate"}, &out); err == nil || !strings.Contains(err.Error(), "unknown command") {
+	if err := run(context.Background(), []string{"frobnicate"}, &out); err == nil || !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("expected unknown command error, got: %v", err)
 	}
 }
@@ -172,7 +173,7 @@ func TestCLIDiff(t *testing.T) {
 	dir := cliRepo(t)
 	createID := func() string {
 		var out bytes.Buffer
-		if err := run([]string{"create", "--cwd", dir}, &out); err != nil {
+		if err := run(context.Background(), []string{"create", "--cwd", dir}, &out); err != nil {
 			t.Fatal(err)
 		}
 		var snap struct {
@@ -204,7 +205,7 @@ func TestCLIDiff(t *testing.T) {
 	diff := func(args ...string) page {
 		t.Helper()
 		var out bytes.Buffer
-		if err := run(append([]string{"diff", from, to, "--cwd", dir}, args...), &out); err != nil {
+		if err := run(context.Background(), append([]string{"diff", from, to, "--cwd", dir}, args...), &out); err != nil {
 			t.Fatal(err)
 		}
 		var p page
@@ -228,7 +229,7 @@ func TestCLIDiff(t *testing.T) {
 
 	missing := from[:len(from)-12] + "000000000000"
 	var out bytes.Buffer
-	if err := run([]string{"diff", missing, missing[:len(missing)-1] + "1", "--cwd", dir}, &out); err == nil || err.Error() != "snapshot not found: "+missing {
+	if err := run(context.Background(), []string{"diff", missing, missing[:len(missing)-1] + "1", "--cwd", dir}, &out); err == nil || err.Error() != "snapshot not found: "+missing {
 		t.Fatalf("expected not found naming from, got: %v", err)
 	}
 }
@@ -236,7 +237,7 @@ func TestCLIDiff(t *testing.T) {
 func TestCLIRestorePlan(t *testing.T) {
 	dir := cliRepo(t)
 	var out bytes.Buffer
-	if err := run([]string{"create", "--cwd", dir}, &out); err != nil {
+	if err := run(context.Background(), []string{"create", "--cwd", dir}, &out); err != nil {
 		t.Fatal(err)
 	}
 	var snap struct {
@@ -264,7 +265,7 @@ func TestCLIRestorePlan(t *testing.T) {
 	planOf := func(args ...string) plan {
 		t.Helper()
 		var out bytes.Buffer
-		if err := run(append([]string{"restore-plan", snap.ID, "--cwd", dir}, args...), &out); err != nil {
+		if err := run(context.Background(), append([]string{"restore-plan", snap.ID, "--cwd", dir}, args...), &out); err != nil {
 			t.Fatal(err)
 		}
 		var p plan
@@ -295,13 +296,13 @@ func TestCLIRestorePlan(t *testing.T) {
 	}
 
 	var stale bytes.Buffer
-	if err := run([]string{"restore-plan", snap.ID, "--cwd", dir, "--current-tree", strings.Repeat("0", len(whole.CurrentTree))}, &stale); err == nil || err.Error() != "working tree changed since the plan" || stale.Len() != 0 {
+	if err := run(context.Background(), []string{"restore-plan", snap.ID, "--cwd", dir, "--current-tree", strings.Repeat("0", len(whole.CurrentTree))}, &stale); err == nil || err.Error() != "working tree changed since the plan" || stale.Len() != 0 {
 		t.Fatalf("expected a stale error and no output, got: %v %q", err, stale.String())
 	}
 
 	missing := snap.ID[:len(snap.ID)-12] + "000000000000"
 	var none bytes.Buffer
-	if err := run([]string{"restore-plan", missing, "--cwd", dir}, &none); err == nil || err.Error() != "snapshot not found: "+missing || none.Len() != 0 {
+	if err := run(context.Background(), []string{"restore-plan", missing, "--cwd", dir}, &none); err == nil || err.Error() != "snapshot not found: "+missing || none.Len() != 0 {
 		t.Fatalf("expected not found naming the id, got: %v", err)
 	}
 }
