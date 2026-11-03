@@ -18,7 +18,11 @@
   list text. A skipped ref does not count toward `limit`. The TypeScript
   client now rejects a create, list, get, diff, or restore plan result whose
   snapshot identifier breaks the FR-12 syntax. The `SnapProtocolError` names
-  the field.
+  the field. A list validation error now starts with `snapshot.list result`
+  instead of `snapshot.create result`. Listing and a reused create now parse
+  only Git's standard output. Before, an item ref whose name held a tab made
+  Git print a warning, and the warning text became the start of a real
+  snapshot's identifier in list and reused create results.
 - The OpenCode 1.x, OpenCode 2.x, and Pi hosts add the
   `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)` tool. It
   returns one page of the restore plan as text. It says whether the plan is

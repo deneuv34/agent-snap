@@ -450,7 +450,7 @@ func (s *Store) List(ctx context.Context, limit int) ([]Snapshot, error) {
 		limit = 20
 	}
 	format := "%(refname:strip=4)%00%(objectname)%00%(contents)%00%(creatordate:iso-strict)%00"
-	out, err := s.git(ctx, nil, "for-each-ref", "--format="+format, s.itemsRef())
+	out, err := s.gitRaw(ctx, nil, "for-each-ref", "--format="+format, s.itemsRef())
 	if err != nil {
 		return nil, err
 	}
@@ -481,7 +481,7 @@ func (s *Store) List(ctx context.Context, limit int) ([]Snapshot, error) {
 }
 
 func (s *Store) snapshotForCommit(ctx context.Context, commit string, reused bool) (Snapshot, error) {
-	out, err := s.git(ctx, nil, "for-each-ref", "--points-at", commit, "--format=%(refname:strip=4)%00%(contents)%00%(creatordate:iso-strict)%00", s.itemsRef())
+	out, err := s.gitRaw(ctx, nil, "for-each-ref", "--points-at", commit, "--format=%(refname:strip=4)%00%(contents)%00%(creatordate:iso-strict)%00", s.itemsRef())
 	if err != nil {
 		return Snapshot{}, err
 	}

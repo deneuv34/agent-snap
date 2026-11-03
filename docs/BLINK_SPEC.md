@@ -166,6 +166,7 @@ This workflow is a product requirement for the restore release, not an MVP behav
 - JSONL callers may request an integer limit from 1 through 100; the CLI requires a positive integer.
 - Results MUST be sorted newest first by snapshot identifier.
 - Listing MUST skip an item ref whose name is not a snapshot identifier (FR-12). A skipped ref does not count toward the limit. A create that reuses the latest snapshot (FR-5) reports it under an item ref name that passes the same check.
+- Listing and that reuse lookup MUST parse only Git's standard output, never its diagnostics, as FR-12 lookup does. A warning about an item ref whose name Git cannot read MUST NOT hide or rename a real snapshot.
 - Listed entries include identifier, commit, reason, and creation time, plus `source` and `host` when the snapshot stores them. `changed_files` and `reused` are creation-result metadata and are not guaranteed on list results.
 
 ### FR-8: Core CLI
