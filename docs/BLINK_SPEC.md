@@ -186,10 +186,11 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - Empty input lines are ignored.
 - The server MUST continue to process later requests after a request-level parse, validation, or operation error.
 - The maximum input line size is 4 MiB.
-- Supported methods are `ping`, `snapshot.create`, `snapshot.list`, `snapshot.get`, and `snapshot.diff`.
+- Supported methods are `ping`, `snapshot.create`, `snapshot.list`, `snapshot.get`, `snapshot.diff`, and `snapshot.restore_plan`.
 - Unknown methods return code `-32601`.
-- Malformed JSON returns `-32700`; invalid parameters return `-32602`; internal operation failures return `-32603`; a well-formed snapshot identifier with no snapshot in the worktree namespace returns `-32001`, for `snapshot.get` and for either side of `snapshot.diff`.
-- Parameter validation MUST reject unknown keys, missing `cwd`, blank `cwd`, malformed types, invalid list limits, malformed snapshot identifiers, invalid origin values, reasons that end with an origin paragraph (FR-13), and a diff `offset` or `max_patch_bytes` outside its range (FR-14).
+- Malformed JSON returns `-32700`; invalid parameters return `-32602`; internal operation failures return `-32603`; a well-formed snapshot identifier with no snapshot in the worktree namespace returns `-32001`, for `snapshot.get`, for either side of `snapshot.diff`, and for the `id` of `snapshot.restore_plan`.
+- A `snapshot.restore_plan` request whose `current_tree` the working tree no longer captures to returns `-32002` (FR-15).
+- Parameter validation MUST reject unknown keys, missing `cwd`, blank `cwd`, malformed types, invalid list limits, malformed snapshot identifiers, invalid origin values, reasons that end with an origin paragraph (FR-13), a diff `offset` or `max_patch_bytes` outside its range (FR-14), and restore plan `paths`, `offset`, and `current_tree` values that break FR-15. The server rejects every invalid `paths` value, and never reads one as a plan of the whole tree.
 
 ### FR-10: TypeScript client
 
@@ -354,7 +355,7 @@ Errors:
 
 ### FR-15: Restore plan
 
-**Status:** Specified for Phase 4 and not yet built. [`RESTORE.md`](RESTORE.md) records the design and the order of the pull requests that build it. Each of those pull requests adds its layer to FR-8 through FR-11 and section 7.1. Until the protocol pull request lands, the binary answers `snapshot.restore_plan` with `-32601`.
+**Status:** The Store and protocol layers are built. The TypeScript client, the CLI, and the host tools are not. [`RESTORE.md`](RESTORE.md) records the design and the order of the pull requests that build it. Each of those pull requests adds its layer to FR-8 through FR-11 and section 7.1.
 
 A restore plan shows what restoring a snapshot would change in the working tree, and what would stop the restore. It is read-only. This release cannot apply a restore.
 
