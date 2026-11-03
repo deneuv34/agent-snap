@@ -233,6 +233,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 
 - The diff tool returns the page as text that lists every file on the page with its status and line counts, then the included hunks, then the `offset` or `max_patch_bytes` to request next when the page does not finish the diff. It ends by naming the citation form from FR-14.
 - The diff tool result is Git evidence only. Hosts MUST NOT add generated summaries, rankings, or opinions to it.
+- Host tool text prints each value that comes from the repository or a caller through one quoting rule. The values are entry and file paths, `old_path`, scope `paths`, `unmatched`, `changed_files`, snapshot `reason`, and origin `source` and `host`. A value that holds a C0 control character, DEL, a C1 control character, U+2028, U+2029, a double quote, or a backslash is printed in double quotes. Inside the quotes, a backslash is written `\\`, a double quote is written `\"`, and the controls `\a`, `\b`, `\t`, `\n`, `\v`, `\f`, and `\r` use their C escapes. Any other character of those classes is written as the three-digit octal escape of each UTF-8 byte, as in `\033`. A value with none of those characters is printed unchanged, including spaces and non-ASCII text. Non-ASCII text stays raw, as with Git's `core.quotePath=false`. Octal escapes would make every non-English name unreadable, and a letter cannot start a new line. A quoted value is one token on one line, so a name cannot forge a header, an entry, a total, or the closing sentence. Hunk text is evidence and is printed as Git printed it. The JSON results are unchanged.
 - The restore plan tool returns the page as text. It says whether the plan is applicable, lists each repository blocker and unmatched scope path, and gives the totals. It then lists every entry on the page with its action, flags, and blocker. When `next_offset` is present, it names the `offset` and `current_tree` to request next. It ends by saying that the plan changed nothing and that this release cannot apply a restore.
 - The restore plan tool maps `current_tree` to the client option `currentTree` and passes an option only when the caller set it. The tool schema bounds `paths` to 1 to 100 strings and `offset` to 0 through 2147483647. The binary decides every other rule on `paths`, `offset`, and `current_tree`, and the tool lets its errors reach the host.
 - The restore plan tool result is Git evidence only. Hosts MUST NOT add generated summaries, rankings, or opinions to it.
@@ -334,6 +335,7 @@ Text:
 
 - Every string is UTF-8. When a path, an old path, a hunk section, or hunk text contains bytes that are not valid UTF-8, Blink replaces each run of invalid bytes with one U+FFFD and sets `lossy: true` on that file entry. Line counts, ranges, budget charges, and object IDs come from the original bytes.
 - Hunk text keeps carriage returns and every other byte Git printed, apart from that UTF-8 repair.
+- Host tool text prints `path` and `old_path` under the quoting rule of FR-11, so the index lines and the `== N <path>` headers show a path that holds a control character, a double quote, or a backslash as one quoted token.
 
 Integrity:
 
@@ -342,6 +344,7 @@ Integrity:
 Evidence and citations:
 
 - A citation of diff evidence is the tuple (`from`, `to`, `path`, `old_start`, `old_lines`, `new_start`, `new_lines`). Its text form is `<path> @@ -<old_start>,<old_lines> +<new_start>,<new_lines> @@`.
+- When the host text shows a path in quotes, a citation uses that quoted form, and its `path` is the value the quotes decode to.
 - A citation is valid when the diff of `from` and `to` has a file whose `path` or `old_path` equals `path`, with a hunk that has exactly those four numbers. Because the diff is deterministic, anyone can check a citation again by repeating the diff with the same Git executable.
 - Review text that a host or agent writes MUST cite evidence this way. Review text is never part of a diff result or a diff tool result. This repository ships no review generator.
 

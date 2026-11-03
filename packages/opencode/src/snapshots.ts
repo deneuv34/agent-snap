@@ -45,10 +45,26 @@ export const RESTORE_PLAN_BOUNDS = {
   offset: { min: 0, max: 2147483647 },
 } as const
 
+const ESCAPES: Record<string, string> = { "\x07": "\\a", "\b": "\\b", "\t": "\\t", "\n": "\\n", "\v": "\\v", "\f": "\\f", "\r": "\\r", '"': '\\"', "\\": "\\\\" }
+const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029"\\]/
+
+/** Quotes as `git diff` does with core.quotePath=false, plus the Unicode line breaks, so a value cannot start a line of its own. */
+function quoteName(name: string): string {
+  if (!UNSAFE.test(name)) return name
+  let out = '"'
+  for (const char of name) {
+    const escape = ESCAPES[char]
+    if (escape !== undefined) out += escape
+    else if (UNSAFE.test(char)) out += Array.from(new TextEncoder().encode(char), (byte) => `\\${byte.toString(8).padStart(3, "0")}`).join("")
+    else out += char
+  }
+  return `${out}"`
+}
+
 function formatCreated(snap: SnapSnapshot): string {
   const reused = snap.reused === true ? " (working tree unchanged — reused previous snapshot)" : ""
-  const changed = snap.changed_files && snap.changed_files.length > 0 ? `\nchanged files:\n${snap.changed_files.map((f) => `  ${f}`).join("\n")}` : ""
-  return `Snapshot ${snap.id} created${reused}\ncommit: ${snap.commit}\nreason: ${snap.reason}${changed}`
+  const changed = snap.changed_files && snap.changed_files.length > 0 ? `\nchanged files:\n${snap.changed_files.map((f) => `  ${quoteName(f)}`).join("\n")}` : ""
+  return `Snapshot ${snap.id} created${reused}\ncommit: ${snap.commit}\nreason: ${quoteName(snap.reason)}${changed}`
 }
 
 function formatList(items: SnapSnapshot[]): string {
@@ -56,21 +72,21 @@ function formatList(items: SnapSnapshot[]): string {
   return items
     .map((item, index) => {
       const origin = formatOrigin(item)
-      return `${index + 1}. ${item.id} — ${item.reason} — ${item.created_at}${origin === "" ? "" : ` — ${origin}`}${item.reused === true ? " (reused)" : ""}`
+      return `${index + 1}. ${item.id} — ${quoteName(item.reason)} — ${item.created_at}${origin === "" ? "" : ` — ${origin}`}${item.reused === true ? " (reused)" : ""}`
     })
     .join("\n")
 }
 
 function formatOrigin(snap: SnapOrigin): string {
-  return [snap.source, snap.host === undefined ? undefined : `via ${snap.host}`].filter((part) => part !== undefined).join(" ")
+  return [snap.source === undefined ? undefined : quoteName(snap.source), snap.host === undefined ? undefined : `via ${quoteName(snap.host)}`].filter((part) => part !== undefined).join(" ")
 }
 
 function formatDetail(snap: SnapSnapshotDetail): string {
   const parent = snap.parent === undefined ? "none" : `${snap.parent} (${snap.parent_id === undefined ? "commit" : `snapshot ${snap.parent_id}`})`
   const heading = snap.changed_files_truncated === true ? `changed files (first ${snap.changed_files.length})` : "changed files"
-  const changed = snap.changed_files.length > 0 ? `${heading}:\n${snap.changed_files.map((f) => `  ${f}`).join("\n")}` : `${heading}: none`
+  const changed = snap.changed_files.length > 0 ? `${heading}:\n${snap.changed_files.map((f) => `  ${quoteName(f)}`).join("\n")}` : `${heading}: none`
   const origin = formatOrigin(snap)
-  return `Snapshot ${snap.id}\ncommit: ${snap.commit}\ntree: ${snap.tree}\nreason: ${snap.reason}\n${origin === "" ? "" : `origin: ${origin}\n`}created: ${snap.created_at}\nparent: ${parent}\n${changed}`
+  return `Snapshot ${snap.id}\ncommit: ${snap.commit}\ntree: ${snap.tree}\nreason: ${quoteName(snap.reason)}\n${origin === "" ? "" : `origin: ${origin}\n`}created: ${snap.created_at}\nparent: ${parent}\n${changed}`
 }
 
 function formatDiffCounts(file: SnapDiffFile): string {
@@ -78,13 +94,13 @@ function formatDiffCounts(file: SnapDiffFile): string {
 }
 
 function formatDiffIndexLine(file: SnapDiffFile, number: number): string {
-  const rename = file.status === "renamed" ? ` <- ${file.old_path} (${file.similarity}%)` : ""
-  return `${number}  ${file.status}  ${file.path}${rename}  ${formatDiffCounts(file)}\n`
+  const rename = file.status === "renamed" ? ` <- ${quoteName(file.old_path ?? "")} (${file.similarity}%)` : ""
+  return `${number}  ${file.status}  ${quoteName(file.path)}${rename}  ${formatDiffCounts(file)}\n`
 }
 
 function formatDiffPatch(file: SnapDiffFile, number: number): string {
   const lossy = file.lossy === true ? " (non-UTF-8 bytes shown as U+FFFD)" : ""
-  let out = `== ${number} ${file.path}${lossy}\n`
+  let out = `== ${number} ${quoteName(file.path)}${lossy}\n`
   for (const hunk of file.hunks) {
     const section = hunk.section ? ` ${hunk.section}` : ""
     out += `@@ -${hunk.old_start},${hunk.old_lines} +${hunk.new_start},${hunk.new_lines} @@${section}\n${hunk.text}`
@@ -120,16 +136,16 @@ function formatRestoreEntry(entry: SnapRestoreEntry, number: number): string {
   const flags = [entry.staged === true ? "staged" : "", entry.unstaged === true ? "unstaged" : "", entry.untracked === true ? "untracked" : ""].filter((flag) => flag !== "")
   const flagText = flags.length === 0 ? "" : `  flags: ${flags.join(", ")}`
   const blockerText = entry.blocker === undefined ? "" : `  blocker: ${entry.blocker}`
-  return `${number}  ${entry.action}  ${entry.path}${flagText}${blockerText}\n`
+  return `${number}  ${entry.action}  ${quoteName(entry.path)}${flagText}${blockerText}\n`
 }
 
 function formatRestorePlan(plan: SnapRestorePlan): string {
   const { snapshot, paths, totals, entries, offset } = plan
   let out = `Git evidence: restore plan (read-only)\nsnapshot ${snapshot.id}\n`
-  out += paths === undefined ? "scope: whole tree\n" : `scope: paths\n${paths.map((path) => `  ${path}\n`).join("")}`
+  out += paths === undefined ? "scope: whole tree\n" : `scope: paths\n${paths.map((path) => `  ${quoteName(path)}\n`).join("")}`
   out += `current_tree ${plan.current_tree}\napplicable: ${plan.applicable ? "yes" : "no"}\n`
   if (plan.blockers.length > 0) out += `repository blockers:\n${plan.blockers.map((blocker) => `  ${blocker}\n`).join("")}`
-  if (plan.unmatched.length > 0) out += `unmatched paths:\n${plan.unmatched.map((path) => `  ${path}\n`).join("")}`
+  if (plan.unmatched.length > 0) out += `unmatched paths:\n${plan.unmatched.map((path) => `  ${quoteName(path)}\n`).join("")}`
   out += `${totals.entries} entries: ${totals.create} create, ${totals.modify} modify, ${totals.type_change} type_change, ${totals.delete} delete. `
   out += `${totals.staged} staged, ${totals.unstaged} unstaged, ${totals.untracked} untracked, ${totals.blocked} blocked.\n`
   if (totals.entries === 0) {

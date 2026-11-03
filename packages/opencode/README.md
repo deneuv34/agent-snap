@@ -20,7 +20,10 @@ OpenCode plugin for agent-snap, for OpenCode 1.x (>= 1.18.18) and 2.x
   evidence and names the `offset` of the next page.
   `agent_snap_restore_plan` returns one page of a read-only restore plan,
   names the `offset` and `current_tree` of the next page, and changes
-  nothing. This release cannot apply a restore.
+  nothing. This release cannot apply a restore. Tool text prints a path, a
+  reason, or an origin value in double quotes with C escapes when it holds a
+  control character, a double quote, or a backslash, so a file name cannot
+  forge a line.
 - Every snapshot records host `opencode` and source `session-start`,
   `session-idle`, or `tool`. No session identifier is stored.
 
