@@ -1,6 +1,6 @@
 # Restore design
 
-**Status:** Proposed. Phase 4, [#4](https://github.com/deneuv34/agent-snap/issues/4). Confirmed writes stay disabled until Phase 5, [#5](https://github.com/deneuv34/agent-snap/issues/5).
+**Status:** Accepted. Phase 4, [#4](https://github.com/deneuv34/agent-snap/issues/4). Confirmed writes stay disabled until Phase 5, [#5](https://github.com/deneuv34/agent-snap/issues/5).
 
 This record decides what a Blink restore does, and how Phase 4 prepares it without writing a user file. It answers the Phase 4 work items in [`BLINK_DEVELOPMENT_PLAN.md`](BLINK_DEVELOPMENT_PLAN.md) and shows how the design meets each acceptance requirement in section 10 of [`BLINK_SPEC.md`](BLINK_SPEC.md). The exact wire contract goes into the spec as a new functional requirement after this record is approved.
 
@@ -200,6 +200,19 @@ Each step is one pull request that ends in a check. The steps that simplify exis
 7. TypeScript types, result validation, a typed error for `-32601`, and cancellation tests.
 8. CLI `restore-plan`, with smoke and pack-check coverage. It prints JSON, like every other command.
 9. The `agent_snap_restore_plan` tool in Pi and in both OpenCode adapters. Its description and output formatting go in `packages/opencode/src/snapshots.ts`, which the 1.x and 2.x adapters share.
+
+Phase 4 landed in these pull requests.
+
+- #16. This record (step 1).
+- #17. The spec (step 2).
+- #18. The capture steps moved out of `Store.Create` (step 3).
+- #19. `validateResult` rejects a result it cannot validate (step 4).
+- #21. `Store.PlanRestore` (step 5).
+- #22. Protocol method `snapshot.restore_plan` (step 6).
+- #24. The whole-tree restore scope made explicit in `Store.PlanRestore`. This follows step 5.
+- #25. TypeScript types, validation, and the typed error for `-32601` (step 7).
+- #26. CLI `restore-plan` (step 8).
+- #27. The `agent_snap_restore_plan` tool in Pi and both OpenCode adapters (step 9).
 
 Phase 4 work item 5 asks for tests of failures between backup and write. Phase 4 has no write, so those tests move to Phase 5. The confirmation module, the Pi `/agent-snap-restore` command, the interactive CLI `restore`, the error code for a blocked restore, and `snapshot.restore` itself are Phase 5.
 
