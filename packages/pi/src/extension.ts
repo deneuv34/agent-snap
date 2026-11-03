@@ -8,6 +8,9 @@ import {
   type SnapDiffPage,
   type SnapLike,
   type SnapOrigin,
+  type SnapRestoreEntry,
+  type SnapRestorePlan,
+  type SnapRestorePlanOptions,
   type SnapSnapshot,
   type SnapSnapshotDetail,
 } from "@agent-snap/core"
@@ -84,6 +87,43 @@ function formatDiff(diff: SnapDiff): string {
     }
   }
   return `${out}\nCite a finding as \`<path> @@ -a,b +c,d @@\` from this output. Lines not shown here are not evidence.`
+}
+
+function formatRestoreEntry(entry: SnapRestoreEntry, number: number): string {
+  const flags = [entry.staged === true ? "staged" : "", entry.unstaged === true ? "unstaged" : "", entry.untracked === true ? "untracked" : ""].filter((flag) => flag !== "")
+  const flagText = flags.length === 0 ? "" : `  flags: ${flags.join(", ")}`
+  const blockerText = entry.blocker === undefined ? "" : `  blocker: ${entry.blocker}`
+  return `${number}  ${entry.action}  ${entry.path}${flagText}${blockerText}\n`
+}
+
+function formatRestorePlan(plan: SnapRestorePlan): string {
+  const { snapshot, paths, totals, entries, offset } = plan
+  let out = `Git evidence: restore plan (read-only)\nsnapshot ${snapshot.id}\n`
+  out += paths === undefined ? "scope: whole tree\n" : `scope: paths\n${paths.map((path) => `  ${path}\n`).join("")}`
+  out += `current_tree ${plan.current_tree}\napplicable: ${plan.applicable ? "yes" : "no"}\n`
+  if (plan.blockers.length > 0) out += `repository blockers:\n${plan.blockers.map((blocker) => `  ${blocker}\n`).join("")}`
+  if (plan.unmatched.length > 0) out += `unmatched paths:\n${plan.unmatched.map((path) => `  ${path}\n`).join("")}`
+  out += `${totals.entries} entries: ${totals.create} create, ${totals.modify} modify, ${totals.type_change} type_change, ${totals.delete} delete. `
+  out += `${totals.staged} staged, ${totals.unstaged} unstaged, ${totals.untracked} untracked, ${totals.blocked} blocked.\n`
+  if (totals.entries === 0) {
+    out += "No entries.\n"
+  } else {
+    out += entries.length === 0 ? `No entries at offset ${offset}.\n` : `Entries ${offset + 1}-${offset + entries.length} of ${totals.entries}.\n`
+    if (entries.length > 0) out += `\n${entries.map((entry, index) => formatRestoreEntry(entry, offset + index + 1)).join("")}`
+  }
+  if (plan.next_offset !== undefined) {
+    const same = paths === undefined ? "the same id" : "the same id and paths"
+    out += `\nEntries from ${plan.next_offset + 1} on are not shown. Call agent_snap_restore_plan with ${same}, offset ${plan.next_offset}, and current_tree ${plan.current_tree}.\n`
+  }
+  return `${out}\nThis plan changed nothing. This release cannot apply a restore.`
+}
+
+function restorePlanOptions(paths: string[] | undefined, offset: number | undefined, currentTree: string | undefined): SnapRestorePlanOptions {
+  const options: SnapRestorePlanOptions = {}
+  if (paths !== undefined) options.paths = paths
+  if (offset !== undefined) options.offset = offset
+  if (currentTree !== undefined) options.currentTree = currentTree
+  return options
 }
 
 function diffPage(offset: number | undefined, maxPatchBytes: number | undefined): SnapDiffPage {
@@ -201,6 +241,31 @@ export function createAgentSnapExtension(deps: AgentSnapExtensionDeps): (pi: Ext
     },
   })
 
+  const restorePlanTool = defineTool({
+    name: "agent_snap_restore_plan",
+    label: "Agent Snap: Plan restore",
+    description:
+      "Show what restoring a snapshot would change in the working tree, and what would block it. Read-only: it changes nothing, and this release cannot apply a restore. Snapshot ids come from agent_snap_list. Large plans are paged: pass the offset and current_tree the output names.",
+    promptSnippet: "agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?) - show what restoring an agent-snap snapshot would change and what would block it",
+    parameters: Type.Object({
+      id: Type.String({ description: "Snapshot id from agent_snap_list or agent_snap_create" }),
+      paths: Type.Optional(
+        Type.Array(Type.String(), { minItems: 1, maxItems: 100, description: "Repository paths to plan, 1 to 100; omit to plan the whole tree" }),
+      ),
+      offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647, description: "Index of the first entry to show; use the offset the previous page named" })),
+      current_tree: Type.Optional(Type.String({ description: "The current_tree the previous page named; required when offset is above 0" })),
+      cwd: Type.Optional(Type.String({ description: "Repository directory; defaults to the session directory" })),
+    }),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const cwd = params.cwd ?? ctx.cwd
+      const plan = await client.restorePlan(cwd, params.id, restorePlanOptions(params.paths, params.offset, params.current_tree), signal)
+      return {
+        content: [{ type: "text", text: formatRestorePlan(plan) }],
+        details: { plan },
+      }
+    },
+  })
+
   return function agentSnapExtension(pi: ExtensionAPI): void {
     pi.on("session_start", async (_event, ctx) => {
       // Barrier: the session does not proceed until the baseline snapshot
@@ -237,6 +302,7 @@ export function createAgentSnapExtension(deps: AgentSnapExtensionDeps): (pi: Ext
     pi.registerTool(listTool)
     pi.registerTool(getTool)
     pi.registerTool(diffTool)
+    pi.registerTool(restorePlanTool)
 
     pi.registerCommand("agent-snap-create", {
       description: "Create an agent-snap snapshot of the working tree (optional reason as argument)",
