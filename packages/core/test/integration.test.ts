@@ -230,6 +230,94 @@ test(
 )
 
 test(
+  "SnapClient plans a real restore, pages it, and fails closed on stale and bad selections",
+  { skip: bin === undefined ? "AGENT_SNAP_BIN not set" : false },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-snap-plan-it-"))
+    const client = SnapClient.fromEnv({ AGENT_SNAP_BIN: bin })
+    try {
+      git(dir, ["init", "-b", "main"])
+      writeFileSync(join(dir, "file.txt"), "initial\n")
+      git(dir, ["add", "file.txt"])
+      git(dir, ["commit", "-m", "initial"])
+      writeFileSync(join(dir, "file.txt"), "before\n")
+      const first = await client.create(dir, "before")
+      const firstTree = (await client.get(dir, first.id)).tree
+
+      writeFileSync(join(dir, "file.txt"), "after\n")
+      writeFileSync(join(dir, "new.txt"), "new\n")
+      const statusBefore = git(dir, ["status", "--porcelain"])
+      const headBefore = git(dir, ["rev-parse", "HEAD"])
+
+      const plan = await client.restorePlan(dir, first.id)
+      assert.equal(plan.snapshot.id, first.id)
+      assert.equal(plan.snapshot.commit, first.commit)
+      assert.equal(plan.snapshot.tree, firstTree)
+      assert.equal(plan.paths, undefined)
+      assert.equal(plan.result_tree, firstTree)
+      assert.equal(plan.applicable, true)
+      assert.deepEqual(plan.blockers, [])
+      assert.deepEqual(plan.unmatched, [])
+      assert.equal(plan.offset, 0)
+      assert.equal(plan.next_offset, undefined)
+      assert.deepEqual(plan.totals, {
+        entries: 2, create: 0, modify: 1, type_change: 0, delete: 1, staged: 0, unstaged: 1, untracked: 1, blocked: 0,
+      })
+      assert.deepEqual(
+        plan.entries.map((entry) => [entry.path, entry.action, entry.unstaged, entry.untracked]),
+        [
+          ["file.txt", "modify", true, undefined],
+          ["new.txt", "delete", undefined, true],
+        ],
+      )
+
+      const recorded = await client.create(dir, "restore backup")
+      assert.equal((await client.get(dir, recorded.id)).tree, plan.current_tree)
+
+      const scoped = await client.restorePlan(dir, first.id, { paths: ["new.txt", "nope"], currentTree: plan.current_tree })
+      assert.deepEqual(scoped.paths, ["new.txt", "nope"])
+      assert.deepEqual(scoped.unmatched, ["nope"])
+      assert.equal(scoped.applicable, false)
+      assert.deepEqual(scoped.entries.map((entry) => entry.path), ["new.txt"])
+      assert.notEqual(scoped.result_tree, undefined)
+
+      const beyond = await client.restorePlan(dir, first.id, { offset: 2, currentTree: plan.current_tree })
+      assert.deepEqual(beyond.entries, [])
+      assert.equal(beyond.next_offset, undefined)
+      assert.equal(beyond.totals.entries, 2)
+
+      const missing = `${first.id.slice(0, -12)}000000000000`
+      await assert.rejects(
+        () => client.restorePlan(dir, missing),
+        (err: unknown) => err instanceof SnapRpcError && err.code === -32001,
+      )
+      await assert.rejects(
+        () => client.restorePlan(dir, "../latest"),
+        (err: unknown) => err instanceof SnapRpcError && err.code === -32602,
+      )
+      await assert.rejects(
+        () => client.restorePlan(dir, first.id, { offset: 1 }),
+        (err: unknown) => err instanceof SnapRpcError && err.code === -32602,
+      )
+      await assert.rejects(
+        () => client.restorePlan(dir, first.id, { paths: ["a", "a/b"] }),
+        (err: unknown) => err instanceof SnapRpcError && err.code === -32602,
+      )
+      writeFileSync(join(dir, "file.txt"), "later\n")
+      await assert.rejects(
+        () => client.restorePlan(dir, first.id, { currentTree: plan.current_tree }),
+        (err: unknown) => err instanceof SnapRpcError && err.code === -32002,
+      )
+      assert.equal(git(dir, ["rev-parse", "HEAD"]), headBefore)
+      assert.equal(git(dir, ["status", "--porcelain"]).split("\n").length, statusBefore.split("\n").length)
+    } finally {
+      await client.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
   "timeout kills the whole git process tree, including filter children",
   { skip: bin === undefined ? "AGENT_SNAP_BIN not set" : process.platform === "win32" ? "process-tree kill not implemented on win32" : false },
   async () => {

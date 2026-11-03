@@ -189,6 +189,30 @@ function handle(req) {
         respond(req, diffResult(req.params))
       }
       break
+    case "snapshot.restore_plan":
+      if (mode === "plan-not-found") {
+        respond(req, null, { code: -32001, message: `snapshot not found: ${req.params?.id}` })
+      } else if (mode === "plan-stale") {
+        respond(req, null, { code: -32002, message: "working tree changed since the plan" })
+      } else if (mode === "plan-invalid-params") {
+        respond(req, null, { code: -32602, message: "param must be an object id: current_tree" })
+      } else if (mode === "plan-method-not-found") {
+        respond(req, null, { code: -32601, message: "method not found" })
+      } else if (mode === "plan-slow") {
+        setTimeout(() => {
+          record({ event: "completed", method: req.method })
+          respond(req, planResult(req.params))
+        }, 5000)
+      } else if (mode === "plan-scalar") {
+        respond(req, "just a string")
+      } else if (mode in validPlans) {
+        respond(req, validPlans[mode](planResult(req.params)))
+      } else if (mode in malformedPlans) {
+        respond(req, malformedPlans[mode](planResult(req.params)))
+      } else {
+        respond(req, planResult(req.params))
+      }
+      break
     default:
       if (mode === "bad-error") {
         respond(req, null, "boom")
@@ -328,6 +352,174 @@ const malformedDiffs = {
   "diff-hunk-text-without-newline": withHunk({ text: " tail" }),
   "diff-hunk-text-bad-prefix": withHunk({ text: " ok\nbad\n" }),
   "diff-hunk-text-empty-line": withHunk({ text: " ok\n\n" }),
+}
+
+const hex = (digit, length = 40) => digit.repeat(length)
+const side = (mode, digit, length = 40) => ({ mode, oid: hex(digit, length) })
+
+function planResult(params) {
+  return {
+    snapshot: { id: params?.id, commit: hex("1"), tree: hex("2") },
+    ...(params?.paths === undefined ? {} : { paths: params.paths }),
+    current_tree: params?.current_tree ?? hex("3"),
+    result_tree: hex("4"),
+    applicable: false,
+    blockers: [],
+    unmatched: [],
+    offset: params?.offset ?? 0,
+    totals: { entries: 4, create: 1, modify: 1, type_change: 1, delete: 1, staged: 1, unstaged: 1, untracked: 1, blocked: 1 },
+    unexpected: "dropped",
+    entries: (params?.offset ?? 0) > 0 ? [] : [
+      { path: "src/cache.log", action: "create", target: side("100644", "5"), blocker: "untracked_in_the_way", unexpected: "dropped" },
+      { path: "src/link", action: "type_change", current: side("100644", "6"), target: side("120000", "7"), staged: true },
+      { path: "src/new.go", action: "delete", current: side("100644", "8"), untracked: true },
+      { path: "src/server.go", action: "modify", current: side("100644", "9"), target: side("100755", "a"), unstaged: true },
+    ],
+  }
+}
+
+const withEntry = (index, change) => (plan) => ({
+  ...plan,
+  entries: plan.entries.map((entry, i) => (i === index ? { ...entry, ...change } : entry)),
+})
+
+const widen = (value) =>
+  typeof value === "string" && /^[0-9a-f]{40}$/.test(value)
+    ? value + value.slice(0, 24)
+    : Array.isArray(value)
+      ? value.map(widen)
+      : value !== null && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, key === "commit" ? inner : widen(inner)]))
+        : value
+
+const applicableEmpty = (plan) => ({
+  ...plan,
+  applicable: true,
+  totals: { entries: 0, create: 0, modify: 0, type_change: 0, delete: 0, staged: 0, unstaged: 0, untracked: 0, blocked: 0 },
+  entries: [],
+})
+
+const pagedTotals = { entries: 9, create: 4, modify: 3, type_change: 1, delete: 1, staged: 1, unstaged: 1, untracked: 1, blocked: 1 }
+
+const twoCreates = (first, second) => (p) => ({
+  ...p,
+  applicable: true,
+  totals: { entries: 2, create: 2, modify: 0, type_change: 0, delete: 0, staged: 0, unstaged: 0, untracked: 0, blocked: 0 },
+  entries: [
+    { path: first, action: "create", target: side("100644", "5") },
+    { path: second, action: "create", target: side("100644", "5") },
+  ],
+})
+
+const validPlans = {
+  "plan-sha256": widen,
+  "plan-paged": (p) => ({ ...p, totals: pagedTotals, next_offset: 4 }),
+  "plan-utf8-byte-order": twoCreates("\uFF5E", "\u{1F600}"),
+  "plan-empty-applicable": applicableEmpty,
+  "plan-unmatched": (p) => ({ ...p, paths: ["src", "zzz"], unmatched: ["zzz"] }),
+  "plan-repo-blockers": (p) => ({ ...p, blockers: ["operation_in_progress", "sparse_checkout"] }),
+  "plan-no-result-tree": (p) => ({ ...p, result_tree: undefined }),
+  "plan-repaired-paths": (p) => ({
+    ...p,
+    totals: { ...p.totals, entries: 4, create: 3, modify: 0, type_change: 0, delete: 1, staged: 0, unstaged: 0, untracked: 1, blocked: 3 },
+    entries: [
+      { path: "a\uFFFD", action: "create", target: side("100644", "5"), blocker: "unaddressable_path" },
+      { path: "a", action: "create", target: side("100644", "5"), blocker: "untracked_in_the_way" },
+      { path: "a\uFFFD", action: "create", target: side("100644", "5"), blocker: "unaddressable_path" },
+      { path: "b", action: "delete", current: side("100644", "8"), untracked: true },
+    ],
+  }),
+}
+
+const malformedPlans = {
+  "plan-bad-snapshot": (p) => ({ ...p, snapshot: { id: p.snapshot.id, tree: p.snapshot.tree } }),
+  "plan-snapshot-short-tree": (p) => ({ ...p, snapshot: { ...p.snapshot, tree: "2222" } }),
+  "plan-missing-current-tree": (p) => ({ ...p, current_tree: undefined }),
+  "plan-uppercase-current-tree": (p) => ({ ...p, current_tree: hex("A") }),
+  "plan-short-current-tree": (p) => ({ ...p, current_tree: hex("3", 39) }),
+  "plan-mixed-oid-length": (p) => ({ ...p, result_tree: hex("4", 64) }),
+  "plan-bad-result-tree": (p) => ({ ...p, result_tree: "nothex" }),
+  "plan-null-result-tree": (p) => ({ ...p, result_tree: null }),
+  "plan-side-short-oid": withEntry(0, { target: { mode: "100644", oid: "5555" } }),
+  "plan-side-mixed-oid-length": withEntry(0, { target: side("100644", "5", 64) }),
+  "plan-side-short-mode": withEntry(0, { target: side("644", "5") }),
+  "plan-side-non-octal-mode": withEntry(0, { target: side("100648", "5") }),
+  "plan-side-numeric-mode": withEntry(0, { target: { mode: 100644, oid: hex("5") } }),
+  "plan-side-scalar": withEntry(0, { target: "100644" }),
+  "plan-paths-empty": (p) => ({ ...p, paths: [] }),
+  "plan-paths-not-strings": (p) => ({ ...p, paths: [1] }),
+  "plan-paths-null": (p) => ({ ...p, paths: null }),
+  "plan-paths-too-many": (p) => ({ ...p, paths: Array.from({ length: 101 }, (_, i) => `p${i}`) }),
+  "plan-paths-empty-segment": (p) => ({ ...p, paths: ["src//a"] }),
+  "plan-paths-dot-segment": (p) => ({ ...p, paths: ["src/./a"] }),
+  "plan-paths-dotdot-segment": (p) => ({ ...p, paths: ["../a"] }),
+  "plan-paths-nul": (p) => ({ ...p, paths: ["a\u0000b"] }),
+  "plan-paths-too-long": (p) => ({ ...p, paths: ["a".repeat(4097)] }),
+  "plan-paths-duplicate": (p) => ({ ...p, paths: ["src", "src"] }),
+  "plan-paths-overlap": (p) => ({ ...p, paths: ["src", "src/a"] }),
+  "plan-applicable-not-boolean": (p) => ({ ...p, applicable: "false" }),
+  "plan-applicable-with-entry-blockers": (p) => ({ ...p, applicable: true }),
+  "plan-applicable-with-repo-blockers": (p) => ({ ...applicableEmpty(p), blockers: ["unmerged_index"] }),
+  "plan-applicable-with-unmatched": (p) => ({ ...applicableEmpty(p), paths: ["zzz"], unmatched: ["zzz"] }),
+  "plan-applicable-without-result-tree": (p) => ({ ...applicableEmpty(p), result_tree: undefined }),
+  "plan-not-applicable-when-clean": (p) => ({ ...applicableEmpty(p), applicable: false }),
+  "plan-blockers-not-array": (p) => ({ ...p, blockers: "none" }),
+  "plan-blockers-null": (p) => ({ ...p, blockers: null }),
+  "plan-unknown-repo-blocker": (p) => ({ ...p, blockers: ["detached_head"] }),
+  "plan-path-blocker-as-repo-blocker": (p) => ({ ...p, blockers: ["submodule"] }),
+  "plan-duplicate-repo-blocker": (p) => ({ ...p, blockers: ["unmerged_index", "unmerged_index"] }),
+  "plan-repo-blockers-out-of-order": (p) => ({ ...p, blockers: ["sparse_checkout", "operation_in_progress"] }),
+  "plan-unmatched-not-array": (p) => ({ ...p, unmatched: "none" }),
+  "plan-unmatched-not-strings": (p) => ({ ...p, paths: ["src"], unmatched: [1] }),
+  "plan-unmatched-without-paths": (p) => ({ ...p, unmatched: ["src"] }),
+  "plan-unmatched-outside-paths": (p) => ({ ...p, paths: ["src"], unmatched: ["zzz"] }),
+  "plan-missing-offset": (p) => ({ ...p, offset: undefined }),
+  "plan-negative-offset": (p) => ({ ...p, offset: -1 }),
+  "plan-fractional-offset": (p) => ({ ...p, offset: 0.5 }),
+  "plan-null-next-offset": (p) => ({ ...p, next_offset: null }),
+  "plan-next-offset-missing": (p) => ({ ...p, totals: pagedTotals }),
+  "plan-next-offset-short": (p) => ({ ...p, totals: pagedTotals, next_offset: 3 }),
+  "plan-next-offset-long": (p) => ({ ...p, totals: pagedTotals, next_offset: 5 }),
+  "plan-next-offset-on-last-page": (p) => ({ ...p, next_offset: 4 }),
+  "plan-next-offset-on-past-end-page": (p) => ({ ...p, offset: 9, entries: [], next_offset: 9 }),
+  "plan-page-past-totals": (p) => ({ ...p, offset: 1 }),
+  "plan-too-many-entries": (p) => ({
+    ...p,
+    totals: { ...p.totals, entries: 1000, create: 1000, modify: 0, type_change: 0, delete: 0 },
+    next_offset: 201,
+    entries: Array.from({ length: 201 }, (_, i) => ({ ...p.entries[0], path: `f${String(i).padStart(4, "0")}` })),
+  }),
+  "plan-entries-not-array": (p) => ({ ...p, entries: {} }),
+  "plan-totals-missing": (p) => ({ ...p, totals: undefined }),
+  "plan-totals-string": (p) => ({ ...p, totals: { ...p.totals, create: "1" } }),
+  "plan-totals-negative": (p) => ({ ...p, totals: { ...p.totals, blocked: -1 } }),
+  "plan-totals-missing-key": (p) => ({ ...p, totals: { ...p.totals, untracked: undefined } }),
+  "plan-totals-sum-mismatch": (p) => ({ ...p, totals: { ...p.totals, delete: 2 } }),
+  "plan-totals-staged-over-entries": (p) => ({ ...p, totals: { ...p.totals, staged: 5 } }),
+  "plan-totals-unstaged-over-entries": (p) => ({ ...p, totals: { ...p.totals, unstaged: 5 } }),
+  "plan-totals-untracked-over-entries": (p) => ({ ...p, totals: { ...p.totals, untracked: 5 } }),
+  "plan-totals-blocked-over-entries": (p) => ({ ...p, totals: { ...p.totals, blocked: 5 } }),
+  "plan-entry-scalar": (p) => ({ ...p, entries: [7] }),
+  "plan-entry-bad-action": withEntry(1, { action: "rename" }),
+  "plan-entry-empty-path": withEntry(0, { path: "" }),
+  "plan-entry-numeric-path": withEntry(0, { path: 7 }),
+  "plan-create-with-current": withEntry(0, { current: side("100644", "6") }),
+  "plan-create-without-target": withEntry(0, { target: undefined }),
+  "plan-delete-with-target": withEntry(2, { target: side("100644", "5") }),
+  "plan-delete-without-current": withEntry(2, { current: undefined }),
+  "plan-modify-without-current": withEntry(3, { current: undefined }),
+  "plan-modify-without-target": withEntry(3, { target: undefined }),
+  "plan-null-current": withEntry(1, { current: null }),
+  "plan-unstaged-and-untracked": withEntry(2, { unstaged: true }),
+  "plan-flag-false": withEntry(1, { staged: false }),
+  "plan-flag-null": withEntry(1, { staged: null }),
+  "plan-unknown-path-blocker": withEntry(0, { blocker: "ignored" }),
+  "plan-repo-blocker-on-entry": withEntry(0, { blocker: "sparse_checkout" }),
+  "plan-null-path-blocker": withEntry(0, { blocker: null }),
+  "plan-unaddressable-without-repair": withEntry(0, { blocker: "unaddressable_path" }),
+  "plan-entries-out-of-order": (p) => ({ ...p, entries: [p.entries[1], p.entries[0], p.entries[2], p.entries[3]] }),
+  "plan-entries-duplicate-path": withEntry(1, { path: "src/cache.log" }),
+  "plan-utf8-byte-order-reversed": twoCreates("\u{1F600}", "\uFF5E"),
 }
 
 function respond(req, result, error) {

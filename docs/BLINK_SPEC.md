@@ -203,6 +203,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - After a crash or close, the client MAY spawn a fresh transport lazily for a subsequent request.
 - `close()` MUST prevent a replacement transport from being created until close completes.
 - `SnapClient.diff(cwd, from, to, page?, signal?)` sends `snapshot.diff` and returns the validated diff result object. Validation checks every field's type and enum, and the cross-field rules in section 8.4.
+- `SnapClient.restorePlan(cwd, id, options?, signal?)` sends `snapshot.restore_plan` and returns the validated restore plan object. Validation checks every field's type and enum, and the cross-field rules in section 8.5. It also checks that entry paths increase in byte order, and it leaves out entries that carry `unaddressable_path`, because their repaired paths can fall out of order. When the binary answers `-32601`, it rejects with `SnapRestorePlanUnsupportedError`. That class extends `SnapRpcError`, and its message says the installed `agent-snap` cannot plan restores.
 - Result validation checks `source` and `host` only for type: each is a string when present. A later release can widen their syntax without breaking older clients.
 - When a create that carries origin values is rejected with `-32602` and the message `unknown param: source` or `unknown param: host`, the client MUST retry that create once without origin values. That rejection is how a 0.1.0 binary answers, and it comes before the repository is resolved, so the retry cannot duplicate a checkpoint. The retry is a new request under the same signal, with its own timeout. The client logs the first time it drops origin. A plugin upgraded ahead of its binary therefore keeps taking snapshots.
 - A 0.1.0 binary does not check reasons. The client MUST NOT send that retry when the reason contains `\n\nAgent-Snap-`; the create fails instead, so the retry never stores a reason that a newer reader would take as origin. A create sent without origin values reaches a 0.1.0 binary unchanged, as it did with a 0.1.0 client.
@@ -355,7 +356,7 @@ Errors:
 
 ### FR-15: Restore plan
 
-**Status:** The Store and protocol layers are built. The TypeScript client, the CLI, and the host tools are not. [`RESTORE.md`](RESTORE.md) records the design and the order of the pull requests that build it. Each of those pull requests adds its layer to FR-8 through FR-11 and section 7.1.
+**Status:** The Store, protocol, and TypeScript client layers are built. The CLI and the host tools are not. [`RESTORE.md`](RESTORE.md) records the design and the order of the pull requests that build it. Each of those pull requests adds its layer to FR-8 through FR-11 and section 7.1.
 
 A restore plan shows what restoring a snapshot would change in the working tree, and what would stop the restore. It is read-only. This release cannot apply a restore.
 

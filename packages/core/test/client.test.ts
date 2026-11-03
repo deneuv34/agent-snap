@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { SnapClient, SnapProtocolError, SnapRpcError } from "../src/index.js"
+import { SnapClient, SnapProtocolError, SnapRestorePlanUnsupportedError, SnapRpcError } from "../src/index.js"
 import { GROUP_WAIT_MS, WINDOWS_TREE_WAIT_MS, groupEmptyDecision, windowsTreeCompletionDecision } from "../src/teardown.js"
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-agent-snap.mjs", import.meta.url))
@@ -279,6 +279,235 @@ test("aborting a diff tears down the transport and rejects with AbortError", asy
     .map((line) => JSON.parse(line) as { event: string })
   assert.ok(entries.some((entry) => entry.event === "request"), "the diff must have reached the child before the abort")
   assert.ok(!entries.some((entry) => entry.event === "completed"), "aborted diff must never complete")
+})
+
+const planCurrentTree = "3".repeat(40)
+
+test("restorePlan sends exactly cwd and id when no options are given", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-plan-")), "log.jsonl")
+  const c = client({ FAKE_AGENT_SNAP_LOG: log })
+  try {
+    await c.restorePlan("/some/repo", fromID)
+    await c.restorePlan("/some/repo", fromID, {})
+    await c.restorePlan("/some/repo", fromID, { paths: undefined, offset: undefined, currentTree: undefined })
+  } finally {
+    await c.close()
+  }
+  const params = { cwd: "/some/repo", id: fromID }
+  assert.deepEqual(requestsOf(log), [
+    { method: "snapshot.restore_plan", params },
+    { method: "snapshot.restore_plan", params },
+    { method: "snapshot.restore_plan", params },
+  ])
+})
+
+test("restorePlan sends paths, offset, and current_tree only when given", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-plan-")), "log.jsonl")
+  const c = client({ FAKE_AGENT_SNAP_LOG: log })
+  try {
+    await c.restorePlan("/r", fromID, { paths: ["src", "docs/a.md"] })
+    await c.restorePlan("/r", fromID, { offset: 0 })
+    await c.restorePlan("/r", fromID, { currentTree: planCurrentTree })
+    await c.restorePlan("/r", fromID, { paths: ["src"], offset: 200, currentTree: planCurrentTree })
+  } finally {
+    await c.close()
+  }
+  const base = { cwd: "/r", id: fromID }
+  assert.deepEqual(requestsOf(log), [
+    { method: "snapshot.restore_plan", params: { ...base, paths: ["src", "docs/a.md"] } },
+    { method: "snapshot.restore_plan", params: { ...base, offset: 0 } },
+    { method: "snapshot.restore_plan", params: { ...base, current_tree: planCurrentTree } },
+    { method: "snapshot.restore_plan", params: { ...base, paths: ["src"], offset: 200, current_tree: planCurrentTree } },
+  ])
+})
+
+test("restorePlan leaves input checks to the server and sends an empty paths list as given", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-plan-")), "log.jsonl")
+  const c = client({ FAKE_AGENT_SNAP_MODE: "plan-invalid-params", FAKE_AGENT_SNAP_LOG: log })
+  try {
+    await assert.rejects(
+      () => c.restorePlan("/r", fromID, { paths: [], offset: 7 }),
+      (err: unknown) => err instanceof SnapRpcError && err.code === -32602,
+    )
+  } finally {
+    await c.close()
+  }
+  assert.deepEqual(requestsOf(log), [{ method: "snapshot.restore_plan", params: { cwd: "/r", id: fromID, paths: [], offset: 7 } }])
+})
+
+test("restorePlan returns the validated plan without unknown keys", async () => {
+  const c = client()
+  try {
+    const plan = await c.restorePlan("/repo", fromID, { paths: ["src"] })
+    assert.deepEqual(JSON.parse(JSON.stringify(plan)), {
+      snapshot: { id: fromID, commit: "1".repeat(40), tree: "2".repeat(40) },
+      paths: ["src"],
+      current_tree: planCurrentTree,
+      result_tree: "4".repeat(40),
+      applicable: false,
+      blockers: [],
+      unmatched: [],
+      offset: 0,
+      totals: { entries: 4, create: 1, modify: 1, type_change: 1, delete: 1, staged: 1, unstaged: 1, untracked: 1, blocked: 1 },
+      entries: [
+        { path: "src/cache.log", action: "create", target: { mode: "100644", oid: "5".repeat(40) }, blocker: "untracked_in_the_way" },
+        {
+          path: "src/link", action: "type_change", current: { mode: "100644", oid: "6".repeat(40) },
+          target: { mode: "120000", oid: "7".repeat(40) }, staged: true,
+        },
+        { path: "src/new.go", action: "delete", current: { mode: "100644", oid: "8".repeat(40) }, untracked: true },
+        {
+          path: "src/server.go", action: "modify", current: { mode: "100644", oid: "9".repeat(40) },
+          target: { mode: "100755", oid: "a".repeat(40) }, unstaged: true,
+        },
+      ],
+    })
+  } finally {
+    await c.close()
+  }
+})
+
+function planModes(block: "validPlans" | "malformedPlans") {
+  const source = readFileSync(fixture, "utf8")
+  const start = source.indexOf(`const ${block} = {`)
+  const end = source.indexOf("\n}\n", start)
+  return [...source.slice(start, end).matchAll(/^  "(plan-[a-z0-9-]+)": /gm)].map((match) => match[1] as string)
+}
+
+test("valid restore plans in every state round-trip", async () => {
+  const modes = planModes("validPlans")
+  assert.ok(modes.length >= 8, `expected the fixture to define the valid plan modes, found ${modes.length}`)
+  await Promise.all(
+    modes.map(async (mode) => {
+      const c = client({ FAKE_AGENT_SNAP_MODE: mode })
+      try {
+        const plan = await c.restorePlan("/repo", fromID)
+        assert.equal(plan.snapshot.id, fromID, `mode ${mode}`)
+      } finally {
+        await c.close()
+      }
+    }),
+  )
+})
+
+test("restorePlan keeps a SHA-256 plan, a page with more entries, and a plan with no result tree", async () => {
+  const wide = client({ FAKE_AGENT_SNAP_MODE: "plan-sha256" })
+  const paged = client({ FAKE_AGENT_SNAP_MODE: "plan-paged" })
+  const bare = client({ FAKE_AGENT_SNAP_MODE: "plan-no-result-tree" })
+  try {
+    const sha256 = await wide.restorePlan("/repo", fromID)
+    assert.equal(sha256.current_tree.length, 64)
+    assert.equal(sha256.snapshot.commit.length, 40)
+    const page = await paged.restorePlan("/repo", fromID, { currentTree: planCurrentTree })
+    assert.equal(page.next_offset, 4)
+    assert.equal(page.totals.entries, 9)
+    assert.equal(page.entries.length, 4)
+    const unplanned = await bare.restorePlan("/repo", fromID)
+    assert.equal(unplanned.result_tree, undefined)
+  } finally {
+    await Promise.all([wide.close(), paged.close(), bare.close()])
+  }
+})
+
+test("malformed snapshot.restore_plan results surface SnapProtocolError", async () => {
+  const modes = ["plan-scalar", ...planModes("malformedPlans")]
+  assert.ok(modes.length > 80, `expected the fixture to define the malformed plan modes, found ${modes.length}`)
+  await Promise.all(
+    modes.map(async (mode) => {
+      const c = client({ FAKE_AGENT_SNAP_MODE: mode })
+      try {
+        await assert.rejects(
+          () => c.restorePlan("/repo", fromID),
+          (err: unknown) => err instanceof SnapProtocolError,
+          `mode ${mode} must produce a SnapProtocolError`,
+        )
+      } finally {
+        await c.close()
+      }
+    }),
+  )
+})
+
+test("restorePlan keeps the wire code of -32001, -32002, and -32602", async () => {
+  const cases: Array<[string, number, string]> = [
+    ["plan-not-found", -32001, `snapshot not found: ${fromID}`],
+    ["plan-stale", -32002, "working tree changed since the plan"],
+    ["plan-invalid-params", -32602, "param must be an object id: current_tree"],
+  ]
+  for (const [mode, code, message] of cases) {
+    const c = client({ FAKE_AGENT_SNAP_MODE: mode })
+    try {
+      await assert.rejects(
+        () => c.restorePlan("/repo", fromID),
+        (err: unknown) =>
+          err instanceof SnapRpcError &&
+          !(err instanceof SnapRestorePlanUnsupportedError) &&
+          err.name === "SnapRpcError" &&
+          err.code === code &&
+          err.message === message,
+        `mode ${mode}`,
+      )
+    } finally {
+      await c.close()
+    }
+  }
+})
+
+test("an old binary's method-not-found rejects restorePlan with the typed unsupported error", async () => {
+  const c = client({ FAKE_AGENT_SNAP_MODE: "plan-method-not-found" })
+  try {
+    await assert.rejects(
+      () => c.restorePlan("/repo", fromID),
+      (err: unknown) =>
+        err instanceof SnapRestorePlanUnsupportedError &&
+        err instanceof SnapRpcError &&
+        err.name === "SnapRestorePlanUnsupportedError" &&
+        err.code === -32601 &&
+        /cannot plan restores/.test(err.message),
+    )
+  } finally {
+    await c.close()
+  }
+})
+
+test("aborting a restorePlan tears down the transport and rejects with AbortError", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-plan-abort-")), "fake.log")
+  const c = client({ FAKE_AGENT_SNAP_MODE: "plan-slow", FAKE_AGENT_SNAP_LOG: log })
+  const controller = new AbortController()
+  try {
+    const rejected = assert.rejects(
+      c.restorePlan("/repo", fromID, undefined, controller.signal),
+      (err: unknown) => (err as Error).name === "AbortError",
+    )
+    await abortOnceReceived(controller, log, "snapshot.restore_plan")
+    await rejected
+    assert.equal(c.pid, undefined, "abort must start teardown of the transport")
+  } finally {
+    await c.close()
+  }
+  const entries = readFileSync(log, "utf8")
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as { event: string })
+  assert.ok(entries.some((entry) => entry.event === "request"), "the plan must have reached the child before the abort")
+  assert.ok(!entries.some((entry) => entry.event === "completed"), "aborted plan must never complete")
+})
+
+test("an already-aborted restorePlan rejects without starting the transport", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-plan-abort-")), "fake.log")
+  const c = client({ FAKE_AGENT_SNAP_LOG: log })
+  const controller = new AbortController()
+  controller.abort()
+  try {
+    await assert.rejects(
+      () => c.restorePlan("/repo", fromID, undefined, controller.signal),
+      (err: unknown) => (err as Error).name === "AbortError",
+    )
+    assert.equal(c.pid, undefined)
+  } finally {
+    await c.close()
+  }
+  assert.equal(existsSync(log), false, "no request may reach a child")
 })
 
 function originClient(mode: string, onLog: (message: string) => void = () => {}, timeoutMs?: number) {
