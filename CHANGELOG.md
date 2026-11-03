@@ -124,6 +124,13 @@
   to remove it only when no `agent-snap` or Git process is running. Blink
   never removes the lock itself. Creates that contend with each other still
   succeed. See docs/DIAGNOSTICS.md.
+- `snapshot.create` retries a snapshot ref directory that a concurrent
+  `git pack-refs --all --prune` removed. `git gc` and `git maintenance` run
+  that command. Since the stale-lock fix above, such a create failed with
+  `update refs: … unable to create directory for`. Blink now retries that one
+  failure up to 5 attempts in all, over about 150 ms of waits. A permission
+  failure prints the same message and still fails the create after the
+  fifth attempt. Every other ref lock failure still fails at once.
 
 ## 0.1.0
 

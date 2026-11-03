@@ -159,6 +159,8 @@ This workflow is a product requirement for the restore release, not an MVP behav
 - If another create wins the race, the operation MUST re-read state and retry rather than overwrite the other snapshot.
 - Git waits up to one second for a snapshot ref lock (`core.filesRefLockTimeout`). When the lock is still held after that wait, the create fails with `-32603` and the message `snapshot ref lock <ref>.lock in the Git directory stayed held for 1s; remove it only when no agent-snap or Git process is running in this repository`. It creates no ref.
 - Blink MUST NOT remove, rename, or rewrite a ref lock file, because it cannot tell a lock that a dead Git left from one that a live Git holds.
+- A concurrent `git pack-refs --all --prune`, which `git gc` and `git maintenance` run, can remove a snapshot ref's directory between Git's `mkdir` and its lock. Git then prints `cannot lock ref '<ref>': unable to create directory for <path>`. Blink retries that one failure up to 5 attempts in all, waiting 10, 20, 40, and 80 ms between them. A permission failure on that directory prints the same message, so after the fifth attempt the create fails with `-32603` and a message that starts `update refs:`. It creates no ref.
+- Every other `cannot lock ref` failure, such as a directory/file name conflict with an existing ref, a permission failure on the lock file, or a non-directory in the way, fails the create at once with `-32603` and a message that starts `update refs:`. It creates no ref.
 - The resulting snapshot-parent chain MUST remain linear per worktree.
 
 ### FR-7: Snapshot listing
