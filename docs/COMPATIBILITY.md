@@ -140,11 +140,13 @@ outside the worktree that reads the repository's objects through
 refs do not change the result, and the diff writes nothing to the repository.
 
 Mixed versions: a binary without `snapshot.diff` answers `-32601`. So does a
-binary without `snapshot.restore_plan`. `SnapClient` and the CLI expose that
-method. The host tools do not.
+binary without `snapshot.restore_plan`. `SnapClient`, the CLI, and the host
+tools expose that method.
 
 A core that carries `restorePlan` needs a binary that answers
-`snapshot.restore_plan`. Against an older binary, only `restorePlan` rejects.
+`snapshot.restore_plan`. Against an older binary, only `restorePlan` and the
+`agent_snap_restore_plan` tool reject. The tool fails with
+`SnapRestorePlanUnsupportedError`.
 The new `SnapRestorePlanUnsupportedError` export is additive, and
 `instanceof SnapRpcError` still matches. `SnapLike` gains a required
 `restorePlan` method, so an outside implementation must add it. `-32002`
@@ -247,6 +249,7 @@ request fails closed.
 | `agent_snap_list(cwd?, limit?)` | Manual list. |
 | `agent_snap_get(id, cwd?)` | Describe one snapshot. Read-only. |
 | `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)` | One page of the diff between two snapshots, as Git evidence text. Read-only. |
+| `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)` | One page of the restore plan for a snapshot, as Git evidence text. Read-only. Needs a binary that answers `snapshot.restore_plan`. Applies nothing. |
 
 ## Pi extension (`@agent-snap/pi`)
 
@@ -261,6 +264,7 @@ packed tarball through Pi 0.84.1, the floor of the range. Manifest key:
 | `agent_settled` | Coalesced snapshot, 1.5 s window. |
 | `session_shutdown` | Flush, then close the client. |
 | `agent_snap_create` / `agent_snap_list` / `agent_snap_get` / `agent_snap_diff` | Tools. |
+| `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)` | Tool. One page of the restore plan, as Git evidence text. Read-only. Needs a binary that answers `snapshot.restore_plan`. Pi has no command for it. |
 | `agent-snap-create` / `agent-snap-list` / `agent-snap-get <id>` / `agent-snap-diff <from> <to>` | Commands. |
 | Origin | Host `pi`; source `session-start`, `agent-settled`, `tool`, or `command`. |
 

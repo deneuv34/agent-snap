@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The OpenCode 1.x, OpenCode 2.x, and Pi hosts add the
+  `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)` tool. It
+  returns one page of the restore plan as text. It says whether the plan is
+  applicable, lists the blockers and the entries, and names the `offset` and
+  `current_tree` to request next. It is read-only, and this release cannot
+  apply a restore. Pi has no command for it. Against a binary that predates
+  `snapshot.restore_plan`, the tool fails with
+  `SnapRestorePlanUnsupportedError`.
 - `snapshot.PlanRestore` refuses a `PlanQuery` whose `Scope` is the zero value
   with `snapshot.ErrNoScope`. A caller that wants every path passes
   `snapshot.WholeTree()`. The JSONL behavior of `snapshot.restore_plan` is
@@ -20,8 +28,7 @@
 - `agent-snap restore-plan <id> [--cwd <dir>] [--path <path>]... [--offset <n>]
   [--current-tree <oid>]` prints one page of the restore plan as JSON. It
   exits 0 when it prints a plan, including one that is not applicable, and 1 on
-  any error, including a stale `--current-tree`. It writes nothing. The host
-  tools do not expose restore plans yet.
+  any error, including a stale `--current-tree`. It writes nothing.
 - `snapshot.create` no longer writes or deletes shared index files in a
   repository with `core.splitIndex=true`. Each create wrote a new
   `sharedindex.<oid>` file into the Git directory. Git also deleted every

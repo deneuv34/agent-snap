@@ -17,12 +17,13 @@ branch`, and never collide with your real history.
    - `@agent-snap/opencode` — an OpenCode plugin (baseline at
      `session.created`, coalesced snapshot at `session.idle`, plus
      `agent_snap_create` / `agent_snap_list` / `agent_snap_get` /
-     `agent_snap_diff` tools).
+     `agent_snap_diff` / `agent_snap_restore_plan` tools).
    - `@agent-snap/pi` — a Pi Coding Agent extension (baseline at
      `session_start`, coalesced snapshot at `agent_settled`, cleanup at
      `session_shutdown`, plus `agent_snap_create` / `agent_snap_list` /
-     `agent_snap_get` / `agent_snap_diff` tools and `agent-snap-create` /
-     `agent-snap-list` / `agent-snap-get` / `agent-snap-diff` commands).
+     `agent_snap_get` / `agent_snap_diff` / `agent_snap_restore_plan` tools and
+     `agent-snap-create` / `agent-snap-list` / `agent-snap-get` /
+     `agent-snap-diff` commands).
 3. Every create builds a tree from a **temporary index**
    (`GIT_INDEX_FILE` pointing at a scratch file), so the real index is never
    written. The commit is created with `git commit-tree` against hidden refs —
@@ -143,8 +144,10 @@ returns the validated restore plan (section 8.5). It rejects with
 when the installed `agent-snap` cannot plan restores. `SnapLike` gains
 `restorePlan`.
 
-The host tools do not expose restore plans, and no release can apply a
-restore. See FR-15 in [`docs/BLINK_SPEC.md`](docs/BLINK_SPEC.md).
+Both hosts expose the plan as `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)`.
+The tool is read-only and returns one page as text. It names the `offset` and
+`current_tree` to request next. No release can apply a restore. See FR-15 in
+[`docs/BLINK_SPEC.md`](docs/BLINK_SPEC.md).
 
 ## Adapters
 
@@ -166,8 +169,9 @@ or copy the built package into `.opencode/plugins/`. The plugin:
 - snapshots the session directory when a session is created,
 - coalesces `session.idle` bursts (1.5 s window) into one settled snapshot,
 - exposes `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
-  `agent_snap_get(id, cwd?)`, and
-  `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)` tools,
+  `agent_snap_get(id, cwd?)`,
+  `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)`, and
+  `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)` tools,
 - records host `opencode` and source `session-start`, `session-idle`, or
   `tool` on each snapshot.
 
@@ -204,8 +208,9 @@ The extension:
 - flushes pending snapshots and shuts the Go subprocess down at
   `session_shutdown`,
 - registers `agent_snap_create(reason?, cwd?)`, `agent_snap_list(cwd?, limit?)`,
-  `agent_snap_get(id, cwd?)`, and
-  `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)` tools,
+  `agent_snap_get(id, cwd?)`,
+  `agent_snap_diff(from, to, offset?, max_patch_bytes?, cwd?)`, and
+  `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)` tools,
 - registers `agent-snap-create`, `agent-snap-list`, `agent-snap-get <id>`, and
   `agent-snap-diff <from> <to>` commands,
 - records host `pi` and source `session-start`, `agent-settled`, `tool`, or

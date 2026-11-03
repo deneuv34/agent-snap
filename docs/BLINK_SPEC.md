@@ -40,6 +40,7 @@ Normal Git commits are not sufficient for this purpose: committing affects the u
 - List snapshots for a repository, newest first.
 - Look up one snapshot by identifier and inspect its commit, tree, parent, and changed paths.
 - Compare two snapshots and page through their changed files and hunks.
+- Preview a restore of all or selected paths, one page at a time, without writing anything. FR-15 specifies this. The Store, protocol, client, CLI, and both hosts build the plan.
 - Record which host integration and which event or action asked for each snapshot.
 - Expose a CLI and a long-running JSONL protocol server.
 - Provide a type-safe TypeScript client for the Go core.
@@ -49,8 +50,7 @@ Normal Git commits are not sufficient for this purpose: committing affects the u
 
 ### 4.2 Planned capabilities (not implemented)
 
-- Preview a restore of all or selected paths, and record its safety backup. FR-15 specifies this. The Store, protocol, client, and CLI build the plan, and only the host tools are missing.
-- Confirm and apply a restore.
+- Confirm a restore, require its safety backup, and apply it. FR-15 specifies the backup rule. Phase 5 builds the confirmation and the write.
 - Retention and garbage-collection policy.
 - Product-facing naming, UX, and packaging under `blink`.
 
@@ -360,7 +360,7 @@ Errors:
 
 ### FR-15: Restore plan
 
-**Status:** The Store, protocol, TypeScript client, and CLI layers are built. Only the host tools are missing. [`RESTORE.md`](RESTORE.md) records the design and the order of the pull requests that build it. Each of those pull requests adds its layer to FR-8 through FR-11 and section 7.1.
+**Status:** Built in every layer. The Store, protocol, TypeScript client, CLI, and host tools all ship the read-only plan. [`RESTORE.md`](RESTORE.md) records the design and the order of the pull requests that build it. Each of those pull requests adds its layer to FR-8 through FR-11 and section 7.1.
 
 A restore plan shows what restoring a snapshot would change in the working tree, and what would stop the restore. It is read-only. This release cannot apply a restore.
 
