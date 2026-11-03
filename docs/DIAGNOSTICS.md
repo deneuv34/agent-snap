@@ -6,7 +6,7 @@ secrets, or full file listings.
 
 ## What is safe to record
 
-- Operation (`create`, `list`, `diff`, `ping`, `close`, teardown)
+- Operation (`create`, `list`, `diff`, `restore-plan`, `ping`, `close`, teardown)
 - JSON-RPC error code and the error message returned by the core
 - Repository *existence* / "not a git repository", never file bodies
 - Snapshot id, commit id, reason string, `reused`, origin `source` and `host`
@@ -45,8 +45,12 @@ blob or working-tree payload to host logs.
 | `agent-snap binary does not accept snapshot origin; refusing to send it a reason that ends like an origin paragraph` | 0.1.0 binary, and a reason containing `\n\nAgent-Snap-` | Upgrade the binary, or use a different reason. |
 | JSON-RPC `-32001` | The `snapshot.get` or `snapshot.restore_plan` id, or either `snapshot.diff` side, does not exist in this worktree. Diff checks `from` first. | Take ids from `snapshot.list` for the same `cwd`. Ids from another worktree do not resolve. |
 | JSON-RPC `-32002` | A `snapshot.restore_plan` request carried a `current_tree` that the working tree no longer captures to | The working tree changed between pages. Request the first page again without `current_tree` and use the new value. The method only plans and changes nothing. |
-| JSON-RPC `-32601` | Unknown method, or `snapshot.diff` or `snapshot.restore_plan` sent to a binary that predates it | Only `ping`, `snapshot.create`, `snapshot.list`, `snapshot.get`, `snapshot.diff`, `snapshot.restore_plan` exist. Upgrade the binary if the diff tool gets `-32601`. `SnapClient`, the CLI, and the host tools do not call `snapshot.restore_plan`. |
+| JSON-RPC `-32601` | Unknown method, or `snapshot.diff` or `snapshot.restore_plan` sent to a binary that predates it | Only `ping`, `snapshot.create`, `snapshot.list`, `snapshot.get`, `snapshot.diff`, `snapshot.restore_plan` exist. Upgrade the binary if the diff tool gets `-32601`. `SnapClient` and the CLI call `snapshot.restore_plan`. The host tools do not. |
 | `SnapProtocolError` | Child wrote a non-conforming line | Treat as a transport bug. Discard the payload; do not forward it to the host. |
+| `SnapProtocolError` beginning `snapshot.restore_plan result` | The binary and the client disagree about the restore plan | Report it as a bug with the Git and `agent-snap` versions. Do not attach the plan. |
+| `SnapRestorePlanUnsupportedError` | `restorePlan` got `-32601` from a binary that predates `snapshot.restore_plan` | Upgrade the binary or set `AGENT_SNAP_BIN`. |
+| `agent-snap: working tree changed since the plan` from `restore-plan` | `--current-tree` no longer matches what the working tree captures to | Run `restore-plan` again without `--current-tree` and use the new `current_tree` for later pages. The command only plans and changes nothing. |
+| `agent-snap: invalid --path: …` or `--offset above 0 requires --current-tree` from `restore-plan` | The flags break the FR-15 scope or paging rules | Fix the flags. The command rejects them before it resolves the repository. |
 
 A failed create must not leave an unobserved checkpoint. If the client
 timed out or aborted, assume teardown started and do not trust a late

@@ -11,7 +11,7 @@ branch`, and never collide with your real history.
 
 ## How it works
 
-1. A Go core (`cmd/agent-snap`) exposes `create` / `list` / `get` / `diff` / `ping` as
+1. A Go core (`cmd/agent-snap`) exposes `create` / `list` / `get` / `diff` / `restore-plan` / `ping` as
    direct JSON commands and a long-running JSONL `serve` mode on stdin/stdout.
 2. Thin TypeScript adapters launch and reuse the Go subprocess:
    - `@agent-snap/opencode` — an OpenCode plugin (baseline at
@@ -65,6 +65,7 @@ bun run build
 agent-snap create "before big refactor" --cwd /path/to/repo   # prints snapshot JSON
 agent-snap list --cwd /path/to/repo --limit 10                # prints {"snapshots": [...]}
 agent-snap diff <from-id> <to-id> --cwd /path/to/repo         # prints one diff page
+agent-snap restore-plan <id> --cwd /path/to/repo              # prints one restore plan page, writes nothing
 agent-snap ping                                               # {"status":"ok","version":...}
 agent-snap version
 agent-snap serve                                              # JSONL server on stdin/stdout
@@ -127,10 +128,23 @@ FR-14 in [`docs/BLINK_SPEC.md`](docs/BLINK_SPEC.md).
 `snapshot.restore_plan` lists what restoring a snapshot would do to the working
 tree, one page at a time, and changes nothing. A request with `offset` above 0
 must carry the `current_tree` from the first page. If the working tree no
-longer captures to `current_tree`, the method answers `-32002`. Only the JSONL
-method exists. `SnapClient`, the CLI, and the host tools do not expose it, and
-no release can apply a restore. See FR-15 in
-[`docs/BLINK_SPEC.md`](docs/BLINK_SPEC.md).
+longer captures to `current_tree`, the method answers `-32002`.
+
+The CLI exposes the same plan as
+`agent-snap restore-plan <id> [--cwd <dir>] [--path <path>]... [--offset <n>] [--current-tree <oid>]`.
+`--path` may repeat, and with none the plan covers the whole tree. The command
+exits `0` when it prints a plan, including one that is not applicable, and `1`
+on any error, including a stale `--current-tree`.
+
+`client.restorePlan(cwd, id, { paths?, offset?, currentTree? }, signal?)`
+returns the validated restore plan (section 8.5). It rejects with
+`SnapProtocolError` for a plan that breaks section 8.5, and with
+`SnapRestorePlanUnsupportedError` (which extends `SnapRpcError`, code -32601)
+when the installed `agent-snap` cannot plan restores. `SnapLike` gains
+`restorePlan`.
+
+The host tools do not expose restore plans, and no release can apply a
+restore. See FR-15 in [`docs/BLINK_SPEC.md`](docs/BLINK_SPEC.md).
 
 ## Adapters
 

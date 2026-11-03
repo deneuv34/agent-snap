@@ -49,7 +49,7 @@ Normal Git commits are not sufficient for this purpose: committing affects the u
 
 ### 4.2 Planned capabilities (not implemented)
 
-- Preview a restore of all or selected paths, and record its safety backup. FR-15 specifies this, and it is not yet built.
+- Preview a restore of all or selected paths, and record its safety backup. FR-15 specifies this. The Store, protocol, client, and CLI build the plan, and only the host tools are missing.
 - Confirm and apply a restore.
 - Retention and garbage-collection policy.
 - Product-facing naming, UX, and packaging under `blink`.
@@ -176,6 +176,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 | `list [--cwd <dir>] [--limit <n>]` | List snapshots and print JSON. |
 | `get <id> [--cwd <dir>]` | Print the snapshot detail object for one snapshot as JSON. |
 | `diff <from> <to> [--cwd <dir>] [--offset <n>] [--max-patch-bytes <n>]` | Print one page of the diff result object (FR-14) as JSON. `--offset` takes an integer from 0 through 2147483647, and `--max-patch-bytes` an integer from 1024 through 1048576. |
+| `restore-plan <id> [--cwd <dir>] [--path <path>]... [--offset <n>] [--current-tree <oid>]` | Print one page of the restore plan object (FR-15) as JSON. `--path` may repeat, and with none the plan covers the whole tree. `--offset` takes an integer from 0 through 2147483647 and needs `--current-tree` when above 0. `--current-tree` takes a lowercase object ID. The command exits `0` when it prints a plan, including a plan that is not applicable, and `1` on any error. It writes nothing. |
 | `ping` | Print protocol status and version JSON. |
 | `version` | Print the version string. |
 | `serve` | Process newline-delimited JSON requests on standard input and emit one JSON response per request on standard output. |
@@ -356,7 +357,7 @@ Errors:
 
 ### FR-15: Restore plan
 
-**Status:** The Store, protocol, and TypeScript client layers are built. The CLI and the host tools are not. [`RESTORE.md`](RESTORE.md) records the design and the order of the pull requests that build it. Each of those pull requests adds its layer to FR-8 through FR-11 and section 7.1.
+**Status:** The Store, protocol, TypeScript client, and CLI layers are built. Only the host tools are missing. [`RESTORE.md`](RESTORE.md) records the design and the order of the pull requests that build it. Each of those pull requests adds its layer to FR-8 through FR-11 and section 7.1.
 
 A restore plan shows what restoring a snapshot would change in the working tree, and what would stop the restore. It is read-only. This release cannot apply a restore.
 
