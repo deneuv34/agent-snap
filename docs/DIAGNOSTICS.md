@@ -101,6 +101,34 @@ A root that exits by itself is **not** success; descendants can survive it.
 Check Task Manager / `tasklist` for leftover `agent-snap.exe` or `git.exe`
 started by that tree. Record pid and `taskkill` status only.
 
+### Scratch directories left after a hard kill
+
+Each create, diff, and restore plan works in one private directory named
+`agent-snap-index-*`. It lives in the system temporary directory (`TMPDIR`
+on POSIX, `TMP` or `TEMP` on Windows). When that directory resolves inside
+the repository, Blink uses the user cache directory or `/tmp` instead. A
+create directory holds a scratch `index`. A diff or restore plan directory
+also holds `evidence.git`. A restore plan's `evidence.git/objects` can hold
+blobs of working-tree files, so treat a leftover directory as file contents.
+Do not attach it to a report.
+
+On POSIX the guardian sends SIGTERM to the process group. `agent-snap`
+cancels the request in flight and sends SIGTERM to its Git child, so Git
+removes its own ref lock files. A Git or hook still running 500 ms later is
+killed. `agent-snap` then removes the directory and exits. The guardian sends SIGKILL to the group
+`KILL_GRACE_MS` (2 seconds) later. A directory that is still being removed
+then stays behind, in part or in full. A restore plan over a working tree
+with tens of thousands of new or changed files can need that long.
+A SIGKILL sent straight to `agent-snap` also leaves its directory.
+
+On Windows, `taskkill /T /F` ends the process tree with no cleanup. Every
+request that times out or is aborted on Windows leaves its directory.
+
+Blink does not sweep these directories, because it cannot prove that a
+directory is not in use by another running `agent-snap`. Delete
+`agent-snap-index-*` directories by hand when no `agent-snap` process is
+running.
+
 ## Binary not found
 
 ```

@@ -134,7 +134,8 @@ This workflow is a product requirement for the restore release, not an MVP behav
 
 - Snapshot creation MUST use a private temporary `GIT_INDEX_FILE`.
 - The temporary directory MUST be outside the target repository, including after symlink resolution, so Blink's own scratch files cannot be captured.
-- Scratch files MUST be removed when the operation completes or fails.
+- Scratch files MUST be removed when the operation completes, fails, or is cancelled.
+- The binary MUST treat SIGTERM and SIGINT as cancellation of the request in flight. It stops that request's Git children, removes the request's scratch directory, and then exits. A second signal ends the process at once. SIGKILL and a Windows forced termination run no cleanup, so a scratch directory can remain after them.
 - Snapshot creation MUST NOT write the real Git index, modify `HEAD`, update user branches, or modify working-tree files.
 
 ### FR-4: Hidden, worktree-scoped storage

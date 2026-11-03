@@ -91,6 +91,15 @@
   latest snapshot when the tree was unchanged. 0.1.0 stored a reason ending in
   `Agent-Snap-` lines as given; this release reads such a snapshot back with
   an origin and a shorter reason.
+- `agent-snap` removes the scratch directory of a request that is cancelled
+  by SIGTERM or SIGINT. Before, the binary died at once on the teardown
+  signal that `SnapClient` sends on timeout, abort, and `close()`. Every
+  aborted create left `agent-snap-index-*/index` in the temporary directory.
+  Every aborted restore plan also left `evidence.git`, whose private object
+  directory can hold blobs of working-tree files. The binary now cancels the
+  request in flight, stops its Git children, removes the directory, and
+  exits. SIGKILL and Windows `taskkill /F` still run no cleanup. See
+  docs/DIAGNOSTICS.md.
 
 ## 0.1.0
 
