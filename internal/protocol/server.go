@@ -310,7 +310,7 @@ var scopeMessages = []struct {
 func optionalScope(params map[string]any) (snapshot.Scope, *Error) {
 	raw, ok := params["paths"]
 	if !ok {
-		return snapshot.Scope{}, nil
+		return snapshot.WholeTree(), nil
 	}
 	items, ok := raw.([]any)
 	if !ok {
