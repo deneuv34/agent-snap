@@ -413,9 +413,8 @@ func (s *Store) isSymref(ctx context.Context, ref string) (bool, error) {
 // encoded as the object format's all-zero OID, meaning "latest must not
 // exist yet". update-ref runs with --no-deref so a symbolic snapshot ref can
 // never redirect the write onto a real branch; symbolic refs are rejected
-// outright. Git waits refLockTimeout for a held ref lock. A lock that
-// outlasts the wait is an error and is never removed, because a stale lock
-// and one that a live Git holds look the same.
+// outright. A ref lock held past refLockTimeout fails the call and is never
+// removed, because a stale lock and one that a live Git holds look the same.
 func (s *Store) commitRefs(ctx context.Context, id, commit, expectedLatest string, extraEnv []string) (bool, error) {
 	itemsRef := s.itemsRef() + id
 	if symref, err := s.isSymref(ctx, itemsRef); err != nil {
