@@ -979,3 +979,68 @@ test("malformed error objects surface SnapProtocolError", async () => {
     await c.close()
   }
 })
+
+const malformedIDs: Record<string, string> = {
+  "U+2028": `${snapshotID} forged`,
+  NEL: `${snapshotID}\u0085forged`,
+  "malformed timestamp": "20260101T0000.000000000Z-0123456789ab",
+  "uppercase hex": "20260101T000000.000000000Z-0123456789AB",
+  "extra suffix": `${snapshotID}-extra`,
+}
+
+const idFields: Array<{ field: string; send: (c: SnapClient, id: string) => Promise<unknown>; viaEnv: boolean }> = [
+  { field: "snapshot.create result has a malformed id", send: (c) => c.create("/repo"), viaEnv: true },
+  { field: "snapshot.list result has a malformed id", send: (c) => c.list("/repo", 5), viaEnv: true },
+  { field: "snapshot.get result has a malformed id", send: (c, id) => c.get("/repo", id), viaEnv: false },
+  { field: "snapshot.get result has a malformed parent_id", send: (c) => c.get("/repo", snapshotID), viaEnv: true },
+  { field: "snapshot.diff result has a malformed from.id", send: (c, id) => c.diff("/repo", id, toID), viaEnv: false },
+  { field: "snapshot.diff result has a malformed to.id", send: (c, id) => c.diff("/repo", fromID, id), viaEnv: false },
+  { field: "snapshot.restore_plan result has a malformed snapshot.id", send: (c, id) => c.restorePlan("/repo", id), viaEnv: false },
+]
+
+test("every result field that carries a snapshot id rejects an id outside the id format", async () => {
+  await Promise.all(
+    idFields.flatMap(({ field, send, viaEnv }) =>
+      Object.entries(malformedIDs).map(async ([name, id]) => {
+        const c = client(viaEnv ? { FAKE_AGENT_SNAP_ID: id } : {})
+        try {
+          await assert.rejects(
+            () => send(c, id),
+            (err: unknown) => err instanceof SnapProtocolError && err.message === field,
+            `${name}: expected "${field}"`,
+          )
+        } finally {
+          await c.close()
+        }
+      }),
+    ),
+  )
+})
+
+test("every result field that carries a snapshot id accepts a well-formed id", async () => {
+  await Promise.all(
+    idFields.map(async ({ field, send, viaEnv }) => {
+      const c = client(viaEnv ? { FAKE_AGENT_SNAP_ID: fromID } : {})
+      try {
+        await send(c, fromID)
+      } catch (err) {
+        assert.fail(`${field}: a well-formed id was rejected: ${String(err)}`)
+      } finally {
+        await c.close()
+      }
+    }),
+  )
+  const c = client({ FAKE_AGENT_SNAP_ID: fromID })
+  try {
+    const snapshots = await c.list("/repo", 5)
+    assert.deepEqual(
+      snapshots.map((snap) => [snap.id, snap.commit.length]),
+      [
+        ["20260102T000000.000000000Z-0123456789ab", 40],
+        [fromID, 64],
+      ],
+    )
+  } finally {
+    await c.close()
+  }
+})

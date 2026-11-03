@@ -1,10 +1,10 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 import { spawn } from "node:child_process"
-import { createInterface } from "node:readline"
 
 const mode = process.env.FAKE_AGENT_SNAP_MODE ?? ""
 const logFile = process.env.FAKE_AGENT_SNAP_LOG
 const stateFile = process.env.FAKE_AGENT_SNAP_STATE
+const snapshotID = process.env.FAKE_AGENT_SNAP_ID
 
 const record = (obj) => {
   if (logFile) appendFileSync(logFile, JSON.stringify({ pid: process.pid, ...obj }) + "\n")
@@ -28,11 +28,21 @@ if (mode === "record-env") {
   record({ event: "env", guardian: process.env.AGENT_SNAP_GUARDIAN ?? null, bunBeBun: process.env.BUN_BE_BUN ?? null })
 }
 
-const rl = createInterface({ input: process.stdin })
 let created = 0
 let grandchildSpawned = false
 
-rl.on("line", (line) => {
+let unread = ""
+process.stdin.setEncoding("utf8")
+process.stdin.on("data", (chunk) => {
+  unread += chunk
+  for (let end = unread.indexOf("\n"); end !== -1; end = unread.indexOf("\n")) {
+    const line = unread.slice(0, end)
+    unread = unread.slice(end + 1)
+    onLine(line)
+  }
+})
+
+function onLine(line) {
   let req
   try {
     req = JSON.parse(line)
@@ -129,7 +139,7 @@ rl.on("line", (line) => {
     return
   }
   handle(req)
-})
+}
 
 function handle(req) {
   switch (req.method) {
@@ -148,7 +158,7 @@ function handle(req) {
         respond(req, { id: 42, commit: "0123456789ab" })
       } else {
         respond(req, {
-          id: `20260101T000000.000000000Z-fake${process.pid}-${created}`,
+          id: snapshotID ?? `20260101T000000.${String(process.pid).padStart(6, "0").slice(-6)}${String(created).padStart(3, "0").slice(-3)}Z-0123456789ab`,
           commit: "0123456789ab",
           reason: req.params?.reason ?? "manual",
           created_at: new Date().toISOString(),
@@ -160,7 +170,7 @@ function handle(req) {
       }
       break
     case "snapshot.list":
-      respond(req, { snapshots: [] })
+      respond(req, { snapshots: snapshotID === undefined ? [] : listed(snapshotID) })
       break
     case "snapshot.get":
       if (mode === "detail-not-found") {
@@ -243,9 +253,16 @@ function detail(id) {
     created_at: "2026-01-01T00:00:00Z",
     tree: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
     parent: "fedcba9876540000000000000000000000000000",
-    parent_id: "20251231T000000.000000000Z-fedcba987654",
+    parent_id: snapshotID ?? "20251231T000000.000000000Z-fedcba987654",
     changed_files: ["src/a.ts"],
   }
+}
+
+function listed(id) {
+  return [
+    { id: "20260102T000000.000000000Z-0123456789ab", commit: "0123456789ab".padEnd(40, "0"), reason: "sha1", created_at: "2026-01-02T00:00:00Z" },
+    { id, commit: "fedcba987654".padEnd(64, "0"), reason: "sha256", created_at: "2026-01-01T00:00:00Z" },
+  ]
 }
 
 const diffHunk = {
@@ -523,5 +540,5 @@ const malformedPlans = {
 }
 
 function respond(req, result, error) {
-  console.log(JSON.stringify({ id: req?.id ?? null, result, error }))
+  console.log(JSON.stringify({ id: req?.id ?? null, result, error }).replace(/[\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16)}`))
 }

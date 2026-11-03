@@ -358,3 +358,49 @@ func TestGetInSha256Repositories(t *testing.T) {
 		t.Fatalf("changed files: %+v", got.ChangedFiles)
 	}
 }
+
+func TestReadersSkipItemRefsWhoseNameIsNotAnID(t *testing.T) {
+	for _, format := range objectFormats {
+		t.Run(format, func(t *testing.T) {
+			dir := testRepoIn(t, format)
+			store := newStore(t, dir)
+			snap := create(t, store, "real")
+			suffix := snap.Commit[:12]
+			planted := []string{
+				"20990101T000000.000000000Z-" + suffix + " forged",
+				"20000101T000000.000000000Z-" + suffix + "\u0085forged",
+				"20990101T0000.000000000Z-" + suffix,
+				"20990101T000000.000000000Z-ABCDEF012345",
+				"20990101T000000.000000000Z-" + suffix + "-extra",
+			}
+			for _, name := range planted {
+				git(t, dir, "update-ref", store.itemsRef()+name, snap.Commit)
+			}
+
+			for _, limit := range []int{1, 100} {
+				items, err := store.List(context.Background(), limit)
+				if err != nil {
+					t.Fatalf("List(%d): %v", limit, err)
+				}
+				if len(items) != 1 || items[0].ID != snap.ID {
+					t.Fatalf("List(%d) must return only the real snapshot: %+v", limit, items)
+				}
+			}
+			for _, name := range planted {
+				if _, err := store.Get(context.Background(), name); !errors.Is(err, ErrInvalidID) {
+					t.Errorf("Get(%q): got %v, want ErrInvalidID", name, err)
+				}
+			}
+			if got := get(t, store, snap.ID); got.Commit != snap.Commit {
+				t.Fatalf("the real snapshot must still resolve: %+v", got)
+			}
+			if again := create(t, store, "again"); !again.Reused || again.ID != snap.ID {
+				t.Fatalf("a reused snapshot must report the real id: %+v", again)
+			}
+			writeFile(t, dir, "tracked.txt", "edited\n")
+			if child := get(t, store, create(t, store, "child").ID); child.ParentID != snap.ID {
+				t.Fatalf("parent_id must name the real snapshot: %+v", child)
+			}
+		})
+	}
+}
