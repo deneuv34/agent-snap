@@ -220,20 +220,27 @@ function rejectsOrigin(error: unknown): boolean {
   )
 }
 
-function validateSnapshot(result: unknown): SnapSnapshot {
-  if (!isRecord(result)) throw new SnapProtocolError("snapshot.create result must be an object")
+const SNAPSHOT_ID = /^[0-9]{8}T[0-9]{6}\.[0-9]{9}Z-[0-9a-f]{12}$/
+
+function isSnapshotId(value: unknown): value is string {
+  return typeof value === "string" && SNAPSHOT_ID.test(value)
+}
+
+function validateSnapshot(result: unknown, method: "snapshot.create" | "snapshot.list"): SnapSnapshot {
+  if (!isRecord(result)) throw new SnapProtocolError(`${method} result must be an object`)
   const { id, commit, reason, created_at, source, host, changed_files, reused } = result
   if (typeof id !== "string" || typeof commit !== "string" || typeof reason !== "string" || typeof created_at !== "string") {
-    throw new SnapProtocolError("snapshot.create result is missing string fields")
+    throw new SnapProtocolError(`${method} result is missing string fields`)
   }
+  if (!isSnapshotId(id)) throw new SnapProtocolError(`${method} result has a malformed id`)
   if (!isOptionalString(source) || !isOptionalString(host)) {
-    throw new SnapProtocolError("snapshot.create result has a malformed origin")
+    throw new SnapProtocolError(`${method} result has a malformed origin`)
   }
   if (changed_files !== undefined && !isStringArray(changed_files)) {
-    throw new SnapProtocolError("snapshot.create result has malformed changed_files")
+    throw new SnapProtocolError(`${method} result has malformed changed_files`)
   }
   if (reused !== undefined && typeof reused !== "boolean") {
-    throw new SnapProtocolError("snapshot.create result has malformed reused flag")
+    throw new SnapProtocolError(`${method} result has malformed reused flag`)
   }
   return {
     id,
@@ -259,12 +266,14 @@ function validateDetail(result: unknown): SnapSnapshotDetail {
   ) {
     throw new SnapProtocolError("snapshot.get result is missing string fields")
   }
+  if (!isSnapshotId(id)) throw new SnapProtocolError("snapshot.get result has a malformed id")
   if (!isOptionalString(source) || !isOptionalString(host)) {
     throw new SnapProtocolError("snapshot.get result has a malformed origin")
   }
   if ((parent !== undefined && typeof parent !== "string") || (parent_id !== undefined && typeof parent_id !== "string")) {
     throw new SnapProtocolError("snapshot.get result has a malformed parent")
   }
+  if (parent_id !== undefined && !isSnapshotId(parent_id)) throw new SnapProtocolError("snapshot.get result has a malformed parent_id")
   if (!isStringArray(changed_files)) {
     throw new SnapProtocolError("snapshot.get result has malformed changed_files")
   }
@@ -299,6 +308,7 @@ function validateDiffSide(side: unknown, name: string): SnapDiffSide {
   if (!isRecord(side) || typeof side.id !== "string" || typeof side.commit !== "string") {
     throw new SnapProtocolError(`snapshot.diff result has a malformed ${name}`)
   }
+  if (!isSnapshotId(side.id)) throw new SnapProtocolError(`snapshot.diff result has a malformed ${name}.id`)
   return { id: side.id, commit: side.commit }
 }
 
@@ -588,6 +598,7 @@ function validateRestorePlan(result: unknown): SnapRestorePlan {
   ) {
     throw restorePlanError("has a malformed snapshot")
   }
+  if (!isSnapshotId(snapshot.id)) throw restorePlanError("has a malformed snapshot.id")
   if (result_tree !== undefined && !isObjectId(result_tree, oidLength)) throw restorePlanError("has a malformed result_tree")
   const scope = validateRestoreScope(paths)
   if (typeof applicable !== "boolean") throw restorePlanError("has a malformed applicable flag")
@@ -636,12 +647,12 @@ function validateResult(method: string, result: unknown): unknown {
       return { status: result.status, version: result.version } as PingResult
     }
     case "snapshot.create":
-      return validateSnapshot(result)
+      return validateSnapshot(result, method)
     case "snapshot.list": {
       if (!isRecord(result) || !Array.isArray(result.snapshots)) {
         throw new SnapProtocolError("snapshot.list result must be {snapshots: [...]}")
       }
-      const snapshots = result.snapshots.map((entry) => validateSnapshot(entry))
+      const snapshots = result.snapshots.map((entry) => validateSnapshot(entry, method))
       return { snapshots } as SnapListResult
     }
     case "snapshot.get":

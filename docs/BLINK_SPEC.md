@@ -165,6 +165,7 @@ This workflow is a product requirement for the restore release, not an MVP behav
 - The default list limit is 20.
 - JSONL callers may request an integer limit from 1 through 100; the CLI requires a positive integer.
 - Results MUST be sorted newest first by snapshot identifier.
+- Listing MUST skip an item ref whose name is not a snapshot identifier (FR-12). A skipped ref does not count toward the limit. A create that reuses the latest snapshot (FR-5) reports it under an item ref name that passes the same check.
 - Listed entries include identifier, commit, reason, and creation time, plus `source` and `host` when the snapshot stores them. `changed_files` and `reused` are creation-result metadata and are not guaranteed on list results.
 
 ### FR-8: Core CLI
@@ -207,6 +208,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - `SnapClient.diff(cwd, from, to, page?, signal?)` sends `snapshot.diff` and returns the validated diff result object. Validation checks every field's type and enum, and the cross-field rules in section 8.4.
 - `SnapClient.restorePlan(cwd, id, options?, signal?)` sends `snapshot.restore_plan` and returns the validated restore plan object. Validation checks every field's type and enum, and the cross-field rules in section 8.5. It also checks that entry paths increase in byte order, and it leaves out entries that carry `unaddressable_path`, because their repaired paths can fall out of order. When the binary answers `-32601`, it rejects with `SnapRestorePlanUnsupportedError`. That class extends `SnapRpcError`, and its message says the installed `agent-snap` cannot plan restores.
 - Result validation checks `source` and `host` only for type: each is a string when present. A later release can widen their syntax without breaking older clients.
+- Result validation checks every snapshot identifier against the FR-12 syntax. The checked fields are `id` in create, list, and get results, `parent_id`, the diff `from.id` and `to.id`, and the restore plan `snapshot.id`. One malformed identifier rejects the whole result with a `SnapProtocolError` whose message names the field.
 - When a create that carries origin values is rejected with `-32602` and the message `unknown param: source` or `unknown param: host`, the client MUST retry that create once without origin values. That rejection is how a 0.1.0 binary answers, and it comes before the repository is resolved, so the retry cannot duplicate a checkpoint. The retry is a new request under the same signal, with its own timeout. The client logs the first time it drops origin. A plugin upgraded ahead of its binary therefore keeps taking snapshots.
 - A 0.1.0 binary does not check reasons. The client MUST NOT send that retry when the reason contains `\n\nAgent-Snap-`; the create fails instead, so the retry never stores a reason that a newer reader would take as origin. A create sent without origin values reaches a 0.1.0 binary unchanged, as it did with a 0.1.0 client.
 

@@ -11,6 +11,14 @@
   agent could read the second line as a plan or diff fact. Every other name
   prints unchanged, including spaces and non-ASCII text. The JSON results and
   the `details` payloads are unchanged.
+- `snapshot.list` skips an item ref whose name is not a snapshot identifier.
+  A create that reuses the latest snapshot reports only a well-formed
+  identifier. Before, a ref planted under `refs/agent-snapshots/` with U+2028
+  or NEL in its name listed under that name, and the hosts printed it raw in
+  list text. A skipped ref does not count toward `limit`. The TypeScript
+  client now rejects a create, list, get, diff, or restore plan result whose
+  snapshot identifier breaks the FR-12 syntax. The `SnapProtocolError` names
+  the field.
 - The OpenCode 1.x, OpenCode 2.x, and Pi hosts add the
   `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)` tool. It
   returns one page of the restore plan as text. It says whether the plan is
