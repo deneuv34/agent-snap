@@ -128,59 +128,85 @@ func (s *Store) planRestore(ctx context.Context, id string, q PlanQuery) (Restor
 		return RestorePlan{}, err
 	}
 	defer cleanup()
-	op, err := s.withoutHooks(ctx, dir)
+	c, err := s.captureWorktree(ctx, dir)
 	if err != nil {
 		return RestorePlan{}, err
+	}
+	if q.CurrentTree != "" && q.CurrentTree != c.current {
+		return RestorePlan{}, ErrStale
+	}
+	computed, err := c.computePlan(ctx, q.Scope, snap.tree)
+	if err != nil {
+		return RestorePlan{}, err
+	}
+	return computed.plan.page(PlanSnapshot{ID: id, Commit: snap.commit, Tree: snap.tree}, q, c.current, computed.resultTree, computed.blockers), nil
+}
+
+type capture struct {
+	op            *Store
+	ev            evidence
+	current, head string
+}
+
+func (s *Store) captureWorktree(ctx context.Context, dir string) (capture, error) {
+	op, err := s.withoutHooks(ctx, dir)
+	if err != nil {
+		return capture{}, err
 	}
 	gitDir, env, err := op.evidenceRepo(ctx, dir)
 	if err != nil {
-		return RestorePlan{}, err
+		return capture{}, err
 	}
-	ev := evidence{dir: dir, gitDir: gitDir, env: env, oidLen: len(s.zeroOID)}
 
 	// Capture writes its new objects into the evidence repository, which the
 	// cleanup removes, so the real object store gains nothing.
 	current, head, err := op.captureTree(ctx, append(scratchEnv(dir), "GIT_OBJECT_DIRECTORY="+filepath.Join(gitDir, "objects")))
 	if err != nil {
-		return RestorePlan{}, err
+		return capture{}, err
 	}
-	if q.CurrentTree != "" && q.CurrentTree != current {
-		return RestorePlan{}, ErrStale
-	}
+	return capture{op: op, ev: evidence{dir: dir, gitDir: gitDir, env: env, oidLen: len(s.zeroOID)}, current: current, head: head}, nil
+}
 
-	state, err := op.readWorktree(ctx)
+type computedPlan struct {
+	plan       *plan
+	resultTree string
+	blockers   []RepoBlocker
+}
+
+func (c capture) computePlan(ctx context.Context, scope Scope, snapTree string) (computedPlan, error) {
+	state, err := c.op.readWorktree(ctx)
 	if err != nil {
-		return RestorePlan{}, err
+		return computedPlan{}, err
 	}
-	cur, err := ev.listTree(ctx, current)
+	cur, err := c.ev.listTree(ctx, c.current)
 	if err != nil {
-		return RestorePlan{}, err
+		return computedPlan{}, err
 	}
-	tgt, err := ev.listTree(ctx, snap.tree)
+	tgt, err := c.ev.listTree(ctx, snapTree)
 	if err != nil {
-		return RestorePlan{}, err
+		return computedPlan{}, err
 	}
-	heads, err := ev.headView(ctx, head, current, cur)
+	heads, err := c.ev.headView(ctx, c.head, c.current, cur)
 	if err != nil {
-		return RestorePlan{}, err
+		return computedPlan{}, err
 	}
-	p := buildPlan(q.Scope, cur, tgt)
-	if err := ev.requireBlobs(ctx, p); err != nil {
-		return RestorePlan{}, err
+	p := buildPlan(scope, cur, tgt)
+	if err := c.ev.requireBlobs(ctx, p); err != nil {
+		return computedPlan{}, err
 	}
-	index, err := op.readIndex(ctx, p.paths())
+	index, err := c.op.readIndex(ctx, p.paths())
 	if err != nil {
-		return RestorePlan{}, err
+		return computedPlan{}, err
 	}
-	w := newWorld(s.repo, p, index, heads, state.ignoreCase)
+	w := newWorld(c.op.repo, p, index, heads, state.ignoreCase)
 	if err := p.decide(ctx, w); err != nil {
-		return RestorePlan{}, err
+		return computedPlan{}, err
 	}
-	result := snap.tree
-	if !q.Scope.whole() {
-		result = p.resultTree(s.newHash)
+	result := snapTree
+	if !scope.whole() {
+		result = p.resultTree(c.op.newHash)
 	}
-	return p.page(PlanSnapshot{ID: id, Commit: snap.commit, Tree: snap.tree}, q, current, result, state.blockers(index.unmerged)), nil
+	return computedPlan{plan: p, resultTree: result, blockers: state.blockers(index.unmerged)}, nil
 }
 
 func (q PlanQuery) check() error {
