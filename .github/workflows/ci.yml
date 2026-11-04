@@ -34,10 +34,8 @@ jobs:
       - name: go test
         shell: bash
         run: |
-          status=0
-          go test ./... -count=1 -json > go-test.json || status=$?
-          node scripts/go-test-summary.mjs go-test.json "${{ matrix.os }}"
-          exit "$status"
+          node --version
+          go test ./... -count=1 -json | node scripts/go-test-summary.mjs "${{ matrix.os }}"
       - name: build binary
         shell: bash
         run: go build -o "bin/agent-snap$(go env GOEXE)" ./cmd/agent-snap
