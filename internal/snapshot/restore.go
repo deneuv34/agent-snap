@@ -219,7 +219,7 @@ func (e evidence) gitStdin(ctx context.Context, stdin string, args ...string) (s
 	cmd.Dir = e.dir
 	cmd.Env = e.env
 	cmd.Stdin = strings.NewReader(stdin)
-	stderr := &cappedBuffer{limit: diffStderrLimit}
+	stderr := &cappedBuffer{}
 	cmd.Stderr = stderr
 	out, err := cmd.Output()
 	if err != nil {

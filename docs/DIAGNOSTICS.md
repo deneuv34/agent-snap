@@ -29,7 +29,10 @@ prints its own messages in English whatever the locale, because the store
 runs Git with `LANGUAGE=C`. The stderr also holds what a clean or process
 filter printed, in the filter's own language. The store reads every value
 from Git's standard output and discards what a filter prints during a
-command that succeeds.
+command that succeeds. The store keeps the last 8 KiB of a failed command's
+stderr, because Git prints its own message after any filter output. When
+the stderr was longer, it starts with
+`[<n> earlier bytes of standard error omitted]`.
 
 ## Snapshot failures
 
