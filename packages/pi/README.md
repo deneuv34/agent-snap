@@ -52,7 +52,7 @@ npm install @agent-snap/core          # runtime dependency of dist/extension.js
 npm pack @agent-snap/pi --pack-destination . >/dev/null
 tar -xzf agent-snap-pi-*.tgz
 mv package/package.json package/dist ./
-rmdir package && rm agent-snap-pi-*.tgz
+rm -rf package agent-snap-pi-*.tgz
 ```
 
 The resulting layout — `package.json` with `pi.extensions`, `dist/`, and

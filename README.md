@@ -204,7 +204,7 @@ npm install @agent-snap/core
 npm pack @agent-snap/pi --pack-destination . >/dev/null
 tar -xzf agent-snap-pi-*.tgz
 mv package/package.json package/dist ./
-rmdir package && rm agent-snap-pi-*.tgz
+rm -rf package agent-snap-pi-*.tgz
 ```
 
 The extension:

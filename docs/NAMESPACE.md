@@ -103,8 +103,21 @@ agent-snap version
 
 The release that carries this record changes documentation and package
 descriptions only. It changes no stored snapshot, ref, or configuration, so a
-rollback has nothing to convert. To go back to an earlier release, install
-that release's version of each part. The examples use `0.1.0`.
+rollback has nothing to convert. To go back to an earlier version, install
+that version of each part.
+
+The core binary works today. Build it from the commit you want to go back to.
+A short commit hash works.
+
+```sh
+go install github.com/deneuv34/agent-snap/cmd/agent-snap@<commit>
+agent-snap version
+```
+
+No version is on npm yet, and no release has a Git tag. The commands below
+apply after the first npm publish. They use `0.1.0` as the example version.
+Keep each package at the version of the binary, because
+[RELEASE.md](RELEASE.md) requires the two to match.
 
 Pi:
 
@@ -124,30 +137,39 @@ npm install @agent-snap/core@0.1.0
 npm pack @agent-snap/pi@0.1.0 --pack-destination . >/dev/null
 tar -xzf agent-snap-pi-*.tgz
 mv package/package.json package/dist ./
-rmdir package && rm agent-snap-pi-*.tgz
+rm -rf package agent-snap-pi-*.tgz
 ```
 
-OpenCode resolves `@agent-snap/opencode` itself, and its configuration
-entry stays the same. Install the earlier package version where your setup
-loads it, such as `.opencode/plugins/`. Keep it at the version of the binary,
-because [RELEASE.md](RELEASE.md) requires the two to match.
+OpenCode, in `opencode.json` or `opencode.jsonc`. A version after the package
+name pins it, and OpenCode installs that exact version.
 
-The core binary, built from the commit of that release. A short commit hash
-works.
+```jsonc
+// OpenCode 2.x
+{ "plugins": ["@agent-snap/opencode@0.1.0"] }
 
-```sh
-go install github.com/deneuv34/agent-snap/cmd/agent-snap@<commit>
-agent-snap version
+// OpenCode 1.x
+{ "plugin": ["@agent-snap/opencode@0.1.0"] }
 ```
 
 Snapshots taken by either version stay listed by both, because both read and
 write the same `refs/agent-snapshots/` refs.
 
-## The docs name only shipped identifiers
+## What pack-check checks in the docs
 
 `bun run pack-check` reads every fenced code block in `README.md`, in each
-`packages/*/README.md`, and in this file. It fails when a block names an
-`@agent-snap/` package that it did not pack, an `agent-snap` subcommand that
-the built binary does not list in its usage text, a `.tgz` name that no packed
-tarball matches, a `./cmd/` directory that does not exist, or `blink` in any
-form.
+`packages/*/README.md`, and in this file. It skips comment lines and trailing
+comments. It fails when a block names one of these:
+
+- An `@agent-snap/` or `@blink/` package that it did not pack.
+- An `agent-snap` or `blink` command that the built binary does not list in its usage text, or a subcommand that the usage text does not list. Commands are the lines of `sh`, `bash`, `shell`, and `zsh` blocks, and the `$ ` lines of `console` blocks. An argument that starts with `-` is a flag, and the check skips it.
+- A `.tgz` name that no packed tarball matches.
+- A `./cmd/` directory that does not exist.
+- A path with a part named `blink`, while no shipped executable or package is called that.
+
+It does not check JSONL method names, environment variable names, refs, or a
+package name written without its `@agent-snap/` scope.
+
+Prose and comments may say Blink. Show command output in a `text` block or a
+comment, because a shell block reads each line as a command. A revision of this
+record can show a `blink` command in a code block once the built binary lists
+it.

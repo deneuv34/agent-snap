@@ -52,7 +52,7 @@ Normal Git commits are not sufficient for this purpose: committing affects the u
 
 - Confirm a restore, require its safety backup, and apply it. FR-15 specifies the backup rule, and FR-16 specifies the confirmation and the write. Phase 5 builds them.
 - Retention and garbage-collection policy.
-- Product-facing naming, UX, and packaging under `blink`.
+- Blink naming beyond documentation and package descriptions. [NAMESPACE.md](NAMESPACE.md) keeps every shipped name and lists what a later rename needs.
 
 ### 4.3 Non-goals for the MVP
 

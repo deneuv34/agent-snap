@@ -28,7 +28,7 @@ Pull requests that implement a phase should mention that phase's tracking issue.
 - Each phase should be delivered through focused, independently reviewable commits or pull requests; do not mix product renaming, restore writes, and process-safety changes in one change set.
 - Preserve the current safety invariant throughout: capture and inspection never modify `HEAD`, the real index, normal refs, or the working tree.
 - Changes that write working-tree files require a dedicated design review, adversarial tests, and explicit user confirmation UX.
-- Keep `agent-snap` compatibility until a published Blink migration policy says otherwise.
+- Keep `agent-snap` compatibility. [NAMESPACE.md](NAMESPACE.md) is the published migration policy, and it keeps every shipped name.
 
 ## Phase 0 — Baseline and Release Discipline
 
@@ -101,8 +101,8 @@ Every name stays as 0.1.0 shipped it, with no alias and no dual-write. Blink
 is the name in documentation and package descriptions only.
 
 - Work item 4: the root and package READMEs say Blink, and every install command, configuration entry, executable name, and package name in them is unchanged.
-- Work item 5: no new configuration exists, so the old configuration is the documented one. `bun run pack-check` loads the packed OpenCode plugin and Pi extension against a real repository, as before. It also fails when a code block in a README or in NAMESPACE.md names a package, an `agent-snap` subcommand, a tarball, or a `cmd/` directory that does not ship.
-- Exit criteria: no configuration needs an edit, NAMESPACE.md has install and rollback commands, and no ref is renamed, copied, or hidden.
+- Work item 5: no new configuration exists, so the documented configuration is the 0.1.0 one. `bun run pack-check` loads the packed OpenCode plugin and Pi extension against a real repository, as before. It also fails when a code block in a README or in NAMESPACE.md names an `@agent-snap/` package that it did not pack, an `agent-snap` command or subcommand that the binary does not list, a tarball that does not match, or a `cmd/` directory that does not exist. It does not check JSONL method names, environment variable names, or unscoped package spellings. NAMESPACE.md lists the rules.
+- Exit criteria: no configuration needs an edit, NAMESPACE.md has install and rollback commands, and no ref is renamed, copied, or hidden. The binary rollback runs today. The npm, Pi, and OpenCode rollback commands apply after the first publish.
 
 ## Phase 2 — Snapshot Discovery and Evidence APIs
 
