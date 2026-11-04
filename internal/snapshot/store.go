@@ -165,40 +165,38 @@ type Store struct {
 }
 
 func New(path string) (*Store, error) {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	cmd.Dir = path
-	cmd.Env = sanitizedEnv()
-	out, err := cmd.CombinedOutput()
+	out, err := revParse(path, "--show-toplevel")
 	if err != nil {
-		return nil, fmt.Errorf("find git repository: %w: %s", err, strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("find git repository: %w", err)
 	}
-	repo := strings.TrimSuffix(strings.TrimSuffix(string(out), "\n"), "\r")
+	repo := strings.TrimSuffix(strings.TrimSuffix(out, "\n"), "\r")
 
-	formatCmd := exec.Command("git", "rev-parse", "--show-object-format")
-	formatCmd.Dir = repo
-	formatCmd.Env = sanitizedEnv()
-	formatOut, err := formatCmd.CombinedOutput()
+	format, err := revParse(repo, "--show-object-format")
 	if err != nil {
-		return nil, fmt.Errorf("resolve object format: %w: %s", err, strings.TrimSpace(string(formatOut)))
+		return nil, fmt.Errorf("resolve object format: %w", err)
 	}
 	zeroOID := strings.Repeat("0", 40)
-	if strings.TrimSpace(string(formatOut)) == "sha256" {
+	if strings.TrimSpace(format) == "sha256" {
 		zeroOID = strings.Repeat("0", 64)
 	}
 
-	gdirCmd := exec.Command("git", "rev-parse", "--absolute-git-dir")
-	gdirCmd.Dir = repo
-	gdirCmd.Env = sanitizedEnv()
-	gdirOut, err := gdirCmd.CombinedOutput()
+	gitDir, err := revParse(repo, "--absolute-git-dir")
 	if err != nil {
-		return nil, fmt.Errorf("resolve git dir: %w: %s", err, strings.TrimSpace(string(gdirOut)))
+		return nil, fmt.Errorf("resolve git dir: %w", err)
 	}
-	sum := sha256.Sum256([]byte(strings.TrimSpace(string(gdirOut))))
+	sum := sha256.Sum256([]byte(strings.TrimSpace(gitDir)))
 	ns := hex.EncodeToString(sum[:8])
 
 	// Every Store pins core.fsmonitor=, so no fsmonitor program decides which
 	// files a read or a capture looks at.
 	return &Store{repo: repo, ns: ns, zeroOID: zeroOID, now: time.Now, pins: []string{"-c", "core.fsmonitor="}}, nil
+}
+
+func revParse(dir, option string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", option)
+	cmd.Dir = dir
+	cmd.Env = sanitizedEnv()
+	return output(cmd, []string{"rev-parse", option})
 }
 
 func (s *Store) itemsRef() string {
@@ -258,7 +256,12 @@ func (s *Store) withoutHooks(ctx context.Context, scratchDir string) (*Store, er
 	seen := map[string]bool{}
 	for _, record := range records(out) {
 		key, _, _ := strings.Cut(record, "\n")
-		name := key[len("hook."):strings.LastIndexByte(key, '.')]
+		name, ok := strings.CutPrefix(key, "hook.")
+		dot := strings.LastIndexByte(name, '.')
+		if !ok || dot < 0 {
+			return nil, fmt.Errorf("list configured hooks: Git listed %q, which is not hook.<name>.<key>", key)
+		}
+		name = name[:dot]
 		if strings.Contains(name, "=") {
 			return nil, fmt.Errorf("list configured hooks: hook name %q contains '=', so it cannot be disabled on the Git command line", name)
 		}
@@ -280,7 +283,7 @@ func (s *Store) recordTree(ctx context.Context, env []string, tree, head, reason
 			return Snapshot{}, fmt.Errorf("snapshot ref %s is a symbolic ref; refusing to update it", s.latestRef())
 		}
 
-		latest, latestErr := s.gitMaybe(ctx, env, "rev-parse", "--verify", s.latestRef())
+		latest, latestErr := s.git(ctx, env, "rev-parse", "--verify", s.latestRef())
 		if latestErr == nil {
 			latestTree, err := s.git(ctx, env, "rev-parse", latest+"^{tree}")
 			if err != nil {
@@ -330,7 +333,7 @@ func (s *Store) recordTree(ctx context.Context, env []string, tree, head, reason
 // git add -A -- . stages into the scratch index named in env, seeded from
 // HEAD. head is empty on an unborn branch.
 func (s *Store) captureTree(ctx context.Context, env []string) (tree, head string, err error) {
-	head, headErr := s.gitMaybe(ctx, env, "rev-parse", "--verify", "HEAD")
+	head, headErr := s.git(ctx, env, "rev-parse", "--verify", "HEAD")
 	if headErr != nil {
 		head = ""
 		if _, err := s.git(ctx, env, scratchIndexArgs("read-tree", "--empty")...); err != nil {
@@ -365,12 +368,12 @@ func scratchIndexArgs(args ...string) []string {
 func (s *Store) addAll(ctx context.Context, env []string) error {
 	delay := 25 * time.Millisecond
 	for attempt := 1; ; attempt++ {
-		out, err := s.gitMaybe(ctx, env, scratchIndexArgs("add", "-A", "--", ".")...)
+		_, err := s.git(ctx, env, scratchIndexArgs("add", "-A", "--", ".")...)
 		if err == nil {
 			return nil
 		}
-		if attempt == addAttempts || !strings.Contains(out, "failed to insert into database") {
-			return fmt.Errorf("git add -A -- .: %w: %s", err, out)
+		if attempt == addAttempts || !strings.Contains(stderrOf(err), "failed to insert into database") {
+			return err
 		}
 		select {
 		case <-ctx.Done():
@@ -484,10 +487,11 @@ func (s *Store) commitRefs(ctx context.Context, id, commit, expectedLatest strin
 
 	delay := refDirDelay
 	for attempt := 1; ; attempt++ {
-		out, err := s.gitStdinMaybe(ctx, extraEnv, b.String(), "-c", fmt.Sprintf("core.filesRefLockTimeout=%d", refLockTimeout.Milliseconds()), "update-ref", "--no-deref", "--stdin")
+		_, err := s.gitStdin(ctx, extraEnv, b.String(), "-c", fmt.Sprintf("core.filesRefLockTimeout=%d", refLockTimeout.Milliseconds()), "update-ref", "--no-deref", "--stdin")
 		if err == nil {
 			return true, nil
 		}
+		out := stderrOf(err)
 		if strings.Contains(out, "but expected") || strings.Contains(out, "reference already exists") {
 			return false, nil
 		}
@@ -499,7 +503,7 @@ func (s *Store) commitRefs(ctx context.Context, id, commit, expectedLatest strin
 			dirUncreatable = dirUncreatable || strings.Contains(out, "cannot lock ref '"+ref+"': unable to create directory for ")
 		}
 		if attempt == refDirAttempts || !dirUncreatable {
-			return false, fmt.Errorf("update refs: %w: %s", err, out)
+			return false, fmt.Errorf("update refs: %w", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -757,47 +761,54 @@ func (s *Store) command(ctx context.Context, extraEnv []string, args ...string) 
 }
 
 func (s *Store) git(ctx context.Context, extraEnv []string, args ...string) (string, error) {
-	out, err := s.gitMaybe(ctx, extraEnv, args...)
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
-	}
-	return out, nil
+	out, err := s.gitRaw(ctx, extraEnv, args...)
+	return strings.TrimSpace(out), err
 }
 
 func (s *Store) gitStdin(ctx context.Context, extraEnv []string, stdin string, args ...string) (string, error) {
-	out, err := s.gitStdinMaybe(ctx, extraEnv, stdin, args...)
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
-	}
-	return out, nil
-}
-
-func (s *Store) gitMaybe(ctx context.Context, extraEnv []string, args ...string) (string, error) {
 	cmd := s.command(ctx, extraEnv, args...)
-	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := output(cmd, args)
+	return strings.TrimSpace(out), err
 }
 
-// gitRaw is like git but never trims the output, so NUL-separated values
-// with leading/trailing whitespace are preserved verbatim. It returns stdout
-// only: a warning Git prints to stderr, such as one about an unrelated broken
-// ref, must never be parsed as a path or a ref record.
+// gitRaw keeps the output untrimmed, so NUL-separated records keep their
+// leading and trailing whitespace.
 func (s *Store) gitRaw(ctx context.Context, extraEnv []string, args ...string) (string, error) {
-	cmd := s.command(ctx, extraEnv, args...)
+	return output(s.command(ctx, extraEnv, args...), args)
+}
+
+// A clean filter, a process filter such as Git LFS, or Git itself can print
+// to standard error while a command succeeds, so that text must never reach
+// an object ID, a ref record, or a path list.
+func output(cmd *exec.Cmd, args []string) (string, error) {
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return "", &gitError{args: args, err: err, stderr: strings.TrimSpace(stderr.String())}
 	}
 	return string(out), nil
 }
 
-func (s *Store) gitStdinMaybe(ctx context.Context, extraEnv []string, stdin string, args ...string) (string, error) {
-	cmd := s.command(ctx, extraEnv, args...)
-	cmd.Stdin = strings.NewReader(stdin)
-	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+type gitError struct {
+	args   []string
+	err    error
+	stderr string
+}
+
+func (e *gitError) Error() string {
+	return fmt.Sprintf("git %s: %v: %s", strings.Join(e.args, " "), e.err, e.stderr)
+}
+
+func (e *gitError) Unwrap() error { return e.err }
+
+func stderrOf(err error) string {
+	var failed *gitError
+	if errors.As(err, &failed) {
+		return failed.stderr
+	}
+	return ""
 }
 
 func (s *Store) Repo() string { return filepath.Clean(s.repo) }

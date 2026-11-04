@@ -25,8 +25,11 @@ secrets, or full file listings.
 The Go store wraps Git failures as `git <args>: <error>: <stderr>`. Treat
 that stderr as a Git *status* string (paths, ref names). Do not add the
 blob or working-tree payload to host logs. A Git built with GNU gettext
-prints that stderr in English whatever the locale, because the store runs Git
-with `LANGUAGE=C`.
+prints its own messages in English whatever the locale, because the store
+runs Git with `LANGUAGE=C`. The stderr also holds what a clean or process
+filter printed, in the filter's own language. The store reads every value
+from Git's standard output and discards what a filter prints during a
+command that succeeds.
 
 ## Snapshot failures
 

@@ -129,6 +129,7 @@ This workflow is a product requirement for the restore release, not an MVP behav
 - The operation MAY receive origin values (`source`, `host`) and stores them as defined in FR-13.
 - New snapshot commits MUST use the latest Blink snapshot as their parent when one exists; otherwise, they MAY use the current `HEAD` as parent.
 - The operation MUST return the snapshot object defined in section 8.
+- Every object ID, ref record, and path list that Blink reads from Git MUST come from Git's standard output alone. A clean filter, a process filter such as Git LFS, or Git itself can print to standard error while a command succeeds, and that text MUST NOT change or fail the create. Blink reads standard error only to report or classify a failed command.
 
 ### FR-3: No-impact capture safety
 
