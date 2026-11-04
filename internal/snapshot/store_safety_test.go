@@ -764,6 +764,91 @@ func TestCreateGivesUpOnAnUncreatableRefDirectory(t *testing.T) {
 	}
 }
 
+// noisyGit puts a git wrapper first on PATH that writes four times
+// stderrLimit bytes to standard error, as a chatty filter would, before the
+// git it wraps prints anything. It returns how many times update-ref ran.
+func noisyGit(t *testing.T) func() int {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the git wrapper is a POSIX shell script")
+	}
+	wrapped, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	log := filepath.Join(dir, "update-ref-runs")
+	script := fmt.Sprintf("#!/bin/sh\nhead -c %d /dev/zero | tr '\\000' x >&2\nfor a; do [ \"$a\" = update-ref ] && echo >> %q; done\nexec %q \"$@\"\n", 4*stderrLimit, log, wrapped)
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return func() int {
+		raw, err := os.ReadFile(log)
+		if err != nil {
+			return 0
+		}
+		return strings.Count(string(raw), "\n")
+	}
+}
+
+func TestRetryAndRefusalMatchersFireBehindStandardErrorPastTheCap(t *testing.T) {
+	t.Run("object write race", func(t *testing.T) {
+		dir := testRepo(t)
+		writeFile(t, dir, "changed.txt", "after the race\n")
+		adds := fakeAddFailures(t, 2, objectWriteRace)
+		noisyGit(t)
+		if _, err := newStore(t, dir).Create(context.Background(), "race", Origin{}); err != nil {
+			t.Fatalf("create should survive a transient object write failure: %v", err)
+		}
+		if got := adds(); got != 3 {
+			t.Fatalf("git add ran %d times, want 3", got)
+		}
+	})
+	t.Run("stale ref lock", func(t *testing.T) {
+		dir := testRepo(t)
+		store := newStore(t, dir)
+		create(t, store, "first")
+		writeFile(t, dir, "tracked.txt", "changed\n")
+		writeFile(t, filepath.Join(dir, ".git"), store.latestRef()+".lock", "")
+		noisyGit(t)
+		_, err := store.Create(context.Background(), "stale", Origin{})
+		if err == nil || !strings.HasPrefix(err.Error(), "snapshot ref lock "+store.latestRef()+".lock in the Git directory") {
+			t.Fatalf("the error does not name the stale lock: %v", err)
+		}
+	})
+	t.Run("moved latest", func(t *testing.T) {
+		dir := testRepo(t)
+		store := newStore(t, dir)
+		first := create(t, store, "first")
+		noisyGit(t)
+		moved, err := store.commitRefs(context.Background(), "20260102T030405.000000006Z-abcdefabcdef", first.Commit, "", nil)
+		if err != nil || moved {
+			t.Fatalf("commitRefs against a moved latest = %v, %v; want false and no error", moved, err)
+		}
+	})
+	t.Run("uncreatable ref directory", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory permissions")
+		}
+		dir := testRepo(t)
+		store := newStore(t, dir)
+		updates := noisyGit(t)
+		refs := filepath.Join(dir, ".git", "refs")
+		if err := os.Chmod(refs, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(refs, 0o755) })
+		_, err := store.Create(context.Background(), "denied", Origin{})
+		if err == nil || !strings.HasPrefix(err.Error(), "update refs: ") {
+			t.Fatalf("the error is not the update refs failure: %v", err)
+		}
+		if got := updates(); got != refDirAttempts {
+			t.Fatalf("the create ran update-ref %d times, want %d", got, refDirAttempts)
+		}
+	})
+}
+
 func TestGitPrintsEnglishMessagesUnderTheCallersLocale(t *testing.T) {
 	dir := testRepo(t)
 	dump := filepath.ToSlash(filepath.Join(t.TempDir(), "env"))

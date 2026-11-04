@@ -1023,11 +1023,15 @@ test(
     const log = join(dir, "fake.log")
     const c = client({ FAKE_AGENT_SNAP_MODE: "grandchild", FAKE_AGENT_SNAP_LOG: log })
     await c.ping()
+    const group = c.pid
+    const grandchild = Number(/^grandchild-ready (\d+)$/m.exec(readFileSync(log, "utf8"))?.[1])
+    assert.ok(group !== undefined && grandchild > 0)
+    assert.doesNotThrow(() => process.kill(grandchild, 0), "the grandchild must be alive when close() starts")
     await c.close()
-    const raw = readFileSync(log, "utf8")
-    assert.ok(
-      raw.includes("grandchild-exited"),
-      `close() resolved before the grandchild was terminated; raw log: ${JSON.stringify(raw)}`,
+    assert.throws(
+      () => process.kill(-group, 0),
+      { code: "ESRCH" },
+      `close() resolved while process group ${group} still had a member`,
     )
   },
 )

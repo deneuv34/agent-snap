@@ -782,13 +782,42 @@ func (s *Store) gitRaw(ctx context.Context, extraEnv []string, args ...string) (
 // to standard error while a command succeeds, so that text must never reach
 // an object ID, a ref record, or a path list.
 func output(cmd *exec.Cmd, args []string) (string, error) {
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
+	stderr := &cappedBuffer{}
+	cmd.Stderr = stderr
 	out, err := cmd.Output()
 	if err != nil {
 		return "", &gitError{args: args, err: err, stderr: strings.TrimSpace(stderr.String())}
 	}
 	return string(out), nil
+}
+
+// stderrLimit bounds the standard error kept from one Git command. Git prints
+// the messages that addAll and commitRefs match last, after any filter output,
+// and from the matched text to the end each holds one path and a few hundred
+// bytes, so keeping the last stderrLimit bytes keeps them whole for a path up
+// to Linux's 4096-byte PATH_MAX.
+const stderrLimit = 8 << 10
+
+type cappedBuffer struct {
+	buf     []byte
+	omitted int
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	b.buf = append(b.buf, p...)
+	if extra := len(b.buf) - stderrLimit; extra > stderrLimit {
+		b.omitted += extra
+		b.buf = append(b.buf[:0], b.buf[extra:]...)
+	}
+	return len(p), nil
+}
+
+func (b *cappedBuffer) String() string {
+	extra := max(len(b.buf)-stderrLimit, 0)
+	if b.omitted+extra == 0 {
+		return string(b.buf)
+	}
+	return fmt.Sprintf("[%d earlier bytes of standard error omitted] %s", b.omitted+extra, b.buf[extra:])
 }
 
 type gitError struct {

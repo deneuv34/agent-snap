@@ -172,7 +172,7 @@ func (s *Store) planRestore(ctx context.Context, id string, q PlanQuery) (Restor
 	if err != nil {
 		return RestorePlan{}, err
 	}
-	w := newWorld(s.repo, p, index, heads, state.ignoreCase || foldingProbe(s.repo, cur))
+	w := newWorld(s.repo, p, index, heads, state.ignoreCase)
 	if err := p.decide(ctx, w); err != nil {
 		return RestorePlan{}, err
 	}
@@ -219,7 +219,7 @@ func (e evidence) gitStdin(ctx context.Context, stdin string, args ...string) (s
 	cmd.Dir = e.dir
 	cmd.Env = e.env
 	cmd.Stdin = strings.NewReader(stdin)
-	stderr := &cappedBuffer{limit: diffStderrLimit}
+	stderr := &cappedBuffer{}
 	cmd.Stderr = stderr
 	out, err := cmd.Output()
 	if err != nil {
