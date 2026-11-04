@@ -131,6 +131,38 @@ test(
 )
 
 test(
+  "the real binary lists and reuses only item refs whose name is a snapshot id",
+  { skip: bin === undefined ? "AGENT_SNAP_BIN not set" : false },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-snap-it-"))
+    git(dir, ["init", "-b", "main"])
+    writeFileSync(join(dir, "file.txt"), "initial\n")
+    git(dir, ["add", "file.txt"])
+    git(dir, ["commit", "-m", "initial"])
+
+    const client = SnapClient.fromEnv({ AGENT_SNAP_BIN: bin })
+    try {
+      const snap = await client.create(dir, "real")
+      const ref = git(dir, ["for-each-ref", "--format=%(refname)", "refs/agent-snapshots"])
+        .split("\n")
+        .find((name) => name.includes("/items/")) as string
+      const items = ref.slice(0, ref.lastIndexOf("/") + 1)
+      const suffix = snap.commit.slice(0, 12)
+      for (const name of [`20990101T000000.000000000Z-${suffix}\u2028forged`, `20000101T000000.000000000Z-${suffix}\u0085forged`]) {
+        git(dir, ["update-ref", items + name, snap.commit])
+      }
+
+      assert.deepEqual((await client.list(dir, 1)).map((item) => item.id), [snap.id])
+      const again = await client.create(dir, "again")
+      assert.equal(again.reused, true)
+      assert.equal(again.id, snap.id)
+    } finally {
+      await client.close()
+    }
+  },
+)
+
+test(
   "SnapClient pages a real snapshot diff and fails closed on bad selections",
   { skip: bin === undefined ? "AGENT_SNAP_BIN not set" : false },
   async () => {

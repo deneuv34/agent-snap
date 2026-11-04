@@ -476,7 +476,7 @@ func (s *Store) List(ctx context.Context, limit int) ([]Snapshot, error) {
 		limit = 20
 	}
 	format := "%(refname:strip=4)%00%(objectname)%00%(contents)%00%(creatordate:iso-strict)%00"
-	out, err := s.git(ctx, nil, "for-each-ref", "--format="+format, s.itemsRef())
+	out, err := s.gitRaw(ctx, nil, "for-each-ref", "--format="+format, s.itemsRef())
 	if err != nil {
 		return nil, err
 	}
@@ -492,7 +492,7 @@ func (s *Store) List(ctx context.Context, limit int) ([]Snapshot, error) {
 		if len(fields) > 0 && fields[len(fields)-1] == "" {
 			fields = fields[:len(fields)-1]
 		}
-		if len(fields) != 4 {
+		if len(fields) != 4 || !ValidID(fields[0]) {
 			continue
 		}
 		created, _ := time.Parse(time.RFC3339, fields[3])
@@ -507,24 +507,23 @@ func (s *Store) List(ctx context.Context, limit int) ([]Snapshot, error) {
 }
 
 func (s *Store) snapshotForCommit(ctx context.Context, commit string, reused bool) (Snapshot, error) {
-	out, err := s.git(ctx, nil, "for-each-ref", "--points-at", commit, "--format=%(refname:strip=4)%00%(contents)%00%(creatordate:iso-strict)%00", s.itemsRef())
+	out, err := s.gitRaw(ctx, nil, "for-each-ref", "--points-at", commit, "--format=%(refname:strip=4)%00%(contents)%00%(creatordate:iso-strict)%00", s.itemsRef())
 	if err != nil {
 		return Snapshot{}, err
 	}
-	records := strings.Split(out, "\x00\n")
-	if len(records) == 0 || records[0] == "" {
-		return Snapshot{}, errors.New("snapshot ref not found")
+	for _, record := range strings.Split(out, "\x00\n") {
+		fields := strings.Split(record, "\x00")
+		if len(fields) > 0 && fields[len(fields)-1] == "" {
+			fields = fields[:len(fields)-1]
+		}
+		if len(fields) != 3 || !ValidID(fields[0]) {
+			continue
+		}
+		created, _ := time.Parse(time.RFC3339, fields[2])
+		reason, origin := parseMessage(fields[1])
+		return Snapshot{ID: fields[0], Commit: commit, Reason: reason, CreatedAt: created, Origin: origin, Reused: reused}, nil
 	}
-	fields := strings.Split(records[0], "\x00")
-	if len(fields) > 0 && fields[len(fields)-1] == "" {
-		fields = fields[:len(fields)-1]
-	}
-	if len(fields) != 3 {
-		return Snapshot{}, errors.New("snapshot ref not found")
-	}
-	created, _ := time.Parse(time.RFC3339, fields[2])
-	reason, origin := parseMessage(fields[1])
-	return Snapshot{ID: fields[0], Commit: commit, Reason: reason, CreatedAt: created, Origin: origin, Reused: reused}, nil
+	return Snapshot{}, errors.New("snapshot ref not found")
 }
 
 // Get resolves id inside this worktree's namespace only, and returns it only

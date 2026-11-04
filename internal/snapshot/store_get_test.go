@@ -358,3 +358,81 @@ func TestGetInSha256Repositories(t *testing.T) {
 		t.Fatalf("changed files: %+v", got.ChangedFiles)
 	}
 }
+
+func TestReadersSkipItemRefsWhoseNameIsNotAnID(t *testing.T) {
+	for _, format := range objectFormats {
+		t.Run(format, func(t *testing.T) {
+			dir := testRepoIn(t, format)
+			store := newStore(t, dir)
+			snap := create(t, store, "real")
+			suffix := snap.Commit[:12]
+			planted := []string{
+				"20990101T000000.000000000Z-" + suffix + " forged",
+				"20000101T000000.000000000Z-" + suffix + "\u0085forged",
+				"20990101T0000.000000000Z-" + suffix,
+				"20990101T000000.000000000Z-ABCDEF012345",
+				"20990101T000000.000000000Z-" + suffix + "-extra",
+			}
+			for _, name := range planted {
+				git(t, dir, "update-ref", store.itemsRef()+name, snap.Commit)
+			}
+
+			for _, limit := range []int{1, 100} {
+				items, err := store.List(context.Background(), limit)
+				if err != nil {
+					t.Fatalf("List(%d): %v", limit, err)
+				}
+				if len(items) != 1 || items[0].ID != snap.ID {
+					t.Fatalf("List(%d) must return only the real snapshot: %+v", limit, items)
+				}
+			}
+			for _, name := range planted {
+				if _, err := store.Get(context.Background(), name); !errors.Is(err, ErrInvalidID) {
+					t.Errorf("Get(%q): got %v, want ErrInvalidID", name, err)
+				}
+			}
+			if got := get(t, store, snap.ID); got.Commit != snap.Commit {
+				t.Fatalf("the real snapshot must still resolve: %+v", got)
+			}
+			if again := create(t, store, "again"); !again.Reused || again.ID != snap.ID {
+				t.Fatalf("a reused snapshot must report the real id: %+v", again)
+			}
+			writeFile(t, dir, "tracked.txt", "edited\n")
+			if child := get(t, store, create(t, store, "child").ID); child.ParentID != snap.ID {
+				t.Fatalf("parent_id must name the real snapshot: %+v", child)
+			}
+		})
+	}
+}
+
+func TestListAndReuseParseOnlyGitStdout(t *testing.T) {
+	for _, format := range objectFormats {
+		t.Run(format, func(t *testing.T) {
+			dir := testRepoIn(t, format)
+			store := newStore(t, dir)
+			first := create(t, store, "first")
+			writeFile(t, dir, "tracked.txt", "edited\n")
+			latest := create(t, store, "latest")
+			gitDir := git(t, dir, "rev-parse", "--absolute-git-dir")
+			if _, err := os.Stat(filepath.Join(gitDir, filepath.FromSlash(store.itemsRef()+latest.ID))); err != nil {
+				t.Skipf("item refs are not loose files in this ref backend: %v", err)
+			}
+			writeFile(t, gitDir, filepath.FromSlash(store.itemsRef()+"20000101T000000.000000000Z-"+latest.Commit[:12]+" forged"), latest.Commit+"\n")
+
+			items, err := store.List(context.Background(), 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 2 || items[0].ID != latest.ID || items[1].ID != first.ID {
+				t.Errorf("a warning about a broken ref name must not hide a snapshot: %+v", items)
+			}
+			again, err := store.Create(context.Background(), "again", Origin{})
+			if err != nil {
+				t.Fatalf("a reused create must not fail on a warning about a broken ref name: %v", err)
+			}
+			if !again.Reused || again.ID != latest.ID {
+				t.Fatalf("a reused create must report the latest real snapshot: %+v", again)
+			}
+		})
+	}
+}
