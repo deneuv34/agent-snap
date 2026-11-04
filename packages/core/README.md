@@ -22,8 +22,9 @@ Safety properties:
   and cleanup fails closed unless taskkill succeeds *and* the root exits
   (see [docs/DIAGNOSTICS.md](../../docs/DIAGNOSTICS.md));
 - `serveArgs` and `request` cannot reach the restore entry. The constructor
-  copies `serveArgs` into a frozen array and throws a `TypeError` when an
-  element starts with `restore` after its leading `-` characters. `request`
+  copies `serveArgs` into a frozen array by index, calling no method of the
+  caller's value, and throws a `TypeError` when an element starts with
+  `restore` after its leading `-` characters. `request`
   rejects with a `TypeError` for a method that is not a primitive string and
   for `snapshot.restore`;
 - responses are runtime-validated before being handed to the host;

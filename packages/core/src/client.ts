@@ -680,17 +680,23 @@ export function abortError(): Error {
 const RESTORE_ENTRY = /^-*restore/
 
 function assertNoRestoreEntry(args: readonly string[]): void {
-  const entry = args.find((arg) => RESTORE_ENTRY.test(arg))
-  if (entry !== undefined) {
-    throw new TypeError(`serveArgs must not select the restore entry: ${JSON.stringify(entry)}`)
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (RESTORE_ENTRY.test(arg)) {
+      throw new TypeError(`serveArgs must not select the restore entry: ${JSON.stringify(arg)}`)
+    }
   }
 }
 
-function frozenServeArgs(args: readonly unknown[]): readonly string[] {
-  const copy = args.map((arg) => {
+function frozenServeArgs(args: unknown): readonly string[] {
+  if (!Array.isArray(args)) throw new TypeError("serveArgs must be an array of strings")
+  const length: number = args.length
+  const copy: string[] = []
+  for (let i = 0; i < length; i++) {
+    const arg: unknown = args[i]
     if (typeof arg !== "string") throw new TypeError("serveArgs must hold only strings")
-    return arg
-  })
+    copy.push(arg)
+  }
   assertNoRestoreEntry(copy)
   return Object.freeze(copy)
 }

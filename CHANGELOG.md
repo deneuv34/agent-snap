@@ -178,8 +178,10 @@
 - `SnapClient` now refuses to select the restore entry of a later release.
   The constructor copies `serveArgs` into a frozen array and throws a
   `TypeError` when an element starts with `restore` after its leading `-`
-  characters, such as `--restore` or `-restore=1`. Every spawn checks the copy
-  again. `SnapClient.request` rejects with a `TypeError` for a method that is
+  characters, such as `--restore` or `-restore=1`. It reads the value by index
+  and calls no method of it, so a subclass, a Proxy, or an own `map` cannot
+  change the copy. A value that is not an array, or that holds a hole or a
+  non-string element, throws a `TypeError`. Every spawn checks the copy again. `SnapClient.request` rejects with a `TypeError` for a method that is
   not a primitive string and for `snapshot.restore`. No release of
   `agent-snap` dispatches `snapshot.restore` yet, so no working client
   changes.
