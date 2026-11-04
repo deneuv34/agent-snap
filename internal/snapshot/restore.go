@@ -172,7 +172,7 @@ func (s *Store) planRestore(ctx context.Context, id string, q PlanQuery) (Restor
 	if err != nil {
 		return RestorePlan{}, err
 	}
-	w := newWorld(s.repo, p, index, heads, state.ignoreCase || foldingProbe(s.repo, cur))
+	w := newWorld(s.repo, p, index, heads, state.ignoreCase)
 	if err := p.decide(ctx, w); err != nil {
 		return RestorePlan{}, err
 	}

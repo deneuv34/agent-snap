@@ -242,16 +242,20 @@ func (p *plan) removed() []string {
 }
 
 type world struct {
-	index indexView
-	head  headView
-	disk  diskProbe
-	nodes map[string][]string
+	index      indexView
+	head       headView
+	disk       diskProbe
+	ignoreCase bool
+	nodes      map[string][]string
+	spelled    map[string]bool
 }
 
-func newWorld(root string, p *plan, index indexView, head headView, folds bool) *world {
-	w := &world{index: index, head: head, disk: newDiskProbe(root, p.removed(), folds)}
+func newWorld(root string, p *plan, index indexView, head headView, ignoreCase bool) *world {
+	folds := ignoreCase || foldingProbe(root, p.current)
+	w := &world{index: index, head: head, disk: newDiskProbe(root, p.removed(), folds), ignoreCase: ignoreCase}
 	if folds {
 		w.nodes = foldNodes(p.result)
+		w.spelled = map[string]bool{}
 	}
 	return w
 }
@@ -287,8 +291,10 @@ var pathRules = [...]struct {
 	{BlockSubmodule, func(_ *plan, _ *world, c *change) bool { return c.hasMode(modeGitlink) }},
 	{BlockParentConflict, func(p *plan, _ *world, c *change) bool { return p.parentConflict(c) }},
 	{BlockIndexFlag, func(_ *plan, w *world, c *change) bool { return w.index.stage0[c.path].flagged }},
-	{BlockNameCollision, func(_ *plan, w *world, c *change) bool { return w.collision(c) }},
-	{BlockUntrackedInTheWay, func(_ *plan, w *world, c *change) bool { return c.writesTarget() && w.disk.inTheWay(c.path) }},
+	{BlockNameCollision, func(p *plan, w *world, c *change) bool { return w.collision(p, c) }},
+	{BlockUntrackedInTheWay, func(p *plan, w *world, c *change) bool {
+		return c.writesTarget() && (w.disk.inTheWay(c.path) || w.caseSpelling(p, c) == spellingUnreadable)
+	}},
 }
 
 func (p *plan) decide(ctx context.Context, w *world) error {
@@ -322,14 +328,41 @@ func (p *plan) parentConflict(c *change) bool {
 	return false
 }
 
-func (w *world) collision(c *change) bool {
+func (w *world) collision(p *plan, c *change) bool {
 	if w.nodes == nil {
 		return false
 	}
 	if c.writesTarget() && w.foldsOnto(c.path) {
 		return true
 	}
-	return slices.ContainsFunc(parents(c.path), w.foldsOnto)
+	return slices.ContainsFunc(parents(c.path), w.foldsOnto) || w.caseSpelling(p, c) == spellingByCase
+}
+
+func (w *world) caseSpelling(p *plan, c *change) caseSpelling {
+	if !c.writesTarget() {
+		return spellingClear
+	}
+	return w.disk.caseSpelling(c.path, func(dir string) bool { return w.headSpells(p.result, dir) })
+}
+
+// headSpells reports whether a capture after the restore spells dir as the
+// result tree does. The capture seeds its index from HEAD. With core.ignorecase
+// true, Git spells a new path's parent as an index directory does. Only a HEAD
+// path that the result tree holds below dir keeps that spelling in the index.
+// With core.ignorecase false on a volume that folds case, Git matches index
+// paths by bytes and records the disk spelling.
+func (w *world) headSpells(result listing, dir string) bool {
+	if !w.ignoreCase {
+		return false
+	}
+	spelled, ok := w.spelled[dir]
+	if !ok {
+		for i, _ := result.find(dir + "/"); !spelled && i < len(result) && strings.HasPrefix(result[i].path, dir+"/"); i++ {
+			_, spelled = w.head.at(result[i].path)
+		}
+		w.spelled[dir] = spelled
+	}
+	return spelled
 }
 
 func (w *world) foldsOnto(node string) bool {

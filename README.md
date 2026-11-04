@@ -227,10 +227,11 @@ Set `AGENT_SNAP_BIN` if the binary is not on `PATH`.
 ## Development
 
 These local gates match CI (`.github/workflows/ci.yml`). `gofmt` is required;
-CI also runs TypeScript tests on Linux, Windows, and macOS on both Bun and
-Node, and smoke on Linux and Windows. Use `bun run test`, not `bun test`: the
-script builds first and raises Bun's 5 s per-test timeout, which teardown
-tests exceed.
+CI runs the Go core on Linux, Windows, and macOS and prints each platform's
+skipped Go tests with their reasons. It also runs TypeScript tests on Linux,
+Windows, and macOS on both Bun and Node, and smoke on Linux and Windows. Use
+`bun run test`, not `bun test`: the script builds first and raises Bun's 5 s
+per-test timeout, which teardown tests exceed.
 
 ```sh
 test -z "$(gofmt -l .)"
