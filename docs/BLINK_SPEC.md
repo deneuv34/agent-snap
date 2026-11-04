@@ -179,7 +179,7 @@ This workflow is a product requirement for the restore release, not an MVP behav
 
 ### FR-8: Core CLI
 
-The current CLI name is `agent-snap`; Blink branding is a future packaging decision.
+The executable is `agent-snap`. Blink is the product name in documentation and package descriptions only, and [NAMESPACE.md](NAMESPACE.md) records why the executable keeps its name.
 
 | Command | Required behaviour |
 | --- | --- |
