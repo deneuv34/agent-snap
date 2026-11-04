@@ -763,3 +763,33 @@ func TestCreateGivesUpOnAnUncreatableRefDirectory(t *testing.T) {
 		t.Fatalf("the failed create left refs %q", refs)
 	}
 }
+
+func TestGitPrintsEnglishMessagesUnderTheCallersLocale(t *testing.T) {
+	dir := testRepo(t)
+	dump := filepath.ToSlash(filepath.Join(t.TempDir(), "env"))
+	writeFile(t, dir, ".gitattributes", "*.env filter=env\n")
+	git(t, dir, "config", "filter.env.clean", fmt.Sprintf("env > '%s'; cat", dump))
+	writeFile(t, dir, "seen.env", "filtered\n")
+	t.Setenv("LC_ALL", "de_DE.UTF-8")
+	t.Setenv("LC_CTYPE", "fr_FR.UTF-8")
+	t.Setenv("LANG", "de_DE.UTF-8")
+	t.Setenv("LANGUAGE", "de")
+
+	create(t, newStore(t, dir), "locale")
+	raw, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatalf("the clean filter did not run: %v", err)
+	}
+	seen := map[string][]string{}
+	for _, line := range strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n") {
+		if key, value, ok := strings.Cut(line, "="); ok {
+			seen[key] = append(seen[key], value)
+		}
+	}
+	want := map[string]string{"LANGUAGE": "C", "LC_ALL": "de_DE.UTF-8", "LC_CTYPE": "fr_FR.UTF-8", "LANG": "de_DE.UTF-8"}
+	for key, value := range want {
+		if got := seen[key]; len(got) != 1 || got[0] != value {
+			t.Errorf("Git and its filter saw %s=%q, want %q", key, got, value)
+		}
+	}
+}
