@@ -53,19 +53,17 @@ function onLine(line) {
   record({ event: "request", method: req.method, params: req.params ?? null })
   if (mode === "grandchild" && req.method === "ping" && !grandchildSpawned) {
     grandchildSpawned = true
-    // The grandchild reports its own termination: the fake process itself is
-    // dead by the time the group signal is handled, so it cannot record it.
-    // The grandchild first installs its TERM trap, then signals readiness;
-    // the fake only answers once ready, so a close() racing the spawn can
-    // never TERM the shell before its trap exists.
+    // The grandchild outlives SIGTERM by half a second, so a close() that
+    // resolves before the group is empty finds it alive. The fake answers
+    // only once the grandchild has logged its pid.
     spawn(
       "sh",
-      ["-c", `trap 'echo grandchild-exited >> "$FAKE_LOG"' TERM; echo grandchild-ready >> "$FAKE_LOG"; sleep 30`],
+      ["-c", `trap 'sleep 0.5; exit 0' TERM; echo "grandchild-ready $$" >> "$FAKE_LOG"; sleep 30`],
       { stdio: "ignore", env: { ...process.env, FAKE_LOG: logFile ?? "" } },
     )
     const respondWhenReady = () => {
       try {
-        if (readFileSync(logFile ?? "", "utf8").includes("grandchild-ready")) {
+        if (/^grandchild-ready \d+$/m.test(readFileSync(logFile ?? "", "utf8"))) {
           handle(req)
           return
         }
