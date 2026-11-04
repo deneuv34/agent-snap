@@ -261,9 +261,13 @@ func onDisk(root, p string) string { return filepath.Join(root, filepath.FromSla
 type diskProbe struct {
 	root    string
 	removed map[string]bool
-	byFold  map[string][]string
-	listed  map[string]dirNames
-	kept    map[string]bool
+	// Git with core.ignorecase false matches index paths by bytes, so a file
+	// the volume resolves to a removed path under another spelling is
+	// untracked to Git and blocks the checkout. Only core.ignorecase true
+	// fills this map.
+	removedByFold map[string][]string
+	listed        map[string]dirNames
+	kept          map[string]bool
 }
 
 type dirNames struct {
@@ -271,18 +275,20 @@ type dirNames struct {
 	err    error
 }
 
-func newDiskProbe(root string, removed []string, folds bool) diskProbe {
+func newDiskProbe(root string, removed []string, folds, ignoreCase bool) diskProbe {
 	d := diskProbe{root: root, removed: make(map[string]bool, len(removed))}
 	if folds {
-		d.byFold = map[string][]string{}
 		d.listed = map[string]dirNames{}
 		d.kept = map[string]bool{}
 	}
+	if ignoreCase {
+		d.removedByFold = map[string][]string{}
+	}
 	for _, p := range removed {
 		d.removed[p] = true
-		if folds {
+		if ignoreCase {
 			key := foldKey(p)
-			d.byFold[key] = append(d.byFold[key], p)
+			d.removedByFold[key] = append(d.removedByFold[key], p)
 		}
 	}
 	return d
@@ -325,12 +331,12 @@ const (
 // caseSpelling finds parents by the names a real directory stores. Resolving
 // a name on a volume that folds case would hide the spelling that Git writes
 // into.
-func (d diskProbe) caseSpelling(path string, spelled func(string) bool) caseSpelling {
+func (d diskProbe) caseSpelling(dirs []string, spelled func(string) bool) caseSpelling {
 	if d.listed == nil {
 		return spellingClear
 	}
 	disk := ""
-	for _, dir := range parents(path) {
+	for _, dir := range dirs {
 		name := dir[strings.LastIndexByte(dir, '/')+1:]
 		names := d.names(disk)
 		if names.err != nil {
@@ -417,7 +423,7 @@ func (d diskProbe) removes(path string, info fs.FileInfo) bool {
 	if d.removed[path] {
 		return true
 	}
-	for _, other := range d.byFold[foldKey(path)] {
+	for _, other := range d.removedByFold[foldKey(path)] {
 		if removed, err := lstatNoFollow(d.root, other); err == nil && os.SameFile(info, removed) {
 			return true
 		}
