@@ -637,6 +637,71 @@ test("unknown method surfaces a SnapRpcError with the wire code", async () => {
   }
 })
 
+test("serveArgs refuses the restore entry", async () => {
+  for (const serveArgs of [["serve", "--restore"], ["serve", "-restore"], ["serve", "--restore=1"]]) {
+    const log = join(mkdtempSync(join(tmpdir(), "agent-snap-restore-args-")), "fake.log")
+    assert.throws(
+      () => new SnapClient({ bin: process.execPath, serveArgs, env: { FAKE_AGENT_SNAP_LOG: log } }),
+      (err: unknown) => err instanceof TypeError && err.message.includes(JSON.stringify(serveArgs[1])),
+      `serveArgs ${JSON.stringify(serveArgs)}`,
+    )
+    assert.equal(existsSync(log), false, "no process may start")
+  }
+})
+
+test("serveArgs that hold a non-string element are refused", () => {
+  assert.throws(
+    () => new SnapClient({ serveArgs: ["serve", new String("--restore") as unknown as string] }),
+    TypeError,
+  )
+})
+
+test("serveArgs without a restore flag still construct", () => {
+  for (const serveArgs of [["serve"], ["serve", "--pre-restore"], ["serve", "-x", "prerestore"]]) {
+    assert.doesNotThrow(() => new SnapClient({ bin: process.execPath, serveArgs }))
+  }
+})
+
+test("request refuses snapshot.restore", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-restore-request-")), "fake.log")
+  const c = client({ FAKE_AGENT_SNAP_LOG: log })
+  try {
+    for (const method of ["snapshot.restore", new String("snapshot.restore") as unknown as string]) {
+      await assert.rejects(
+        () => c.request(method),
+        (err: unknown) => err instanceof TypeError,
+        `method ${String(method)} as ${typeof method}`,
+      )
+      assert.equal(c.pid, undefined, "no process may start")
+    }
+  } finally {
+    await c.close()
+  }
+  assert.equal(existsSync(log), false, "no request may reach a child")
+})
+
+test("serveArgs pushed after construction does not reach the spawn", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-restore-push-")), "fake.log")
+  const serveArgs = [fixture, "serve"]
+  const c = new SnapClient({
+    bin: process.execPath,
+    serveArgs,
+    env: { FAKE_AGENT_SNAP_MODE: "record-argv", FAKE_AGENT_SNAP_LOG: log },
+  })
+  serveArgs.push("--restore")
+  try {
+    await c.ping()
+  } finally {
+    await c.close()
+  }
+  const argv = readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { event: string; args?: string[] })
+    .filter((entry) => entry.event === "argv")
+  assert.deepEqual(argv.map((entry) => entry.args), [["serve"]])
+})
+
 test("a result for a method the client cannot validate surfaces SnapProtocolError", async () => {
   const c = client({ FAKE_AGENT_SNAP_MODE: "unknown-method-result" })
   try {

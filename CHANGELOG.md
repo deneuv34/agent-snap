@@ -175,6 +175,14 @@
   Git's standard error. A configured hook listing that is not
   `hook.<name>.<key>` now fails the create or the plan with `-32603`.
   Before, it ended the process with a Go panic. The captured tree is unchanged.
+- `SnapClient` now refuses to select the restore entry of a later release.
+  The constructor copies `serveArgs` into a frozen array and throws a
+  `TypeError` when an element starts with `restore` after its leading `-`
+  characters, such as `--restore` or `-restore=1`. Every spawn checks the copy
+  again. `SnapClient.request` rejects with a `TypeError` for a method that is
+  not a primitive string and for `snapshot.restore`. No release of
+  `agent-snap` dispatches `snapshot.restore` yet, so no working client
+  changes.
 
 ## 0.1.0
 

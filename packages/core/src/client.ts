@@ -677,9 +677,27 @@ export function abortError(): Error {
   return new DOMException("The operation was aborted", "AbortError")
 }
 
+const RESTORE_ENTRY = /^-*restore/
+
+function assertNoRestoreEntry(args: readonly string[]): void {
+  const entry = args.find((arg) => RESTORE_ENTRY.test(arg))
+  if (entry !== undefined) {
+    throw new TypeError(`serveArgs must not select the restore entry: ${JSON.stringify(entry)}`)
+  }
+}
+
+function frozenServeArgs(args: readonly unknown[]): readonly string[] {
+  const copy = args.map((arg) => {
+    if (typeof arg !== "string") throw new TypeError("serveArgs must hold only strings")
+    return arg
+  })
+  assertNoRestoreEntry(copy)
+  return Object.freeze(copy)
+}
+
 export class SnapClient {
   readonly #bin: string
-  readonly #serveArgs: string[]
+  readonly #serveArgs: readonly string[]
   readonly #env: NodeJS.ProcessEnv | undefined
   readonly #timeoutMs: number
   readonly #log: (message: string) => void
@@ -702,7 +720,7 @@ export class SnapClient {
 
   constructor(options: SnapClientOptions = {}) {
     this.#bin = options.bin ?? SnapClient.defaultBin()
-    this.#serveArgs = options.serveArgs ?? ["serve"]
+    this.#serveArgs = frozenServeArgs(options.serveArgs ?? ["serve"])
     this.#env = options.env
     this.#timeoutMs = options.timeoutMs ?? 30_000
     this.#log = options.log ?? (() => {})
@@ -794,6 +812,12 @@ export class SnapClient {
    * client may be reused (it respawns lazily).
    */
   async request<T>(method: string, params?: Record<string, unknown>, options: { signal?: AbortSignal } = {}): Promise<T> {
+    if (typeof method !== "string") {
+      throw new TypeError("agent-snap request method must be a primitive string")
+    }
+    if (method === "snapshot.restore") {
+      throw new TypeError('agent-snap request "snapshot.restore" is not available through SnapClient.request')
+    }
     const signal = options.signal
     if (signal?.aborted) {
       throw abortError()
@@ -904,6 +928,7 @@ export class SnapClient {
       throw new Error("agent-snap client is closing")
     }
     if (this.#child !== null && this.#child.exitCode === null && this.#child.signalCode === null) return
+    assertNoRestoreEntry(this.#serveArgs)
     const env = this.#env === undefined ? process.env : { ...process.env, ...this.#env }
     if (process.platform === "win32") {
       const child = spawn(this.#bin, this.#serveArgs, {
