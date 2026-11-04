@@ -433,6 +433,13 @@ func TestPlanRestoreBlocksADeleteThatTakesTheLastHEADPathSpellingAParent(t *test
 			[]scoped{{nil, BlockNameCollision}, {[]string{"dir/a"}, BlockNameCollision}},
 		},
 		{
+			"the restore rewrites the untracked path that stays below the parent", "dir/a",
+			map[string]string{"dir/a": "head\n"},
+			map[string]string{"dir/q": "snapshot\n"},
+			map[string]string{"Dir/a": "head\n", "Dir/q": "current\n"},
+			[]scoped{{nil, BlockNameCollision}, {[]string{"dir/a", "dir/q"}, BlockNameCollision}, {[]string{"dir/a"}, BlockNameCollision}},
+		},
+		{
 			"an untracked path stays deeper below the parent", "dir/a",
 			map[string]string{"dir/a": "head\n"},
 			map[string]string{"dir/sub/q": "untracked\n"},
