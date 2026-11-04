@@ -22,7 +22,10 @@
   the last `HEAD` path that kept a parent's spelling. An example is `HEAD`
   `dir/a` with an untracked `dir/q` that the restore keeps while the disk spells
   the directory `Dir/`. A capture after the restore records `Dir/q`, so it
-  differs from `result_tree`. It also blocks a written path as
+  differs from `result_tree`. A directory counts as kept when the restore
+  only rewrites a path below it, as in a delete of `dir/a` beside a modify of
+  `dir/q`. Git rewrites a changed file in place and removes a directory only
+  after its deletes leave it empty. It also blocks a written path as
   `untracked_in_the_way` when `core.ignorecase` is false and the volume
   resolves the path, or a parent of it, to a current-tree path under another
   spelling. Examples are a case-only rename of `Readme` to `README`, and a

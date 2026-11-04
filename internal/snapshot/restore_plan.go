@@ -231,14 +231,14 @@ func (p *plan) paths() map[string]bool {
 	return paths
 }
 
-func (p *plan) removed() []string {
-	var paths []string
-	for _, c := range p.changes {
-		if c.cur != nil {
-			paths = append(paths, c.path)
+func (p *plan) changedCurrent() map[string]Action {
+	actions := map[string]Action{}
+	for i := range p.changes {
+		if c := &p.changes[i]; c.cur != nil {
+			actions[c.path] = c.action()
 		}
 	}
-	return paths
+	return actions
 }
 
 type world struct {
@@ -252,7 +252,7 @@ type world struct {
 
 func newWorld(root string, p *plan, index indexView, head headView, ignoreCase bool) *world {
 	folds := ignoreCase || foldingProbe(root, p.current)
-	w := &world{index: index, head: head, disk: newDiskProbe(root, p.removed(), folds, ignoreCase), ignoreCase: ignoreCase}
+	w := &world{index: index, head: head, disk: newDiskProbe(root, p.changedCurrent(), folds, ignoreCase), ignoreCase: ignoreCase}
 	if folds {
 		w.nodes = foldNodes(p.result)
 		w.spelled = map[string]bool{}

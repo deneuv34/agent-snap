@@ -260,12 +260,12 @@ func onDisk(root, p string) string { return filepath.Join(root, filepath.FromSla
 // most once and checks at most once whether the restore keeps a directory.
 type diskProbe struct {
 	root    string
-	removed map[string]bool
+	changed map[string]Action
 	// Git with core.ignorecase false matches index paths by bytes, so a file
-	// the volume resolves to a removed path under another spelling is
+	// the volume resolves to a changed path under another spelling is
 	// untracked to Git and blocks the checkout. Only core.ignorecase true
 	// fills this map.
-	removedByFold map[string][]string
+	changedByFold map[string][]string
 	listed        map[string]dirNames
 	kept          map[string]bool
 }
@@ -275,20 +275,17 @@ type dirNames struct {
 	err    error
 }
 
-func newDiskProbe(root string, removed []string, folds, ignoreCase bool) diskProbe {
-	d := diskProbe{root: root, removed: make(map[string]bool, len(removed))}
+func newDiskProbe(root string, changed map[string]Action, folds, ignoreCase bool) diskProbe {
+	d := diskProbe{root: root, changed: changed}
 	if folds {
 		d.listed = map[string]dirNames{}
 		d.kept = map[string]bool{}
 	}
 	if ignoreCase {
-		d.removedByFold = map[string][]string{}
-	}
-	for _, p := range removed {
-		d.removed[p] = true
-		if ignoreCase {
+		d.changedByFold = map[string][]string{}
+		for p := range changed {
 			key := foldKey(p)
-			d.removedByFold[key] = append(d.removedByFold[key], p)
+			d.changedByFold[key] = append(d.changedByFold[key], p)
 		}
 	}
 	return d
@@ -303,7 +300,7 @@ func (d diskProbe) inTheWay(path string) bool {
 		case err != nil:
 			return true
 		case !info.IsDir():
-			return !d.removes(dir, info)
+			return d.action(dir, info) == ""
 		}
 	}
 	info, err := os.Lstat(onDisk(d.root, path))
@@ -312,7 +309,7 @@ func (d diskProbe) inTheWay(path string) bool {
 		return false
 	case err != nil:
 		return true
-	case d.removes(path, info):
+	case d.action(path, info) != "":
 		return false
 	case info.IsDir():
 		return !d.emptiedBy(path)
@@ -408,25 +405,28 @@ func (d diskProbe) emptiedBy(dir string) bool {
 	for _, entry := range entries {
 		path := dir + "/" + entry.Name()
 		info, err := entry.Info()
-		switch {
-		case err != nil:
+		if err != nil {
 			return false
-		case d.removes(path, info):
-		case !info.IsDir() || !d.emptiedBy(path):
+		}
+		action := d.action(path, info)
+		if action == ActionDelete {
+			continue
+		}
+		if action != "" || !info.IsDir() || !d.emptiedBy(path) {
 			return false
 		}
 	}
 	return true
 }
 
-func (d diskProbe) removes(path string, info fs.FileInfo) bool {
-	if d.removed[path] {
-		return true
+func (d diskProbe) action(path string, info fs.FileInfo) Action {
+	if action, ok := d.changed[path]; ok {
+		return action
 	}
-	for _, other := range d.removedByFold[foldKey(path)] {
-		if removed, err := lstatNoFollow(d.root, other); err == nil && os.SameFile(info, removed) {
-			return true
+	for _, other := range d.changedByFold[foldKey(path)] {
+		if changed, err := lstatNoFollow(d.root, other); err == nil && os.SameFile(info, changed) {
+			return d.changed[other]
 		}
 	}
-	return false
+	return ""
 }
