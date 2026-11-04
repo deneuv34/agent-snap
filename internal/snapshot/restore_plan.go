@@ -231,14 +231,14 @@ func (p *plan) paths() map[string]bool {
 	return paths
 }
 
-func (p *plan) removed() []string {
-	var paths []string
-	for _, c := range p.changes {
-		if c.cur != nil {
-			paths = append(paths, c.path)
+func (p *plan) changedCurrent() map[string]Action {
+	actions := map[string]Action{}
+	for i := range p.changes {
+		if c := &p.changes[i]; c.cur != nil {
+			actions[c.path] = c.action()
 		}
 	}
-	return paths
+	return actions
 }
 
 type world struct {
@@ -252,7 +252,7 @@ type world struct {
 
 func newWorld(root string, p *plan, index indexView, head headView, ignoreCase bool) *world {
 	folds := ignoreCase || foldingProbe(root, p.current)
-	w := &world{index: index, head: head, disk: newDiskProbe(root, p.removed(), folds), ignoreCase: ignoreCase}
+	w := &world{index: index, head: head, disk: newDiskProbe(root, p.changedCurrent(), folds, ignoreCase), ignoreCase: ignoreCase}
 	if folds {
 		w.nodes = foldNodes(p.result)
 		w.spelled = map[string]bool{}
@@ -339,10 +339,24 @@ func (w *world) collision(p *plan, c *change) bool {
 }
 
 func (w *world) caseSpelling(p *plan, c *change) caseSpelling {
-	if !c.writesTarget() {
+	dirs := parents(c.path)
+	switch {
+	case c.writesTarget():
+	case w.ignoreCase:
+		dirs = heldParents(p.result, dirs)
+	default:
+		// With core.ignorecase false, a capture already records the disk
+		// spelling, so a delete changes no parent's spelling.
 		return spellingClear
 	}
-	return w.disk.caseSpelling(c.path, func(dir string) bool { return w.headSpells(p.result, dir) })
+	return w.disk.caseSpelling(dirs, func(dir string) bool { return w.headSpells(p.result, dir) })
+}
+
+func heldParents(result listing, dirs []string) []string {
+	for len(dirs) > 0 && !result.hasDir(dirs[len(dirs)-1]) {
+		dirs = dirs[:len(dirs)-1]
+	}
+	return dirs
 }
 
 // headSpells reports whether a capture after the restore spells dir as the
