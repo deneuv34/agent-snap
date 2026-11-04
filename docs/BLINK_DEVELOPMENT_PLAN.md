@@ -213,20 +213,20 @@ All commands pass on the supported platform matrix, and package artifacts instal
 ### Deliverables
 
 - Configurable retention and garbage collection for hidden snapshot refs. Under the scope default, this is the namespace drop followed by `git gc --prune=now`, and selective retention is deferred.
-- Structured diagnostics/metrics for snapshot latency, deduplication, failures, restore outcomes, and cleanup failures. Under the scope default, the drop result, its record, and the runbooks carry this, and no new event or metric is added.
+- Structured diagnostics/metrics for snapshot latency, deduplication, failures, restore outcomes, and cleanup failures. Under the scope default, Phase 6 carries only the cleanup part. The drop result, its record, and the runbooks report drop failures. Metrics for snapshot latency, deduplication, create failures, and restore outcomes are deferred to an operator decision, and Phase 6 adds no event or metric.
 - Documented storage and privacy behaviour.
 
 ### Work items
 
 1. Define retention policy inputs: age, count, storage size, per-worktree handling, and protected/manual checkpoints. Under the scope default, the only input is one namespace that a person picks from the report. Age, count, size, and protection rules are deferred with selective retention.
 2. Implement a dry-run garbage-collection report before any ref deletion capability. This is the read-only `snapshot.retention_report` (FR-17). It lists every namespace in the repository and lands in every layer before the drop.
-3. Add a confirmed cleanup command/API with explicit deletion reporting. This is the CLI `drop` command (FR-18). No JSONL method deletes a ref. A person types a random code on the terminal, and the drop writes a record of every ref it deletes before Git starts.
-4. Add privacy-preserving observability that records operation metadata, not source contents or secrets. The drop result and its record hold ref names, object IDs, counts, and Git's status, and the existing [docs/DIAGNOSTICS.md](DIAGNOSTICS.md) rules cover the rest. [docs/RETENTION.md](RETENTION.md) says why Phase 6 adds no event.
+3. Add a confirmed cleanup command/API with explicit deletion reporting. This is the CLI `drop` command (FR-18). No JSONL method deletes a ref. A person types a random code on the terminal, and the drop writes a record of every ref it deletes before Git starts. It refuses while a restore holds the worktree's restore lock.
+4. Add privacy-preserving observability that records operation metadata, not source contents or secrets. The drop result and its record hold ref names, object IDs, counts, and Git's status, and the existing [docs/DIAGNOSTICS.md](DIAGNOSTICS.md) rules cover the rest. [docs/RETENTION.md](RETENTION.md) says why Phase 6 adds no event, and which metrics wait for an operator decision.
 5. Define support runbooks for stuck child processes, corrupt refs, failed cleanup, and large repositories. [docs/RETENTION.md](RETENTION.md) lists the rows that `docs/DIAGNOSTICS.md` gains.
 
 ### Exit criteria
 
-- Retention cannot delete a protected checkpoint or a ref outside Blink's namespace.
+- Retention cannot delete a protected checkpoint or a ref outside Blink's namespace. Under the scope default, Phase 6 has no protected checkpoints. Retention deletes only a whole namespace that a person confirmed, and only refs under it that the report read.
 - Operators can diagnose failures without accessing developer source code.
 - Storage behaviour and cleanup safety are documented and tested.
 
