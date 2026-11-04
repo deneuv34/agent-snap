@@ -578,6 +578,143 @@ Errors:
 | Another process holds the worktree's restore lock | `-32005` | `another restore is running in this worktree` |
 | Repository not resolved, item ref refused, no scratch directory outside the worktree, missing object, a cancel, or a Git failure before step 10 | `-32603` | The operation's message |
 
+### FR-17: Retention report
+
+**Status:** Specified, not built. Nothing in this release dispatches `snapshot.retention_report`. [`RETENTION.md`](RETENTION.md) records the design, its evidence, and the order of the pull requests that build it. Each of those pull requests adds its layer to FR-8 through FR-11 and section 7.1.
+
+A retention report lists the snapshots that a policy would delete, and counts the snapshots it keeps by the rule that keeps them. It is read-only. Blink never deletes a snapshot ref on its own, and no create, list, host event, or timer runs a policy.
+
+Selection:
+
+- `snapshot.retention_report` takes `cwd`, at least one of `keep` and `before`, and optionally `offset`, `through`, and `delete_digest`.
+- `keep` is an integer from 0 through 2147483647. `before` is a UTC time written `YYYY-MM-DDTHH:MM:SSZ`.
+- The report covers the item refs in the worktree namespace derived from `cwd` whose names are snapshot identifiers (FR-12), and whose identifiers are at or before `through`. Without `through`, `through` is the greatest of those identifiers, and the result names it. An item ref with any other name is skipped, as FR-7 skips it.
+- A snapshot's time is the timestamp in its identifier.
+- A covered snapshot is deleted when no protection applies, it is not among the `keep` newest covered snapshots, and its time is earlier than `before`. An input that the request leaves out does not restrict.
+- A policy has no size input. A cleanup that keeps `latest` frees no object, because `latest` reaches every snapshot through the parent chain (FR-6). That holds unless someone deleted or moved `latest` by hand.
+
+Protection. A protected snapshot is never deleted. The report gives each kept snapshot the first protection in this table that applies, and `policy` when none applies.
+
+| Protection | Applies when |
+| --- | --- |
+| `invalid` | FR-12 lookup refuses the item ref. |
+| `latest` | `latest` names the item's commit. |
+| `pinned` | A pin ref (FR-18) exists for the identifier, whatever object it names. |
+| `backup` | The reason is exactly `restore backup`. |
+| `manual` | The stored `source` is absent, or is not `session-start`, `session-idle`, `agent-settled`, or `tool`. |
+
+Reading:
+
+- The report reads the item refs and the pin refs of the namespace with one `for-each-ref`, and then reads `latest` with a second command. It MUST NOT read `latest` before the items. A create moves `latest` only to a commit it just wrote, so a `latest` read after the items never names a covered commit that the read did not protect.
+- It reads with replace objects disabled, and parses only Git's standard output, as FR-12 lookup does.
+- When `latest` or a pin ref is a symbolic ref, the report fails with `-32603`.
+- A report MUST NOT write the index, refs, objects, `HEAD`, configuration, or working-tree files, or any file in the Git directory.
+
+Entries and digest:
+
+- Each deleted snapshot is one entry. Entries are in increasing identifier order, so the oldest comes first. Section 8.7 defines the fields.
+- An entry's `reason` is the stored reason cut to its first 256 bytes, then repaired as FR-14 repairs text. `reason_truncated` is true when the cut removed bytes.
+- `delete_digest` is the lowercase hex SHA-256 of one line per deleted snapshot, in entry order. A line is the identifier, a space, the full commit ID, and a line feed. With no deletions, it is the SHA-256 of no bytes.
+
+Paging and staleness:
+
+- A page lists at most 200 entries, from index `offset` (default 0). `next_offset` follows the FR-15 rule.
+- A request with `offset` greater than 0 MUST carry `through` and `delete_digest`, the values from the first page, and the same `keep` and `before`.
+- When a request carries `delete_digest` and the recomputed digest differs, the report fails with `-32002` and lists nothing.
+- `totals` always covers the whole report.
+
+Interfaces:
+
+- CLI `retention-report [--cwd <dir>] [--keep <n>] [--older-than <days> | --before <time>] [--offset <n>] [--through <id>] [--delete-digest <hex>]` prints one page of the retention report object as JSON. It needs `--keep`, `--older-than`, or `--before`. `--older-than` takes an integer from 1 through 36500, and the command sets `before` to its own clock's current UTC second minus that many days. It exits `0` when it prints a report, and `1` on any error. It writes nothing.
+- `SnapClient.retentionReport(cwd, policy, page?, signal?)` sends `snapshot.retention_report` and returns the validated retention report object (section 8.7). `policy` holds `keep` and `before`, and `page` holds `offset`, `through`, and `deleteDigest`. When the binary answers `-32601`, it rejects with `SnapRetentionReportUnsupportedError`, which extends `SnapRpcError`.
+- `SnapLike` gains `retentionReport`.
+- Both hosts expose `agent_snap_retention_report(keep?, before?, offset?, through?, delete_digest?, cwd?)` with caller cancellation support. The tool returns text with the policy, `through`, and the totals, then every entry on the page with its identifier, time, origin, and reason, and the values to request next. It ends by saying that the report changed nothing, and by naming the command a person runs in a terminal to delete those snapshots, `agent-snap cleanup` with the report's `--keep` and `--before`. Values print under the quoting rule of host tool text.
+- The report tool result is Git evidence only. Hosts MUST NOT add generated summaries, rankings, or opinions to it.
+
+Errors:
+
+| Condition | Code | Message |
+| --- | --- | --- |
+| Unknown param | `-32602` | `unknown param: <key>` |
+| `cwd` missing | `-32602` | `missing required param: cwd` |
+| `cwd` blank or not a string | `-32602` | `param must be a non-empty string: cwd` |
+| Neither `keep` nor `before` | `-32602` | `missing required param: keep or before` |
+| `keep` not an integer from 0 through 2147483647 | `-32602` | `param must be an integer between 0 and 2147483647: keep` |
+| `before` not a UTC time in the stated form | `-32602` | `param must be a UTC time: before` |
+| `offset` not an integer from 0 through 2147483647 | `-32602` | `param must be an integer between 0 and 2147483647: offset` |
+| `through` not a snapshot identifier | `-32602` | `param must be a snapshot id: through` |
+| `delete_digest` not 64 lowercase hex digits | `-32602` | `param must be a sha-256 digest: delete_digest` |
+| `offset` greater than 0 without `through` or `delete_digest` | `-32602` | `missing required param: <key>` |
+| The recomputed digest differs from `delete_digest` | `-32002` | `snapshots changed since the report` |
+| Repository not resolved, a symbolic `latest` or pin ref, or a Git failure | `-32603` | The operation's message |
+
+### FR-18: Pins and confirmed cleanup
+
+**Status:** Specified, not built. Nothing in this release writes a pin or deletes a snapshot ref. [`RETENTION.md`](RETENTION.md) records the design and the landing order.
+
+A pin protects one snapshot from every cleanup. A cleanup deletes the snapshots of one FR-17 report after a person confirmed it on a terminal. It deletes item refs only.
+
+Entry:
+
+- Only the CLI commands `pin`, `unpin`, and `cleanup` run these operations. No JSONL method writes a pin or deletes a snapshot ref, so `serve` cannot do either.
+- Every Git command of a pin, an unpin, or a cleanup runs in the resolved repository with inherited `GIT_*` variables removed, with `core.fsmonitor=`, and with repository hooks turned off as FR-3 turns them off for a create.
+
+Pins:
+
+- A pin is the ref `refs/agent-snapshots/<namespace>/pins/<id>`, and it names the snapshot's commit. `Store` builds the path from an identifier that matches FR-12.
+- `pin <id> [--cwd <dir>]` looks the snapshot up as FR-12 does. When no pin exists, it writes one in a single `update-ref --no-deref --stdin` transaction with `create <pin> <commit>` and `verify <item> <commit>`. When a pin exists, it writes nothing. It prints `{"id", "commit", "pinned": true, "changed"}` as JSON, where `changed` says whether it wrote the pin.
+- `unpin <id> [--cwd <dir>]` checks the identifier's syntax. When a pin exists, it deletes the pin with `delete <pin> <old-value>`. When none exists, it writes nothing. It prints `{"id", "pinned": false, "changed"}` as JSON. It needs no confirmation, because it deletes no snapshot.
+- Both exit `0` on success and `1` on any error. Listing and lookup do not report pins.
+
+Cleanup:
+
+- CLI `cleanup [--cwd <dir>] [--keep <n>] [--older-than <days> | --before <time>]`. It needs `--keep`, `--older-than`, or `--before`, with the FR-17 meanings. It has no option that confirms for the person, and it never reads the confirmation from standard input.
+
+Sequence. A cleanup MUST run these steps in this order:
+
+1. Parse the arguments. Bad arguments exit `1`.
+2. Check that standard input, standard output, and standard error are each the controlling terminal, and open the controlling terminal. When a check fails, print that a cleanup needs a terminal and exit `4`.
+3. Refuse on Windows with exit `1`.
+4. Resolve the repository, set `before` once from `--older-than`, and compute the whole FR-17 report.
+5. With no deletions, print the result with outcome `deleted` and empty lists, and exit `0` without a prompt.
+6. With more than 10000 deletions, print `cleanup deletes at most 10000 snapshots; this policy selects <n>` and exit `4`.
+7. Print the prompt to the terminal, and read one line from the terminal. Only the last six hex digits of `delete_digest`, in lowercase, confirm. Any other line, an empty line, or the end of input declines, prints that nothing was deleted, and exits `4`.
+8. Compute the report again with the same `keep`, `before`, and `through`. When its digest differs, print `snapshots changed since the report` and exit `4`.
+9. Ignore `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT`, then run one `git -c core.filesRefLockTimeout=1000 update-ref --no-deref --stdin` transaction. It sends `start`, then for each entry `delete <item> <commit>` and `verify <pin> <zero-oid>`, then `prepare` and `commit`. Git inherits the ignored signals.
+10. After Git exits, restore the signal handling, read the namespace's item refs again, and decide the outcome from what it reads. Print a summary to the terminal and the cleanup result object (section 8.8) to standard output.
+
+Safety:
+
+- A cleanup MUST delete only item refs that its step-8 report listed, each only while it still names the listed commit and no pin exists for it. It MUST NOT delete or write `latest`, a pin, any ref outside its namespace, the index, `HEAD`, configuration, objects, or working-tree files.
+- A cleanup never deletes the item that `latest` names, because FR-17 protects it.
+- When a cleanup stops before step 9, it has deleted nothing. Every exit status other than `0` and `3` means that it deleted nothing.
+- Once step 9 starts, the cleanup reports a result and exits by its outcome.
+- `SIGKILL` and a Windows forced termination cannot be ignored. Either one during step 9 can leave some listed refs deleted, with no result. A new report shows what is left.
+
+Outcome:
+
+- `deleted` when the step-10 read finds none of the listed refs. A report with no deletions also ends in `deleted`, at step 5.
+- `refused` when it finds every listed ref.
+- `partial` when it finds some of them.
+- `error` holds Git's standard error from step 9, cut to its first 4096 bytes and repaired as FR-14 repairs text. It is present exactly when Git exited with a non-zero status.
+
+Prompt:
+
+- The prompt names the worktree, the policy with the `before` that step 4 set, `through`, every total of the report, and the oldest and newest deletion.
+- It lists at most the first 20 deletions with their identifier, time, `source`, and reason, under the quoting rule of host tool text.
+- It says that a cleanup frees no disk space while `latest` stays, that the result lists every deleted commit, and it names the `retention-report` command that lists every deletion.
+
+Exit codes:
+
+| Code | When |
+| --- | --- |
+| `0` | Outcome `deleted`, including a report with no deletions. |
+| `1` | An error before step 9. Bad arguments, Windows, an unresolved repository, a symbolic `latest` or pin ref, or a Git failure. |
+| `3` | Outcome `partial`. |
+| `4` | A refusal that deleted nothing. No terminal, more than 10000 deletions, a decline, a changed report, an interrupt before step 9, or outcome `refused`. |
+
+The command never exits `2` on purpose, because Go exits `2` on a panic. Any other status means that the outcome is unknown.
+
 ## 7. Technical Architecture
 
 ```text
@@ -886,6 +1023,86 @@ A client MUST reject a result that breaks any of these rules:
 - Each list's length is the smaller of its total and 100. Its paths increase in byte order, and no path appears in two lists.
 - `paths`, when present, holds 1 to 100 strings.
 - `current_tree`, `result_tree`, `after_tree`, and the `commit` and `tree` of `snapshot` and `backup` are full object IDs of one length, 40 or 64 lowercase hex digits.
+
+### 8.7 Retention report object
+
+Returned by `snapshot.retention_report` (FR-17). The example is the first page of a report that keeps the newest 50 snapshots and deletes only snapshots from before October.
+
+```json
+{
+  "policy": {"keep": 50, "before": "2026-10-01T00:00:00Z"},
+  "through": "20261103T170000.000000000Z-5d6e7f8a9b0c",
+  "delete_digest": "3f1c9a0e...",
+  "offset": 0,
+  "next_offset": 200,
+  "totals": {"snapshots": 812, "delete": 640, "keep": 172, "policy": 104, "invalid": 0, "latest": 1, "pinned": 2, "backup": 3, "manual": 62},
+  "entries": [
+    {"id": "20260814T120000.000000000Z-abc123def456", "commit": "abc123def456...", "created_at": "2026-08-14T12:00:00Z", "reason": "session-idle", "source": "session-idle", "host": "opencode"}
+  ]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `policy` | object | `{keep, before}` as the request gave them. Each is present only when given. |
+| `through` | string, optional | The newest covered snapshot identifier (FR-17). Absent when the namespace has no covered snapshot. |
+| `delete_digest` | string | SHA-256 of the deletions, 64 lowercase hex digits (FR-17). |
+| `offset` | integer | Index of the first listed entry, as requested. |
+| `next_offset` | integer, optional | Index to request next. Absent on the last page. |
+| `totals` | object | `{snapshots, delete, keep, policy, invalid, latest, pinned, backup, manual}`, counted over the whole report. Each kept snapshot counts under exactly one of the last six. |
+| `entries` | array | At most 200 deletions, starting at `offset`, oldest first. |
+
+Entry:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id`, `commit`, `created_at` | | As in list results. |
+| `reason` | string | The stored reason, cut to its first 256 bytes and repaired (FR-17). |
+| `reason_truncated` | `true`, optional | The cut removed bytes. |
+| `source`, `host` | string, optional | As in the snapshot object. |
+
+A page holds at most 200 entries of about 500 bytes each, so about 100 KiB.
+
+A client MUST reject a result that breaks any of these rules:
+
+- `policy` holds `keep`, `before`, or both. `keep` is an integer from 0 through 2147483647, and `before` matches `YYYY-MM-DDTHH:MM:SSZ`.
+- `totals.snapshots` equals `delete` plus `keep`, and `keep` equals the sum of `policy`, `invalid`, `latest`, `pinned`, `backup`, and `manual`.
+- `through` is absent exactly when `totals.snapshots` is 0. `latest` is at most 1.
+- `entries.length` is at most 200. When `entries` is not empty, `offset + entries.length` is at most `totals.delete`.
+- `next_offset`, when present, equals `offset + entries.length` and is less than `totals.delete`.
+- Entry identifiers match FR-12, increase strictly, and are at most `through`. Every `commit` is a full object ID, and all have one length, 40 or 64 lowercase hex digits.
+
+### 8.8 Cleanup result object
+
+Printed by the CLI `cleanup` command (FR-18) to standard output. No JSONL method returns it. The example deleted every listed snapshot.
+
+```json
+{
+  "outcome": "deleted",
+  "policy": {"keep": 50, "before": "2026-10-01T00:00:00Z"},
+  "through": "20261103T170000.000000000Z-5d6e7f8a9b0c",
+  "delete_digest": "3f1c9a0e...",
+  "totals": {"planned": 640, "deleted": 640, "kept": 0},
+  "deleted": [{"id": "20260814T120000.000000000Z-abc123def456", "commit": "abc123def456..."}],
+  "kept": []
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `outcome` | `"deleted"`, `"refused"`, or `"partial"` | What the cleanup did (FR-18). |
+| `policy`, `through`, `delete_digest` | | The values of the step-8 report. |
+| `totals` | object | `{planned, deleted, kept}`. `planned` counts the step-8 report's deletions. |
+| `deleted` | array | `{id, commit}` of every listed snapshot that the step-10 read did not find, oldest first. |
+| `kept` | array | `{id, commit}` of every listed snapshot that the step-10 read found, oldest first. |
+| `error` | string, optional | Git's standard error from the transaction, cut to its first 4096 bytes (FR-18). |
+
+`deleted` and `kept` together hold `planned` entries, at most 10000, so a result holds at most about 1.2 MiB. The `deleted` list is the record a person needs to recreate a snapshot ref, because Git keeps no reflog for snapshot refs.
+
+The CLI checks its own result before it prints it:
+
+- `deleted.length` equals `totals.deleted`, `kept.length` equals `totals.kept`, and their sum equals `totals.planned`.
+- `outcome` is `deleted` exactly when `kept` is empty, and `refused` exactly when `deleted` is empty and `planned` is greater than 0.
 
 ## 9. Safety and Reliability Requirements
 

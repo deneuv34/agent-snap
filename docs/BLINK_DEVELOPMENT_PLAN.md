@@ -206,6 +206,8 @@ All commands pass on the supported platform matrix, and package artifacts instal
 
 **Objective:** Make Blink maintainable for long-lived repositories and teams.
 
+**Design:** [docs/RETENTION.md](RETENTION.md), and FR-17 and FR-18 in [docs/BLINK_SPEC.md](BLINK_SPEC.md). RETENTION.md lists the Phase 6 pull requests in landing order, each with its check. Blink never deletes a snapshot ref on its own.
+
 ### Deliverables
 
 - Configurable retention and garbage collection for hidden snapshot refs.
@@ -214,11 +216,11 @@ All commands pass on the supported platform matrix, and package artifacts instal
 
 ### Work items
 
-1. Define retention policy inputs: age, count, storage size, per-worktree handling, and protected/manual checkpoints.
-2. Implement a dry-run garbage-collection report before any ref deletion capability.
-3. Add a confirmed cleanup command/API with explicit deletion reporting.
-4. Add privacy-preserving observability that records operation metadata, not source contents or secrets.
-5. Define support runbooks for stuck child processes, corrupt refs, failed cleanup, and large repositories.
+1. Define retention policy inputs: age, count, storage size, per-worktree handling, and protected/manual checkpoints. The policy is a count and an age, in the worktree's own namespace. It has no size input, because a cleanup that keeps `latest` frees no disk ([docs/RETENTION.md](RETENTION.md)).
+2. Implement a dry-run garbage-collection report before any ref deletion capability. This is the read-only `snapshot.retention_report` (FR-17), which lands in every layer before any pin or delete.
+3. Add a confirmed cleanup command/API with explicit deletion reporting. This is the CLI `cleanup` command (FR-18). No JSONL method deletes a ref, and a person confirms on the terminal.
+4. Add privacy-preserving observability that records operation metadata, not source contents or secrets. `SnapClient` reports one `SnapOperationEvent` per request, with no path, reason, or content ([docs/RETENTION.md](RETENTION.md)).
+5. Define support runbooks for stuck child processes, corrupt refs, failed cleanup, and large repositories. [docs/RETENTION.md](RETENTION.md) lists the rows that `docs/DIAGNOSTICS.md` gains.
 
 ### Exit criteria
 
