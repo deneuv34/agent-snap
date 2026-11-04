@@ -137,6 +137,8 @@ This workflow is a product requirement for the restore release, not an MVP behav
 - Scratch files MUST be removed when the operation completes, fails, or is cancelled.
 - The binary MUST treat SIGTERM and SIGINT as cancellation of the request in flight. It stops that request's Git children, removes the request's scratch directory, and then exits. A second signal ends the process at once. SIGKILL and a Windows forced termination run no cleanup, so a scratch directory can remain after them.
 - Snapshot creation MUST NOT write the real Git index, modify `HEAD`, update user branches, or modify working-tree files.
+- Capture and create MUST run no repository hook and no fsmonitor program. A hook would receive the scratch index, and an fsmonitor answer would decide which files Git reads. Once Blink has resolved the repository, every Git command it runs there passes `core.fsmonitor=` with an empty value, which turns the fsmonitor off on every supported Git. Every Git command of a create or a restore plan also passes `core.hooksPath` naming an empty `hooks` directory in the operation's scratch directory, and `hook.<name>.enabled=false` for each hook that configuration defines with `hook.<name>.command` or `hook.<name>.event`.
+- Blink lists the configured hook names once per create or plan, from every configuration scope, with `git config -z --get-regexp '^hook\..*\.(command|event)$'`. A name is the text between `hook.` and the last `.` of the key. A name that contains `=` cannot be named in `-c`, so the operation fails with `-32603` before it captures anything. The message is `list configured hooks: hook name "<name>" contains '=', so it cannot be disabled on the Git command line`. A hook added to the configuration after the listing can still run, like any other program the repository configures.
 
 ### FR-4: Hidden, worktree-scoped storage
 
@@ -394,7 +396,7 @@ Capture safety:
 - The plan uses a scratch `GIT_INDEX_FILE`, and sets `GIT_OBJECT_DIRECTORY` to a private object directory. Both live in a scratch directory placed by the FR-3 rule. The private directory's `info/alternates` names the repository's object directory, so Git reads every existing object and writes only new objects, into the private directory.
 - Git runs in the repository, so its excludes, attributes, filters, and configuration apply as they do for capture.
 - A plan MUST NOT write the index, refs, `HEAD`, configuration, logs, or working-tree files, and MUST NOT add, remove, or change the content of any file in the Git directory. Git may refresh the modification time of an existing object or pack file that it would otherwise write.
-- A plan runs the programs that the repository configures for capture, exactly as `snapshot.create` does. They include clean filters, process filters such as Git LFS, and a `core.fsmonitor` hook. What those programs write is outside this guarantee.
+- A plan runs the programs that the repository configures for capture, exactly as `snapshot.create` does. They include clean filters and process filters such as Git LFS. What those programs write is outside this guarantee. Like a create, a plan runs no repository hook and no fsmonitor program (FR-3).
 - Reads of the real index run `ls-files` with `GIT_OPTIONAL_LOCKS=0`. A plan never runs a command that refreshes the index.
 - Blink removes the scratch directory when the request finishes, fails, or is cancelled. A cancelled plan returns no result.
 

@@ -5,12 +5,27 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+func redirectPinnedHooksPath(t *testing.T, hooks string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\nfor a; do\n  shift\n  case $a in core.hooksPath=*) a=core.hooksPath=%q ;; esac\n  set -- \"$@\" \"$a\"\ndone\nexec %q \"$@\"\n", hooks, realGit)
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
 
 func TestCreateCancelledWhileGitHoldsRefLocksLeavesNoLock(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -21,9 +36,11 @@ func TestCreateCancelledWhileGitHoldsRefLocksLeavesNoLock(t *testing.T) {
 	signals := t.TempDir()
 	started, release := filepath.Join(signals, "started"), filepath.Join(signals, "release")
 	hook := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = prepared ]; then touch %q; while [ ! -e %q ]; do sleep 0.05; done; fi\n", started, release)
-	if err := os.WriteFile(filepath.Join(dir, ".git", "hooks", "reference-transaction"), []byte(hook), 0o755); err != nil {
+	hooks := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hooks, "reference-transaction"), []byte(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	redirectPinnedHooksPath(t, hooks)
 	defer func() { _ = os.WriteFile(release, nil, 0o644) }()
 	store := newStore(t, dir)
 	root := scratchRoot(t)

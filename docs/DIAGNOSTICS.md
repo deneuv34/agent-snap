@@ -39,6 +39,7 @@ with `LANGUAGE=C`.
 | `update refs` / CAS failure | Concurrent create lost the compare-and-swap | Retry is the client's job on the next create. Confirm the ref namespace is the worktree's. |
 | `update refs: … cannot lock ref '<ref>': unable to create directory for <path>` | Git could not create the snapshot ref's directory in 5 attempts. Blink retries a directory that a concurrent `git pack-refs --prune` removed, so a failure after 5 attempts points to a permission problem or a full disk | Check that the user who runs `agent-snap` can write `refs/agent-snapshots/` and its parents under the directory that `git rev-parse --git-common-dir` prints. Do not delete or rename a ref directory. |
 | `snapshot ref lock refs/agent-snapshots/<namespace>/latest.lock in the Git directory stayed held for 1s` (or an `items/<id>.lock`) | A Git process died inside its ref transaction and left the lock, or another process held it for over a second | Check that no `agent-snap` or `git` process runs for this repository. Then remove that one file, under the directory that `git rev-parse --git-common-dir` prints. Remove no other file. Blink never removes the lock itself. |
+| `list configured hooks: hook name "<name>" contains '=', so it cannot be disabled on the Git command line` | The configuration defines a hook through `hook.<name>.command` or `hook.<name>.event` whose name contains `=`. Blink turns off every configured hook during a create or a restore plan with `-c hook.<name>.enabled=false`, and Git cannot parse such a name there. | Run `git config --show-origin --get-regexp '^hook\.'` and rename that hook. The repository is unchanged. |
 | `git …` with object-format / git-dir errors | Broken Git dir or unsupported repo | Confirm SHA-1 or SHA-256 repo; inherited `GIT_*` must not redirect the repo. |
 | `create evidence repository: …` | Git could not create the private bare repository that `snapshot.diff` runs in | The temp directory outside the worktree is writable, and Git is 2.30 or newer. The repository is unchanged. |
 | `object directory … cannot be written to an alternates file` | The repository's object directory path contains a line break | Move the repository to a path without line breaks. |
@@ -114,7 +115,8 @@ Each create, diff, and restore plan works in one private directory named
 `agent-snap-index-*`. It lives in the system temporary directory (`TMPDIR`
 on POSIX, `TMP` or `TEMP` on Windows). When that directory resolves inside
 the repository, Blink uses the user cache directory or `/tmp` instead. A
-create directory holds a scratch `index`. A diff or restore plan directory
+create directory holds a scratch `index` and an empty `hooks` directory,
+which a restore plan directory also holds. A diff or restore plan directory
 also holds `evidence.git`. A restore plan's `evidence.git/objects` can hold
 blobs of working-tree files, so treat a leftover directory as file contents.
 Do not attach it to a report.
@@ -122,10 +124,10 @@ Do not attach it to a report.
 On POSIX the guardian sends SIGTERM to the process group. `agent-snap`
 cancels the request in flight and sends SIGTERM to its Git child, so Git
 removes its own ref lock files. When its Git child still runs 500 ms later,
-`agent-snap` kills that child. It kills no hook or filter that Git started.
+`agent-snap` kills that child. It kills no filter that Git started.
 `agent-snap` then removes the directory and exits. The guardian sends SIGKILL
-to the group `KILL_GRACE_MS` (2 seconds) later, which ends a hook or filter
-that ignored SIGTERM. A directory that is still being removed
+to the group `KILL_GRACE_MS` (2 seconds) later, which ends a filter that
+ignored SIGTERM. A directory that is still being removed
 then stays behind, in part or in full. A restore plan over a working tree
 with tens of thousands of new or changed files can need that long.
 A SIGKILL sent straight to `agent-snap` also leaves its directory.

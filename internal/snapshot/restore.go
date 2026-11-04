@@ -128,7 +128,11 @@ func (s *Store) planRestore(ctx context.Context, id string, q PlanQuery) (Restor
 		return RestorePlan{}, err
 	}
 	defer cleanup()
-	gitDir, env, err := s.evidenceRepo(ctx, dir)
+	op, err := s.withoutHooks(ctx, dir)
+	if err != nil {
+		return RestorePlan{}, err
+	}
+	gitDir, env, err := op.evidenceRepo(ctx, dir)
 	if err != nil {
 		return RestorePlan{}, err
 	}
@@ -136,7 +140,7 @@ func (s *Store) planRestore(ctx context.Context, id string, q PlanQuery) (Restor
 
 	// Capture writes its new objects into the evidence repository, which the
 	// cleanup removes, so the real object store gains nothing.
-	current, head, err := s.captureTree(ctx, append(scratchEnv(dir), "GIT_OBJECT_DIRECTORY="+filepath.Join(gitDir, "objects")))
+	current, head, err := op.captureTree(ctx, append(scratchEnv(dir), "GIT_OBJECT_DIRECTORY="+filepath.Join(gitDir, "objects")))
 	if err != nil {
 		return RestorePlan{}, err
 	}
@@ -144,7 +148,7 @@ func (s *Store) planRestore(ctx context.Context, id string, q PlanQuery) (Restor
 		return RestorePlan{}, ErrStale
 	}
 
-	state, err := s.readWorktree(ctx)
+	state, err := op.readWorktree(ctx)
 	if err != nil {
 		return RestorePlan{}, err
 	}
@@ -164,7 +168,7 @@ func (s *Store) planRestore(ctx context.Context, id string, q PlanQuery) (Restor
 	if err := ev.requireBlobs(ctx, p); err != nil {
 		return RestorePlan{}, err
 	}
-	index, err := s.readIndex(ctx, p.paths())
+	index, err := op.readIndex(ctx, p.paths())
 	if err != nil {
 		return RestorePlan{}, err
 	}

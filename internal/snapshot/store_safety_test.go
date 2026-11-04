@@ -424,7 +424,7 @@ func fakeAddFailures(t *testing.T, failures int, stderr string) func() int {
 	}
 	dir := t.TempDir()
 	counter := filepath.Join(dir, "adds")
-	script := fmt.Sprintf("#!/bin/sh\ncommand=$1\nif [ \"$1\" = -c ]; then command=$3; fi\nif [ \"$command\" = add ]; then\n  n=$(( $(cat %q 2>/dev/null || echo 0) + 1 ))\n  echo \"$n\" > %q\n  if [ \"$n\" -le %d ]; then printf '%%s\\n' %q >&2; exit 128; fi\nfi\nexec %q \"$@\"\n", counter, counter, failures, stderr, realGit)
+	script := fmt.Sprintf("#!/bin/sh\ncommand= skip=\nfor a; do\n  if [ -n \"$skip\" ]; then skip=; elif [ \"$a\" = -c ]; then skip=1; else command=$a; break; fi\ndone\nif [ \"$command\" = add ]; then\n  n=$(( $(cat %q 2>/dev/null || echo 0) + 1 ))\n  echo \"$n\" > %q\n  if [ \"$n\" -le %d ]; then printf '%%s\\n' %q >&2; exit 128; fi\nfi\nexec %q \"$@\"\n", counter, counter, failures, stderr, realGit)
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

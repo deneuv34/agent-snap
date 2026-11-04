@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -160,6 +161,7 @@ type Store struct {
 	ns      string
 	zeroOID string
 	now     func() time.Time
+	pins    []string
 }
 
 func New(path string) (*Store, error) {
@@ -194,7 +196,9 @@ func New(path string) (*Store, error) {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(string(gdirOut))))
 	ns := hex.EncodeToString(sum[:8])
 
-	return &Store{repo: repo, ns: ns, zeroOID: zeroOID, now: time.Now}, nil
+	// Every Store pins core.fsmonitor=, so no fsmonitor program decides which
+	// files a read or a capture looks at.
+	return &Store{repo: repo, ns: ns, zeroOID: zeroOID, now: time.Now, pins: []string{"-c", "core.fsmonitor="}}, nil
 }
 
 func (s *Store) itemsRef() string {
@@ -221,13 +225,51 @@ func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snaps
 		return Snapshot{}, err
 	}
 	defer cleanup()
-	env := scratchEnv(tmpDir)
-
-	tree, head, err := s.captureTree(ctx, env)
+	op, err := s.withoutHooks(ctx, tmpDir)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return s.recordTree(ctx, env, tree, head, reason, origin)
+	env := scratchEnv(tmpDir)
+
+	tree, head, err := op.captureTree(ctx, env)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return op.recordTree(ctx, env, tree, head, reason, origin)
+}
+
+// withoutHooks returns a copy of s whose Git commands start no repository
+// hook, because a hook would receive the scratch index. Configured hooks are
+// listed once, so one added during the operation can still run.
+func (s *Store) withoutHooks(ctx context.Context, scratchDir string) (*Store, error) {
+	hooks := filepath.Join(scratchDir, "hooks")
+	if err := os.Mkdir(hooks, 0o700); err != nil {
+		return nil, fmt.Errorf("create empty hooks directory: %w", err)
+	}
+	out, err := s.gitRaw(ctx, nil, "config", "-z", "--get-regexp", `^hook\..*\.(command|event)$`)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		out, err = "", nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list configured hooks: %w", err)
+	}
+	pins := slices.Concat(s.pins, []string{"-c", "core.hooksPath=" + hooks})
+	seen := map[string]bool{}
+	for _, record := range records(out) {
+		key, _, _ := strings.Cut(record, "\n")
+		name := key[len("hook."):strings.LastIndexByte(key, '.')]
+		if strings.Contains(name, "=") {
+			return nil, fmt.Errorf("list configured hooks: hook name %q contains '=', so it cannot be disabled on the Git command line", name)
+		}
+		if !seen[name] {
+			seen[name] = true
+			pins = append(pins, "-c", "hook."+name+".enabled=false")
+		}
+	}
+	op := *s
+	op.pins = pins
+	return &op, nil
 }
 
 func (s *Store) recordTree(ctx context.Context, env []string, tree, head, reason string, origin Origin) (Snapshot, error) {
@@ -396,10 +438,7 @@ func scratchRootOutside(repo string) (string, error) {
 
 // isSymref reports whether ref is a symbolic reference.
 func (s *Store) isSymref(ctx context.Context, ref string) (bool, error) {
-	cmd := gitCmd(ctx, "symbolic-ref", "-q", ref)
-	cmd.Dir = s.repo
-	cmd.Env = sanitizedEnv()
-	err := cmd.Run()
+	err := s.command(ctx, nil, "symbolic-ref", "-q", ref).Run()
 	if err == nil {
 		return true, nil
 	}
@@ -698,8 +737,8 @@ func sanitizedEnv() []string {
 // gitCmd stops Git with SIGTERM when ctx ends, because a SIGKILL can land
 // while Git removes its ref lock files and leave them in the repository. A
 // Git still running gitStopGrace later is killed, and the pipes are closed
-// even when a hook still holds them, so cleanup finishes inside the client's
-// kill grace. The hook itself is not killed. Windows has no SIGTERM, so
+// even when a filter still holds them, so cleanup finishes inside the client's
+// kill grace. The filter itself is not killed. Windows has no SIGTERM, so
 // cancellation kills Git there.
 func gitCmd(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
@@ -707,6 +746,13 @@ func gitCmd(ctx context.Context, args ...string) *exec.Cmd {
 		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	}
 	cmd.WaitDelay = gitStopGrace
+	return cmd
+}
+
+func (s *Store) command(ctx context.Context, extraEnv []string, args ...string) *exec.Cmd {
+	cmd := gitCmd(ctx, slices.Concat(s.pins, args)...)
+	cmd.Dir = s.repo
+	cmd.Env = append(sanitizedEnv(), extraEnv...)
 	return cmd
 }
 
@@ -727,9 +773,7 @@ func (s *Store) gitStdin(ctx context.Context, extraEnv []string, stdin string, a
 }
 
 func (s *Store) gitMaybe(ctx context.Context, extraEnv []string, args ...string) (string, error) {
-	cmd := gitCmd(ctx, args...)
-	cmd.Dir = s.repo
-	cmd.Env = append(sanitizedEnv(), extraEnv...)
+	cmd := s.command(ctx, extraEnv, args...)
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
@@ -739,9 +783,7 @@ func (s *Store) gitMaybe(ctx context.Context, extraEnv []string, args ...string)
 // only: a warning Git prints to stderr, such as one about an unrelated broken
 // ref, must never be parsed as a path or a ref record.
 func (s *Store) gitRaw(ctx context.Context, extraEnv []string, args ...string) (string, error) {
-	cmd := gitCmd(ctx, args...)
-	cmd.Dir = s.repo
-	cmd.Env = append(sanitizedEnv(), extraEnv...)
+	cmd := s.command(ctx, extraEnv, args...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -752,9 +794,7 @@ func (s *Store) gitRaw(ctx context.Context, extraEnv []string, args ...string) (
 }
 
 func (s *Store) gitStdinMaybe(ctx context.Context, extraEnv []string, stdin string, args ...string) (string, error) {
-	cmd := gitCmd(ctx, args...)
-	cmd.Dir = s.repo
-	cmd.Env = append(sanitizedEnv(), extraEnv...)
+	cmd := s.command(ctx, extraEnv, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
