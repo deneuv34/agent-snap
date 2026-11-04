@@ -96,3 +96,43 @@ func TestServerReturnsStructuredErrorAndContinues(t *testing.T) {
 		t.Fatalf("unexpected responses: %s", output.String())
 	}
 }
+
+func TestServerBoundsTheGitErrorAFilterFloods(t *testing.T) {
+	dir := protocolRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("*.txt filter=flood\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"config", "filter.flood.clean", `head -c 8388608 /dev/zero | tr '\000' '\001' >&2; exit 1`},
+		{"config", "filter.flood.required", "true"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	var output bytes.Buffer
+	if err := Serve(context.Background(), strings.NewReader(requestLine(1, "snapshot.create", map[string]any{"cwd": dir})+"\n"), &output); err != nil {
+		t.Fatal(err)
+	}
+	line := strings.TrimSuffix(output.String(), "\n")
+	var response map[string]any
+	if err := json.Unmarshal([]byte(line), &response); err != nil {
+		t.Fatal(err)
+	}
+	if code := errCode(t, response); code != CodeInternalError {
+		t.Fatalf("code = %v, want %d", code, CodeInternalError)
+	}
+	message := errMessage(t, response)
+	if len(message) > 9<<10 || len(line) > 64<<10 {
+		t.Fatalf("the message is %d bytes and the response line %d bytes, want at most 9 KiB and 64 KiB", len(message), len(line))
+	}
+	if !strings.Contains(message, " earlier bytes of standard error omitted]") || !strings.HasSuffix(message, "clean filter 'flood' failed") {
+		t.Fatalf("the message does not mark the cut and keep Git's own message: %q", message)
+	}
+}
