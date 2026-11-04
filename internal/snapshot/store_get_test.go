@@ -417,7 +417,7 @@ func TestListAndReuseParseOnlyGitStdout(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(gitDir, filepath.FromSlash(store.itemsRef()+latest.ID))); err != nil {
 				t.Skipf("item refs are not loose files in this ref backend: %v", err)
 			}
-			writeFile(t, gitDir, filepath.FromSlash(store.itemsRef()+"20000101T000000.000000000Z-"+latest.Commit[:12]+"\tforged"), latest.Commit+"\n")
+			writeFile(t, gitDir, filepath.FromSlash(store.itemsRef()+"20000101T000000.000000000Z-"+latest.Commit[:12]+" forged"), latest.Commit+"\n")
 
 			items, err := store.List(context.Background(), 100)
 			if err != nil {
