@@ -457,7 +457,7 @@ func TestPathRulesApplyInFR15Order(t *testing.T) {
 		w := &world{
 			index: indexView{stage0: map[string]indexEntry{fixture.path: {mode: fixture.mode, oid: oid, flagged: fixture.flagged}}},
 			head:  headView{unborn: true},
-			disk:  newDiskProbe(root, nil, false),
+			disk:  newDiskProbe(root, nil, false, false),
 		}
 		if fixture.fold {
 			w.nodes = map[string][]string{foldKey("d"): {"d", "D"}}
