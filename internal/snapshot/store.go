@@ -196,6 +196,8 @@ func New(path string) (*Store, error) {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(string(gdirOut))))
 	ns := hex.EncodeToString(sum[:8])
 
+	// Every Store pins core.fsmonitor=, so no fsmonitor program decides which
+	// files a read or a capture looks at.
 	return &Store{repo: repo, ns: ns, zeroOID: zeroOID, now: time.Now, pins: []string{"-c", "core.fsmonitor="}}, nil
 }
 
@@ -237,10 +239,8 @@ func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snaps
 }
 
 // withoutHooks returns a copy of s whose Git commands start no repository
-// hook, because a hook would receive the scratch index. Hook files are looked
-// up in an empty directory inside the private scratch directory.
-// Configuration hooks are listed once, so one added during the operation can
-// still run, like any other program the repository configures.
+// hook, because a hook would receive the scratch index. Configured hooks are
+// listed once, so one added during the operation can still run.
 func (s *Store) withoutHooks(ctx context.Context, scratchDir string) (*Store, error) {
 	hooks := filepath.Join(scratchDir, "hooks")
 	if err := os.Mkdir(hooks, 0o700); err != nil {
@@ -745,9 +745,6 @@ func gitCmd(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// command runs Git in the repository with inherited GIT_* variables removed
-// and the operation's pins ahead of args. Every Store holds core.fsmonitor=,
-// so no fsmonitor program decides which files a read or a capture looks at.
 func (s *Store) command(ctx context.Context, extraEnv []string, args ...string) *exec.Cmd {
 	cmd := gitCmd(ctx, slices.Concat(s.pins, args)...)
 	cmd.Dir = s.repo

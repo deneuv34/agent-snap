@@ -13,9 +13,7 @@ import (
 	"time"
 )
 
-// hooksPathFor puts a git wrapper first on PATH that points the hooks path
-// the Store pins at hooks, so a test can run a hook inside a create.
-func hooksPathFor(t *testing.T, hooks string) {
+func redirectPinnedHooksPath(t *testing.T, hooks string) {
 	t.Helper()
 	realGit, err := exec.LookPath("git")
 	if err != nil {
@@ -42,7 +40,7 @@ func TestCreateCancelledWhileGitHoldsRefLocksLeavesNoLock(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(hooks, "reference-transaction"), []byte(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	hooksPathFor(t, hooks)
+	redirectPinnedHooksPath(t, hooks)
 	defer func() { _ = os.WriteFile(release, nil, 0o644) }()
 	store := newStore(t, dir)
 	root := scratchRoot(t)

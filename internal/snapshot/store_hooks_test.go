@@ -11,8 +11,6 @@ import (
 	"testing"
 )
 
-// logScript writes a shell script that appends marker to log each time it
-// runs, then prints reply.
 func logScript(t *testing.T, path, marker, log, reply string) {
 	t.Helper()
 	script := fmt.Sprintf("#!/bin/sh\necho %s >> '%s'\nprintf '%s'\n", marker, filepath.ToSlash(log), reply)
@@ -37,8 +35,6 @@ func runs(t *testing.T, log string) []string {
 	return markers
 }
 
-// plainCapture is FR-2 capture run by plain Git, with the repository's hooks
-// and fsmonitor live.
 func plainCapture(t *testing.T, dir string) string {
 	t.Helper()
 	index := filepath.Join(t.TempDir(), "index")
