@@ -198,6 +198,16 @@
   its standard error with `[<n> earlier bytes of standard error omitted]`.
   The diff and restore runners kept the first 4 KiB and now keep the last
   8 KiB too. The captured tree is unchanged.
+- `snapshot.create` of an unchanged tree now records a new snapshot when no
+  item ref that lookup accepts points at the commit that `latest` names.
+  Before, every such create failed with `-32603` and
+  `snapshot ref not found` until a file changed. Deleting a tampered item ref
+  with `git update-ref -d`, as the diagnostics advise, led there. The new
+  snapshot has the same tree, its parent is the old `latest` commit, and the
+  next unchanged create reuses it. No item ref is recreated or deleted.
+  A reuse also skips an item ref that lookup refuses. Before, it could report
+  such a ref when its name sorted first, and `snapshot.get` then refused that
+  id.
 
 ## 0.1.0
 
