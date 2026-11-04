@@ -190,8 +190,8 @@ All commands pass on the supported platform matrix, and package artifacts instal
 
 1. Implement restore writes through a narrowly scoped core API; do not expose raw Git commands directly through host plugins.
 2. Enforce the validated dry-run plan at the protocol boundary, and the person's confirmation in the hosts and the CLI ([docs/RESTORE.md](RESTORE.md)).
-3. Apply the documented preservation and conflict rules; refuse rather than overwrite anything outside the approved plan.
-4. Provide an abort and recovery path that references the newly created safety snapshot. A cancel before the write writes nothing. A cancel after the write starts waits for the write to end, and recovery is a restore of the safety snapshot ([docs/RESTORE.md](RESTORE.md)).
+3. Apply the documented preservation and conflict rules; refuse rather than overwrite anything outside the approved plan. Git's own check before the write is not a complete guard, so the write keeps the window between Git's check of a path and its write as short as Git's own checkout keeps it, and refuses when the repository's configuration changed during the restore ([docs/RESTORE.md](RESTORE.md#the-write-is-a-two-way-read-tree)).
+4. Provide an abort and recovery path that references the newly created safety snapshot. A cancel, a timeout, or a host that exits before the write writes nothing. A cancel or timeout after the write starts waits for the write to end and returns its real outcome. Recovery is a new plan toward the snapshot, or a restore of the safety snapshot that records its own backup first. The write runs where no terminal or teardown signal reaches it ([docs/RESTORE.md](RESTORE.md)). The cancellation fix in #31 landed first, as `4e8817e`.
 5. Add end-to-end tests that prove no unrelated files, index entries, refs, or worktrees are modified.
 
 ### Exit criteria
