@@ -175,6 +175,14 @@
   Git's standard error. A configured hook listing that is not
   `hook.<name>.<key>` now fails the create or the plan with `-32603`.
   Before, it ended the process with a Go panic. The captured tree is unchanged.
+- A failed Git command in `agent-snap` now keeps only the last 8 KiB of its
+  standard error. Before, the store kept all of it. A required clean filter
+  that wrote 8 MiB of control characters to standard error and failed made
+  `snapshot.create` answer with an 8 MiB message on a 50 MB JSONL line. The
+  message is now under 9 KiB and the line under 64 KiB. A cut message starts
+  its standard error with `[<n> earlier bytes of standard error omitted]`.
+  The diff and restore runners kept the first 4 KiB and now keep the last
+  8 KiB too. The captured tree is unchanged.
 
 ## 0.1.0
 

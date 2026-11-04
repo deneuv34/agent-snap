@@ -198,6 +198,7 @@ The current CLI name is `agent-snap`; Blink branding is a future packaging decis
 - Empty input lines are ignored.
 - The server MUST continue to process later requests after a request-level parse, validation, or operation error.
 - The maximum input line size is 4 MiB.
+- An error message that carries Git's standard error keeps only its last 8 KiB. When Git printed more, the kept text starts with `[<n> earlier bytes of standard error omitted]`.
 - Supported methods are `ping`, `snapshot.create`, `snapshot.list`, `snapshot.get`, `snapshot.diff`, and `snapshot.restore_plan`.
 - Unknown methods return code `-32601`.
 - Malformed JSON returns `-32700`; invalid parameters return `-32602`; internal operation failures return `-32603`; a well-formed snapshot identifier with no snapshot in the worktree namespace returns `-32001`, for `snapshot.get`, for either side of `snapshot.diff`, and for the `id` of `snapshot.restore_plan`.

@@ -129,6 +129,7 @@ func TestServerBoundsTheGitErrorAFilterFloods(t *testing.T) {
 		t.Fatalf("code = %v, want %d", code, CodeInternalError)
 	}
 	message := errMessage(t, response)
+	t.Logf("the message is %d bytes and the response line %d bytes", len(message), len(line))
 	if len(message) > 9<<10 || len(line) > 64<<10 {
 		t.Fatalf("the message is %d bytes and the response line %d bytes, want at most 9 KiB and 64 KiB", len(message), len(line))
 	}
