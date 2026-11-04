@@ -1032,11 +1032,11 @@ Add configurable retention, garbage collection, observability, and policy contro
 
 These decisions need product and engineering agreement before their related milestones begin:
 
-- Whether `refs/agent-snapshots/` becomes `refs/blink/`, remains a compatibility namespace, or is hidden behind a migration layer.
+- Settled: `refs/agent-snapshots/` remains the namespace, with no `refs/blink/` and no migration layer. See [NAMESPACE.md](NAMESPACE.md).
 - Which host environments are first-class after OpenCode and Pi Coding Agent.
 - Whether review intelligence is local-only, host-provided, or supported by an optional service.
 - Retention defaults, storage quotas, and whether checkpoints may be explicitly exported or shared.
-- Versioning, package names, and executable aliases for the Blink product release.
+- Versioning for the Blink product release. [NAMESPACE.md](NAMESPACE.md) settled the package names and the executable aliases. The packages stay `@agent-snap/*`, and the executable stays `agent-snap` with no `blink` alias.
 - Whether `snapshot.restore_plan` takes a flag filter, so that the confirmation prompt gets the entries flagged `unstaged` or `untracked` and the others from one capture instead of up to 5 pages. It changes FR-15.
 - Whether FR-15 blocks a planned path, or a parent of one, whose name holds LF or CR. That keeps prompts short and keeps a path name from forging a line of Git's messages. FR-16 no longer reads those messages, so it does not depend on the block.
 - Whether `snapshot.restore_plan` reports a held restore lock, by opening the lock file without creating it and testing a shared lock. Hosts could then say that a restore is running before they record a backup, and Pi could keep automatic snapshots paused until an orphaned write ends. It changes FR-15, so it waits for the CLI step of Phase 5.
