@@ -29,6 +29,8 @@ const (
 	originLimit       = 64
 	gitStopGrace      = 500 * time.Millisecond
 	refLockTimeout    = time.Second
+	refDirAttempts    = 5
+	refDirDelay       = 10 * time.Millisecond
 	MaxPageOffset     = 1<<31 - 1
 	pageSize          = 200
 )
@@ -415,6 +417,9 @@ func (s *Store) isSymref(ctx context.Context, ref string) (bool, error) {
 // never redirect the write onto a real branch; symbolic refs are rejected
 // outright. A ref lock held past refLockTimeout fails the call and is never
 // removed, because a stale lock and one that a live Git holds look the same.
+// A ref directory that a concurrent pack-refs --prune removed is attempted at
+// most refDirAttempts times, because Git prints the same message for a
+// permission failure on that directory.
 func (s *Store) commitRefs(ctx context.Context, id, commit, expectedLatest string, extraEnv []string) (bool, error) {
 	itemsRef := s.itemsRef() + id
 	if symref, err := s.isSymref(ctx, itemsRef); err != nil {
@@ -438,19 +443,32 @@ func (s *Store) commitRefs(ctx context.Context, id, commit, expectedLatest strin
 	fmt.Fprintf(&b, "update %s %s %s\n", s.latestRef(), commit, expected)
 	b.WriteString("prepare\ncommit\n")
 
-	out, err := s.gitStdinMaybe(ctx, extraEnv, b.String(), "-c", fmt.Sprintf("core.filesRefLockTimeout=%d", refLockTimeout.Milliseconds()), "update-ref", "--no-deref", "--stdin")
-	if err != nil {
+	delay := refDirDelay
+	for attempt := 1; ; attempt++ {
+		out, err := s.gitStdinMaybe(ctx, extraEnv, b.String(), "-c", fmt.Sprintf("core.filesRefLockTimeout=%d", refLockTimeout.Milliseconds()), "update-ref", "--no-deref", "--stdin")
+		if err == nil {
+			return true, nil
+		}
 		if strings.Contains(out, "but expected") || strings.Contains(out, "reference already exists") {
 			return false, nil
 		}
+		dirUncreatable := false
 		for _, ref := range []string{itemsRef, s.latestRef()} {
 			if strings.Contains(out, "cannot lock ref '"+ref+"': Unable to create '") && strings.Contains(out, "': File exists") {
 				return false, fmt.Errorf("snapshot ref lock %s.lock in the Git directory stayed held for %s; remove it only when no agent-snap or Git process is running in this repository", ref, refLockTimeout)
 			}
+			dirUncreatable = dirUncreatable || strings.Contains(out, "cannot lock ref '"+ref+"': unable to create directory for ")
 		}
-		return false, fmt.Errorf("update refs: %w: %s", err, out)
+		if attempt == refDirAttempts || !dirUncreatable {
+			return false, fmt.Errorf("update refs: %w: %s", err, out)
+		}
+		select {
+		case <-ctx.Done():
+			return false, fmt.Errorf("update refs: %w", ctx.Err())
+		case <-time.After(delay):
+		}
+		delay *= 2
 	}
-	return true, nil
 }
 
 func (s *Store) List(ctx context.Context, limit int) ([]Snapshot, error) {
