@@ -180,7 +180,7 @@ This workflow is a product requirement for the restore release, not an MVP behav
 
 ### FR-8: Core CLI
 
-The current CLI name is `agent-snap`; Blink branding is a future packaging decision.
+The executable is `agent-snap`. Blink is the product name in documentation and package descriptions only, and [NAMESPACE.md](NAMESPACE.md) records why the executable keeps its name.
 
 | Command | Required behaviour |
 | --- | --- |
@@ -498,7 +498,7 @@ Entry:
 2. `agent-snap serve` MUST answer `snapshot.restore` with `-32601`.
 3. The CLI `restore` command runs the restore in its own process and never starts `serve --restore`.
 4. No option, environment variable, or configuration selects the restore entry.
-5. The `ping` result of `serve --restore` adds `restore`. It is `supported`, or the message that step 1 or step 2 would refuse with. That `ping` takes an optional `cwd`. With it, `restore` also reports a lock file that is not a regular file with one link, and `restore needs a file system that records change times`, from the check of step 4. That check takes no lock and writes no lock line. It MUST run on a context that the end of standard input does not cancel. A signal still cancels it, and `restore` then holds `restore cancelled before the write`.
+5. The `ping` result of `serve --restore` adds `restore`. It is `supported`, or the message that step 1 or step 2 would refuse with. That `ping` takes an optional `cwd`. With it, `restore` also reports a lock file that is not a regular file with one link, and `restore needs a file system that records change times`, from the check of step 4. That check opens the lock file as step 4 does and sets its modification time back, but takes no lock and writes no lock line. It can therefore set the time back while a restore holds the lock, and step 4 takes T from the change time for that reason. It MUST run on a context that the end of standard input does not cancel. A signal still cancels it, and `restore` then holds `restore cancelled before the write`.
 6. In `serve --restore`, `SIGINT`, `SIGTERM`, and the end of standard input cancel the request context and MUST NOT end the read loop. The end of input cancels a `snapshot.restore` in flight and MUST NOT cancel a `ping`. The loop ends after it answers one `snapshot.restore`, or at the end of input once the request in flight has answered. Every line that it reads gets an answer.
 
 Request:
@@ -1033,11 +1033,11 @@ Add configurable retention, garbage collection, observability, and policy contro
 
 These decisions need product and engineering agreement before their related milestones begin:
 
-- Whether `refs/agent-snapshots/` becomes `refs/blink/`, remains a compatibility namespace, or is hidden behind a migration layer.
+- Settled: `refs/agent-snapshots/` remains the namespace, with no `refs/blink/` and no migration layer. See [NAMESPACE.md](NAMESPACE.md).
 - Which host environments are first-class after OpenCode and Pi Coding Agent.
 - Whether review intelligence is local-only, host-provided, or supported by an optional service.
 - Retention defaults, storage quotas, and whether checkpoints may be explicitly exported or shared.
-- Versioning, package names, and executable aliases for the Blink product release.
+- Versioning for the Blink product release. [NAMESPACE.md](NAMESPACE.md) settled the package names and the executable aliases. The packages stay `@agent-snap/*`, and the executable stays `agent-snap` with no `blink` alias.
 - Whether `snapshot.restore_plan` takes a flag filter, so that the confirmation prompt gets the entries flagged `unstaged` or `untracked` and the others from one capture instead of up to 5 pages. It changes FR-15.
 - Whether FR-15 blocks a planned path, or a parent of one, whose name holds LF or CR. That keeps prompts short and keeps a path name from forging a line of Git's messages. FR-16 no longer reads those messages, so it does not depend on the block.
 - Whether `snapshot.restore_plan` reports a held restore lock, by opening the lock file without creating it and testing a shared lock. Hosts could then say that a restore is running before they record a backup, and Pi could keep automatic snapshots paused until an orphaned write ends. It changes FR-15, so it waits for the CLI step of Phase 5.

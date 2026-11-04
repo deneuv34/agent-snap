@@ -1,13 +1,13 @@
 # agent-snap
 
-Product name: **Blink**. Implementation name: **agent-snap** until a published migration policy says otherwise.
+Product name: **Blink**. Implementation name: **agent-snap**. [`docs/NAMESPACE.md`](docs/NAMESPACE.md) is the published migration policy, and it keeps every shipped name.
 
 Blink records zero-impact Git working-tree checkpoints for AI agent sessions. Spec and phased roadmap:
 
 - `docs/BLINK_SPEC.md`
 - `docs/BLINK_DEVELOPMENT_PLAN.md`
 
-Identity is frozen: executable `agent-snap`, packages `@agent-snap/*`, JSONL methods as shipped, refs under `refs/agent-snapshots/`. Do not rename, dual-write, or migrate those identifiers.
+Identity is frozen: executable `agent-snap`, packages `@agent-snap/*`, JSONL methods as shipped, refs under `refs/agent-snapshots/`. Do not rename, dual-write, or migrate those identifiers. [`docs/NAMESPACE.md`](docs/NAMESPACE.md) records why, and what a later rename needs first.
 
 ## Safety invariants
 
@@ -21,12 +21,12 @@ These are non-negotiable. Capture, list, and inspect must never modify `HEAD`, t
 - Git's check before the write is not a complete guard. An edit to a planned path after Git checked it and before Git writes it is overwritten. The rules above keep that window as short as Git's own checkout keeps it. Never widen it, for example by making every index entry racy.
 - On POSIX, a restore's write and each Git command of the capture after it start in a new session, and no other Git command of a restore does. The write's Git has no pipe to the core and inherits the restore lock's descriptor, which no other child receives. The core ends the lock with `LOCK_UN`, never by close alone. Terminal and guardian group signals must never reach these Git commands. Windows restore stays refused until CI proves its equivalent.
 - `SnapClient` keeps a frozen copy of `serveArgs` and refuses an element that names the restore entry at construction and at every spawn. `SnapClient.request` refuses a method that is not a primitive string and the method `snapshot.restore`. Only `SnapClient.restore` and the support check of `confirmRestore` spawn `serve --restore`.
-- Every Git invocation strips inherited `GIT_*` repository-redirect variables and runs against the resolved repo. The one exception is `Store.Diff`: it runs Git in a private bare evidence repository outside the worktree whose only link to the resolved repo is a read-only `objects/info/alternates` entry, so attributes, configuration, and replace refs cannot shape the evidence.
+- Every Git invocation strips inherited `GIT_*` repository-redirect variables and runs against the resolved repo. The exceptions are `Store.Diff` and the reads of a restore plan that run in its own evidence repository, including those of the plan that a restore recomputes at step 8. Each runs Git in a private bare evidence repository outside the worktree whose only link to the resolved repo is a read-only `objects/info/alternates` entry, so attributes, configuration, and replace refs cannot shape the evidence, and a missing blob in a partial clone fails there instead of fetching into the real object store. The plan's capture and its reads of the worktree and the real index run in the resolved repo and stay under the rule.
 - `Store` owns every hidden-ref path. Callers never construct `refs/agent-snapshots/...` themselves.
 - Host plugins and extensions never invoke Git and never spawn `agent-snap` except through `SnapClient`.
 - Any operation that would write working-tree files needs a dedicated design review, adversarial tests, and explicit user confirmation UX that lifecycle hooks cannot manufacture.
 - Timeout, cancellation, teardown, and concurrency fail closed. A timed-out create must not produce an unobserved checkpoint.
-- A restore honors cancellation and timeout until its last check before the write. From then until its answer is written, the core discards stop signals, runs on a context that cannot be cancelled, and never signals its Git. In `serve --restore`, the end of standard input cancels like a signal, and a cancel never drops a request line that was read. No client or guardian path sends `SIGKILL` to a restore after the moment before its request is written. Once the write's Git starts, the restore answers with a result and never with an error, and the code after the process start has no error return. The core logs a cleanup failure after that start, and the failure never changes the outcome. A caller is never told that nothing changed when files may have changed, and no message describes a result as writing nothing.
+- A restore honors cancellation and timeout until its last check before the write. From then until its answer is written, the core discards stop signals, runs on a context that cannot be cancelled, and never signals its Git. In `serve --restore`, the end of standard input cancels a `snapshot.restore` in flight like a signal and never cancels a `ping`, and a cancel never drops a request line that was read. No client or guardian path sends `SIGKILL` to a restore after the moment before its request is written. Once the write's Git starts, the restore answers with a result and never with an error, and the code after the process start has no error return. The core logs a cleanup failure after that start, and the failure never changes the outcome. A caller is never told that nothing changed when files may have changed, and no message describes a result as writing nothing.
 - Public protocol results are runtime-validated at the TypeScript boundary before they reach a host.
 
 ## Architecture

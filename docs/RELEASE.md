@@ -1,7 +1,8 @@
 # Release checklist
 
 Use this before publishing `agent-snap` **0.1.0** or any later version. Identity
-and wire names stay frozen; see [COMPATIBILITY.md](COMPATIBILITY.md).
+and wire names stay frozen; see [COMPATIBILITY.md](COMPATIBILITY.md) and
+[NAMESPACE.md](NAMESPACE.md).
 
 ## Supported matrix
 
@@ -100,7 +101,7 @@ AGENT_SNAP_BIN="$PWD/bin/agent-snap" bun run pack-check
 - [ ] `bun pm pack` for each workspace inspected (or pack-check passed)
 - [ ] npm publish in dependency order: `core`, then `opencode` and `pi`
 - [ ] GitHub release notes point at the changelog and checksums
-- [ ] No restore, rename, or new protocol method shipped in a baseline patch
+- [ ] No restore, rename, or new protocol method shipped in a baseline patch. [NAMESPACE.md](NAMESPACE.md) lists what a rename needs first.
 
 ## Rollback
 
