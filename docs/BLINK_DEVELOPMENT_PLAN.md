@@ -216,23 +216,27 @@ is the name in documentation and package descriptions only.
 
 **Objective:** Make Blink maintainable for long-lived repositories and teams.
 
+**Design:** [docs/RETENTION.md](RETENTION.md), and FR-17 and FR-18 in [docs/BLINK_SPEC.md](BLINK_SPEC.md). RETENTION.md lists the Phase 6 pull requests in landing order, each with its check. Blink never deletes a snapshot ref on its own.
+
+**Scope default (gate `g-retention-scope`, the operator can change it):** Phase 6 delivers a read-only retention report, storage and `git pack-refs` documentation, runbooks, and one confirmed delete that drops one whole snapshot namespace. Selective retention by age or count waits for an operator decision to stop chaining snapshots. [docs/RETENTION.md](RETENTION.md) lists the alternatives with their measured costs. A selective cleanup frees no disk while `latest` stays. An archive move frees nothing. Unchaining frees disk per snapshot but changes FR-2, FR-6, and the meaning of `parent` in section 8.2.
+
 ### Deliverables
 
-- Configurable retention and garbage collection for hidden snapshot refs.
-- Structured diagnostics/metrics for snapshot latency, deduplication, failures, restore outcomes, and cleanup failures.
+- Configurable retention and garbage collection for hidden snapshot refs. Under the scope default, this is the namespace drop followed by `git gc --prune=now`, and selective retention is deferred.
+- Structured diagnostics/metrics for snapshot latency, deduplication, failures, restore outcomes, and cleanup failures. Under the scope default, Phase 6 carries only the cleanup part. The drop result, its record, and the runbooks report drop failures. Metrics for snapshot latency, deduplication, create failures, and restore outcomes are deferred to an operator decision, and Phase 6 adds no event or metric.
 - Documented storage and privacy behaviour.
 
 ### Work items
 
-1. Define retention policy inputs: age, count, storage size, per-worktree handling, and protected/manual checkpoints.
-2. Implement a dry-run garbage-collection report before any ref deletion capability.
-3. Add a confirmed cleanup command/API with explicit deletion reporting.
-4. Add privacy-preserving observability that records operation metadata, not source contents or secrets.
-5. Define support runbooks for stuck child processes, corrupt refs, failed cleanup, and large repositories.
+1. Define retention policy inputs: age, count, storage size, per-worktree handling, and protected/manual checkpoints. Under the scope default, the only input is one namespace that a person picks from the report. Age, count, size, and protection rules are deferred with selective retention.
+2. Implement a dry-run garbage-collection report before any ref deletion capability. This is the read-only `snapshot.retention_report` (FR-17). It lists every namespace in the repository and lands in every layer before the drop.
+3. Add a confirmed cleanup command/API with explicit deletion reporting. This is the CLI `drop` command (FR-18). No JSONL method deletes a ref. A person types a random code on the terminal, and the drop writes a record of every ref it deletes before Git starts. It refuses while a restore holds the worktree's restore lock, and it needs Git 2.30 or later.
+4. Add privacy-preserving observability that records operation metadata, not source contents or secrets. The drop result and its record hold ref names, object IDs, counts, and Git's status, and the existing [docs/DIAGNOSTICS.md](DIAGNOSTICS.md) rules cover the rest. [docs/RETENTION.md](RETENTION.md) says why Phase 6 adds no event, and which metrics wait for an operator decision.
+5. Define support runbooks for stuck child processes, corrupt refs, failed cleanup, and large repositories. [docs/RETENTION.md](RETENTION.md) lists the rows that `docs/DIAGNOSTICS.md` gains.
 
 ### Exit criteria
 
-- Retention cannot delete a protected checkpoint or a ref outside Blink's namespace.
+- Retention cannot delete a protected checkpoint or a ref outside Blink's namespace. Under the scope default, Phase 6 has no protected checkpoints. Retention deletes only a whole namespace that a person confirmed, and only refs under it that the report read.
 - Operators can diagnose failures without accessing developer source code.
 - Storage behaviour and cleanup safety are documented and tested.
 
