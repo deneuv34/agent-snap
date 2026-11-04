@@ -208,18 +208,20 @@ All commands pass on the supported platform matrix, and package artifacts instal
 
 **Design:** [docs/RETENTION.md](RETENTION.md), and FR-17 and FR-18 in [docs/BLINK_SPEC.md](BLINK_SPEC.md). RETENTION.md lists the Phase 6 pull requests in landing order, each with its check. Blink never deletes a snapshot ref on its own.
 
+**Scope default (gate `g-retention-scope`, the operator can change it):** Phase 6 delivers a read-only retention report, storage and `git pack-refs` documentation, runbooks, and one confirmed delete that drops one whole snapshot namespace. Selective retention by age or count waits for an operator decision to stop chaining snapshots. [docs/RETENTION.md](RETENTION.md) lists the alternatives with their measured costs. A selective cleanup frees no disk while `latest` stays. An archive move frees nothing. Unchaining frees disk per snapshot but changes FR-2, FR-6, and the meaning of `parent` in section 8.2.
+
 ### Deliverables
 
-- Configurable retention and garbage collection for hidden snapshot refs.
-- Structured diagnostics/metrics for snapshot latency, deduplication, failures, restore outcomes, and cleanup failures.
+- Configurable retention and garbage collection for hidden snapshot refs. Under the scope default, this is the namespace drop followed by `git gc --prune=now`, and selective retention is deferred.
+- Structured diagnostics/metrics for snapshot latency, deduplication, failures, restore outcomes, and cleanup failures. Under the scope default, the drop result, its record, and the runbooks carry this, and no new event or metric is added.
 - Documented storage and privacy behaviour.
 
 ### Work items
 
-1. Define retention policy inputs: age, count, storage size, per-worktree handling, and protected/manual checkpoints. The policy is a count and an age, in the worktree's own namespace. It has no size input, because a cleanup that keeps `latest` frees no disk ([docs/RETENTION.md](RETENTION.md)).
-2. Implement a dry-run garbage-collection report before any ref deletion capability. This is the read-only `snapshot.retention_report` (FR-17), which lands in every layer before any pin or delete.
-3. Add a confirmed cleanup command/API with explicit deletion reporting. This is the CLI `cleanup` command (FR-18). No JSONL method deletes a ref, and a person confirms on the terminal.
-4. Add privacy-preserving observability that records operation metadata, not source contents or secrets. `SnapClient` reports one `SnapOperationEvent` per request, with no path, reason, or content ([docs/RETENTION.md](RETENTION.md)).
+1. Define retention policy inputs: age, count, storage size, per-worktree handling, and protected/manual checkpoints. Under the scope default, the only input is one namespace that a person picks from the report. Age, count, size, and protection rules are deferred with selective retention.
+2. Implement a dry-run garbage-collection report before any ref deletion capability. This is the read-only `snapshot.retention_report` (FR-17). It lists every namespace in the repository and lands in every layer before the drop.
+3. Add a confirmed cleanup command/API with explicit deletion reporting. This is the CLI `drop` command (FR-18). No JSONL method deletes a ref. A person types a random code on the terminal, and the drop writes a record of every ref it deletes before Git starts.
+4. Add privacy-preserving observability that records operation metadata, not source contents or secrets. The drop result and its record hold ref names, object IDs, counts, and Git's status, and the existing [docs/DIAGNOSTICS.md](DIAGNOSTICS.md) rules cover the rest. [docs/RETENTION.md](RETENTION.md) says why Phase 6 adds no event.
 5. Define support runbooks for stuck child processes, corrupt refs, failed cleanup, and large repositories. [docs/RETENTION.md](RETENTION.md) lists the rows that `docs/DIAGNOSTICS.md` gains.
 
 ### Exit criteria
