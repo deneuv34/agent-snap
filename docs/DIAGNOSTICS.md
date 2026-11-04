@@ -24,7 +24,9 @@ secrets, or full file listings.
 
 The Go store wraps Git failures as `git <args>: <error>: <stderr>`. Treat
 that stderr as a Git *status* string (paths, ref names). Do not add the
-blob or working-tree payload to host logs.
+blob or working-tree payload to host logs. A Git built with GNU gettext
+prints that stderr in English whatever the locale, because the store runs Git
+with `LANGUAGE=C`.
 
 ## Snapshot failures
 

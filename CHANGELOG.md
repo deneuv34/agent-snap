@@ -11,6 +11,14 @@
   agent could read the second line as a plan or diff fact. Every other name
   prints unchanged, including spaces and non-ASCII text. The JSON results and
   the `details` payloads are unchanged.
+- `agent-snap` now runs every Git command with `LANGUAGE=C`, so Git prints
+  the messages that the store matches in English. Before, under a locale such
+  as `de_DE.UTF-8` and a Git built with translations, a held ref lock failed
+  with Git's translated text instead of the named lock error. The store did
+  not retry a failed object write. In a reftable repository, a lost
+  compare-and-swap failed the create instead of retrying it. `LC_ALL`,
+  `LC_CTYPE`, and `LANG` stay the caller's, so a filter sees the same
+  character encoding as before.
 - `snapshot.list` skips an item ref whose name is not a snapshot identifier.
   A create that reuses the latest snapshot reports only a well-formed
   identifier. Before, a ref planted under `refs/agent-snapshots/` with U+2028
