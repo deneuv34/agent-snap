@@ -675,20 +675,24 @@ func authorEnv() []string {
 	}
 }
 
+// sanitizedEnv sets LANGUAGE=C because commitRefs and addAll match Git's
+// English messages, and Git translates some of them. LANGUAGE outranks LC_ALL
+// for messages alone, so LC_ALL and LC_CTYPE, which set the encoding that a
+// filter sees, stay the caller's.
 func sanitizedEnv() []string {
 	env := os.Environ()
-	out := make([]string, 0, len(env))
+	out := make([]string, 0, len(env)+1)
 	for _, kv := range env {
 		key := kv
 		if idx := strings.IndexByte(kv, '='); idx >= 0 {
 			key = kv[:idx]
 		}
-		if strings.HasPrefix(key, "GIT_") {
+		if strings.HasPrefix(key, "GIT_") || key == "LANGUAGE" {
 			continue
 		}
 		out = append(out, kv)
 	}
-	return out
+	return append(out, "LANGUAGE=C")
 }
 
 // gitCmd stops Git with SIGTERM when ctx ends, because a SIGKILL can land

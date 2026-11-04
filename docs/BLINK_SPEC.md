@@ -161,6 +161,7 @@ This workflow is a product requirement for the restore release, not an MVP behav
 - Blink MUST NOT remove, rename, or rewrite a ref lock file, because it cannot tell a lock that a dead Git left from one that a live Git holds.
 - A concurrent `git pack-refs --all --prune`, which `git gc` and `git maintenance` run, can remove a snapshot ref's directory between Git's `mkdir` and its lock. Git then prints `cannot lock ref '<ref>': unable to create directory for <path>`. Blink retries only that failure. It makes at most 5 attempts and waits 10, 20, 40, and 80 ms between them. A permission failure on that directory prints the same message, so after the fifth attempt the create fails with `-32603` and a message that starts `update refs:`. It creates no ref.
 - Every other `cannot lock ref` failure apart from a held lock, such as a directory/file name conflict with an existing ref, a permission failure on the lock file, or a non-directory in the way, fails the create at once with `-32603` and a message that starts `update refs:`. It creates no ref.
+- Blink tells a lost compare-and-swap, a held lock, and a removed ref directory apart by Git's English messages. It runs every Git command with `LANGUAGE=C`, so a Git built with GNU gettext prints them in English whatever the caller's locale. It keeps the caller's `LC_ALL`, `LC_CTYPE`, and `LANG`, so a clean or smudge filter sees the caller's character encoding. A filter also sees `LANGUAGE=C`.
 - The resulting snapshot-parent chain MUST remain linear per worktree.
 
 ### FR-7: Snapshot listing
