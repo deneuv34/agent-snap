@@ -22,7 +22,6 @@ const (
 	DiffMaxPatchBytes     = 1 << 20
 	diffTokenLimit        = 1 << 20
 	diffHeaderLimit       = 64 << 10
-	diffStderrLimit       = 4 << 10
 )
 
 // DiffPage selects one page of a diff. A zero MaxPatchBytes means
@@ -183,8 +182,8 @@ func (s *Store) evidenceRepo(ctx context.Context, dir string) (string, []string,
 	cmd := gitCmd(ctx, "init", "--quiet", "--bare", "--template=", "--object-format="+format, gitDir)
 	cmd.Dir = dir
 	cmd.Env = env
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", nil, fmt.Errorf("create evidence repository: %w: %s", err, strings.TrimSpace(string(out)))
+	if _, err := output(cmd, cmd.Args[1:]); err != nil {
+		return "", nil, fmt.Errorf("create evidence repository: %w", err)
 	}
 	info := filepath.Join(gitDir, "objects", "info")
 	if err := os.MkdirAll(info, 0o700); err != nil {
@@ -220,7 +219,7 @@ func runDiff(ctx context.Context, dir string, env, args []string, offset, budget
 	cmd := gitCmd(runCtx, args...)
 	cmd.Dir = dir
 	cmd.Env = env
-	stderr := &cappedBuffer{limit: diffStderrLimit}
+	stderr := &cappedBuffer{}
 	cmd.Stderr = stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -246,20 +245,6 @@ func runDiff(ctx context.Context, dir string, env, args []string, offset, budget
 	}
 	return page, nil
 }
-
-type cappedBuffer struct {
-	buf   bytes.Buffer
-	limit int
-}
-
-func (b *cappedBuffer) Write(p []byte) (int, error) {
-	if room := b.limit - b.buf.Len(); room > 0 {
-		b.buf.Write(p[:min(len(p), room)])
-	}
-	return len(p), nil
-}
-
-func (b *cappedBuffer) String() string { return b.buf.String() }
 
 type diffPage struct {
 	totals DiffTotals

@@ -1,10 +1,13 @@
 package snapshot
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -109,5 +112,39 @@ func TestCreateDeduplicatesUnchangedTreeAndListReturnsNewestFirst(t *testing.T) 
 	}
 	if items[0].Commit != third.Commit || items[1].Commit != first.Commit {
 		t.Fatalf("unexpected order: %+v", items)
+	}
+}
+
+func TestCappedBufferKeepsTheLastBytesAndCountsTheRest(t *testing.T) {
+	cases := []struct {
+		name   string
+		chunks []int
+		want   int
+	}{
+		{"under the cap", []int{10, 20}, 0},
+		{"at the cap", []int{stderrLimit}, 0},
+		{"one past the cap", []int{stderrLimit, 1}, 1},
+		{"past twice the cap in small writes", slices.Repeat([]int{1000}, 30), 30*1000 - stderrLimit},
+		{"one large write", []int{5 * stderrLimit}, 4 * stderrLimit},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b cappedBuffer
+			var all []byte
+			for i, n := range tc.chunks {
+				chunk := bytes.Repeat([]byte{byte('a' + i%26)}, n)
+				all = append(all, chunk...)
+				if got, err := b.Write(chunk); got != n || err != nil {
+					t.Fatalf("Write = %d, %v", got, err)
+				}
+			}
+			want := string(all[tc.want:])
+			if tc.want > 0 {
+				want = fmt.Sprintf("[%d earlier bytes of standard error omitted] %s", tc.want, want)
+			}
+			if got := b.String(); got != want {
+				t.Fatalf("String() is %d bytes, want %d", len(got), len(want))
+			}
+		})
 	}
 }

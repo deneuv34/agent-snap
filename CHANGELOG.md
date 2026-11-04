@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- `snapshot.restore_plan` blocks a written path (a create, modify, or type
+  change) as `name_collision` when the working tree folds case and a parent
+  directory of the path exists on disk only under a spelling that differs by
+  case, such as a `Dir/` that holds an ignored file where the snapshot has
+  `dir/y`. The restore keeps that directory, and Git writes the file into it as
+  `Dir/y`, so a capture afterwards differs from `result_tree`. Before, the plan
+  was applicable. When `core.ignorecase` is true, a parent does not block if
+  the result tree holds a path below it that `HEAD` also holds, because a
+  capture then keeps the result tree's spelling. When `core.ignorecase` is false
+  on a volume that folds case, that exemption does not apply, because Git then
+  records the disk spelling. A directory that the restore empties does not
+  block.
+  The plan lists the names in each directory once and never follows a symbolic
+  link. A directory it cannot read puts the path in the way. This is the second
+  rule of `name_collision` in FR-15.
 - The OpenCode 1.x, OpenCode 2.x, and Pi hosts now quote file names in tool
   text. A path, `old_path`, scope path, unmatched path, changed file, snapshot
   reason, or origin value that holds a control character, a double quote, or a
@@ -164,6 +179,35 @@
   hook whose name contains `=` cannot be turned off that way, so a create
   or a plan in that repository fails with `-32603` and names the hook. The
   captured tree is unchanged.
+- `agent-snap` now reads every object ID, ref record, and path from Git's
+  standard output alone. Before, the store read the tree ID, the commit ID,
+  and the `HEAD` and latest snapshot IDs from Git's standard output and
+  standard error together. A clean filter that printed to standard error on
+  success failed the create with
+  `git commit-tree "<filter text>\n<oid>" ...: not a valid object name` when
+  a file was modified in the same second as the scratch index or had a
+  modification time in the future. A Git failure message still carries
+  Git's standard error. A configured hook listing that is not
+  `hook.<name>.<key>` now fails the create or the plan with `-32603`.
+  Before, it ended the process with a Go panic. The captured tree is unchanged.
+- A failed Git command in `agent-snap` now keeps only the last 8 KiB of its
+  standard error. Before, the store kept all of it. A required clean filter
+  that wrote 8 MiB of control characters to standard error and failed made
+  `snapshot.create` answer with an 8 MiB message on a 50 MB JSONL line. The
+  message is now under 9 KiB and the line under 64 KiB. A cut message starts
+  its standard error with `[<n> earlier bytes of standard error omitted]`.
+  The diff and restore runners kept the first 4 KiB and now keep the last
+  8 KiB too. The captured tree is unchanged.
+- `SnapClient` now refuses to select the restore entry of a later release.
+  The constructor copies `serveArgs` into a frozen array and throws a
+  `TypeError` when an element starts with `restore` after its leading `-`
+  characters, such as `--restore` or `-restore=1`. It reads the value by index
+  and calls no method of it, so a subclass, a Proxy, or an own `map` cannot
+  change the copy. A value that is not an array, or that holds a hole or a
+  non-string element, throws a `TypeError`. Every spawn checks the copy again. `SnapClient.request` rejects with a `TypeError` for a method that is
+  not a primitive string and for `snapshot.restore`. No release of
+  `agent-snap` dispatches `snapshot.restore` yet, so no working client
+  changes.
 
 ## 0.1.0
 

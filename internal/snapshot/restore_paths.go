@@ -255,17 +255,28 @@ func lstatNoFollow(root, p string) (fs.FileInfo, error) {
 func onDisk(root, p string) string { return filepath.Join(root, filepath.FromSlash(p)) }
 
 // diskProbe never follows a symbolic link. It reads a directory only after
-// Lstat reports a real one, and a path it cannot inspect is in the way.
+// Lstat reports a real one, and a path it cannot inspect is in the way. On a
+// working tree that folds case, caseSpelling lists each directory's names at
+// most once and checks at most once whether the restore keeps a directory.
 type diskProbe struct {
 	root    string
 	removed map[string]bool
 	byFold  map[string][]string
+	listed  map[string]dirNames
+	kept    map[string]bool
+}
+
+type dirNames struct {
+	byFold map[string][]fs.DirEntry
+	err    error
 }
 
 func newDiskProbe(root string, removed []string, folds bool) diskProbe {
 	d := diskProbe{root: root, removed: make(map[string]bool, len(removed))}
 	if folds {
 		d.byFold = map[string][]string{}
+		d.listed = map[string]dirNames{}
+		d.kept = map[string]bool{}
 	}
 	for _, p := range removed {
 		d.removed[p] = true
@@ -301,6 +312,86 @@ func (d diskProbe) inTheWay(path string) bool {
 		return !d.emptiedBy(path)
 	}
 	return true
+}
+
+type caseSpelling int
+
+const (
+	spellingClear caseSpelling = iota
+	spellingByCase
+	spellingUnreadable
+)
+
+// caseSpelling finds parents by the names a real directory stores. Resolving
+// a name on a volume that folds case would hide the spelling that Git writes
+// into.
+func (d diskProbe) caseSpelling(path string, spelled func(string) bool) caseSpelling {
+	if d.listed == nil {
+		return spellingClear
+	}
+	disk := ""
+	for _, dir := range parents(path) {
+		name := dir[strings.LastIndexByte(dir, '/')+1:]
+		names := d.names(disk)
+		if names.err != nil {
+			return spellingUnreadable
+		}
+		entry, ok := names.find(name)
+		if !ok || !entry.IsDir() {
+			return spellingClear
+		}
+		disk = joinPath(disk, entry.Name())
+		if entry.Name() != name && !spelled(dir) {
+			if d.keeps(disk) {
+				return spellingByCase
+			}
+			return spellingClear
+		}
+	}
+	return spellingClear
+}
+
+func (d diskProbe) names(dir string) dirNames {
+	if n, ok := d.listed[dir]; ok {
+		return n
+	}
+	entries, err := os.ReadDir(onDisk(d.root, dir))
+	n := dirNames{byFold: map[string][]fs.DirEntry{}, err: err}
+	for _, e := range entries {
+		key := foldKey(e.Name())
+		n.byFold[key] = append(n.byFold[key], e)
+	}
+	d.listed[dir] = n
+	return n
+}
+
+func (n dirNames) find(name string) (fs.DirEntry, bool) {
+	same := n.byFold[foldKey(name)]
+	for _, e := range same {
+		if e.Name() == name {
+			return e, true
+		}
+	}
+	if len(same) > 0 {
+		return same[0], true
+	}
+	return nil, false
+}
+
+func (d diskProbe) keeps(dir string) bool {
+	kept, ok := d.kept[dir]
+	if !ok {
+		kept = !d.emptiedBy(dir)
+		d.kept[dir] = kept
+	}
+	return kept
+}
+
+func joinPath(dir, name string) string {
+	if dir == "" {
+		return name
+	}
+	return dir + "/" + name
 }
 
 func (d diskProbe) emptiedBy(dir string) bool {
