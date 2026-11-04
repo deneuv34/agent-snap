@@ -17,6 +17,21 @@
   The plan lists the names in each directory once and never follows a symbolic
   link. A directory it cannot read puts the path in the way. This is the second
   rule of `name_collision` in FR-15.
+- `snapshot.restore_plan` blocks a `delete` as `name_collision` when
+  `core.ignorecase` is true, the working tree folds case, and the delete takes
+  the last `HEAD` path that kept a parent's spelling. An example is `HEAD`
+  `dir/a` with an untracked `dir/q` that the restore keeps while the disk spells
+  the directory `Dir/`. A capture after the restore records `Dir/q`, so it
+  differs from `result_tree`. A directory counts as kept when the restore
+  only rewrites a path below it, as in a delete of `dir/a` beside a modify of
+  `dir/q`. Git rewrites a changed file in place and removes a directory only
+  after its deletes leave it empty. It also blocks a written path as
+  `untracked_in_the_way` when `core.ignorecase` is false and the volume
+  resolves the path, or a parent of it, to a current-tree path under another
+  spelling. Examples are a case-only rename of `Readme` to `README`, and a
+  symbolic link `Dir` where the snapshot has `dir/y`. Git then matches the
+  paths it removes by bytes, finds an untracked file in the way, and refuses
+  the whole restore. Before, both plans were applicable.
 - The OpenCode 1.x, OpenCode 2.x, and Pi hosts now quote file names in tool
   text. A path, `old_path`, scope path, unmatched path, changed file, snapshot
   reason, or origin value that holds a control character, a double quote, or a
@@ -208,6 +223,11 @@
   not a primitive string and for `snapshot.restore`. No release of
   `agent-snap` dispatches `snapshot.restore` yet, so no working client
   changes.
+- The READMEs and the npm package descriptions name the product Blink. The
+  `agent-snap` executable, the `@agent-snap/*` packages, the JSONL methods,
+  the `refs/agent-snapshots/` refs, and every host tool and command keep
+  their names, so no configuration needs an edit. `docs/NAMESPACE.md`
+  records that decision, with install and rollback commands.
 
 ## 0.1.0
 
