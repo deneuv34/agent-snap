@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -32,7 +32,12 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: go test
-        run: go test ./... -count=1
+        shell: bash
+        run: |
+          status=0
+          go test ./... -count=1 -json > go-test.json || status=$?
+          node scripts/go-test-summary.mjs go-test.json "${{ matrix.os }}"
+          exit "$status"
       - name: build binary
         shell: bash
         run: go build -o "bin/agent-snap$(go env GOEXE)" ./cmd/agent-snap

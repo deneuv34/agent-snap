@@ -11,7 +11,7 @@ and wire names stay frozen; see [COMPATIBILITY.md](COMPATIBILITY.md).
 | Go | 1.26 | `1.26.x` |
 | Bun (toolchain; OpenCode runtime) | 1.4.0 | `1.4.0` (`BUN_VERSION` in CI) |
 | Node.js (Pi runtime) | 22.19.0 | `22` (latest 22.x ≥ 22.19) |
-| OS (Go core + tests) | Linux, Windows | `ubuntu-latest`, `windows-latest` |
+| OS (Go core + tests) | Linux, Windows, macOS | `ubuntu-latest`, `windows-latest`, `macos-latest` |
 | OS (TypeScript + teardown) | Linux, Windows, macOS | `ubuntu-latest`, `windows-latest`, `macos-latest` |
 | Smoke + pack-check | Linux | `ubuntu-latest` (Windows smoke also runs) |
 
