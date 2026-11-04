@@ -183,8 +183,8 @@ func (s *Store) evidenceRepo(ctx context.Context, dir string) (string, []string,
 	cmd := gitCmd(ctx, "init", "--quiet", "--bare", "--template=", "--object-format="+format, gitDir)
 	cmd.Dir = dir
 	cmd.Env = env
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", nil, fmt.Errorf("create evidence repository: %w: %s", err, strings.TrimSpace(string(out)))
+	if _, err := output(cmd, cmd.Args[1:]); err != nil {
+		return "", nil, fmt.Errorf("create evidence repository: %w", err)
 	}
 	info := filepath.Join(gitDir, "objects", "info")
 	if err := os.MkdirAll(info, 0o700); err != nil {
