@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process"
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 
 const bin = process.env.AGENT_SNAP_BIN?.trim()
 
@@ -19,6 +19,57 @@ function run(command: string, args: string[], cwd?: string): string {
   }
 }
 
+function documentedFiles(root: string): string[] {
+  const packageReadmes = readdirSync(join(root, "packages"))
+    .map((dir) => join("packages", dir, "README.md"))
+    .filter((file) => existsSync(join(root, file)))
+  return ["README.md", join("docs", "NAMESPACE.md"), ...packageReadmes]
+}
+
+function fencedBlocks(markdown: string): string[] {
+  return [...markdown.matchAll(/^```[^\n]*\n([\s\S]*?)^```/gm)].map((match) => match[1])
+}
+
+function globMatches(glob: string, name: string): boolean {
+  const pattern = glob.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")
+  return new RegExp(`^${pattern}$`).test(name)
+}
+
+function checkDocumentedNames(root: string, packed: Array<{ name: string; file: string }>, subcommands: Set<string>): void {
+  const modulePath = readFileSync(join(root, "go.mod"), "utf8").match(/^module (\S+)$/m)?.[1]
+  if (!modulePath) fail("go.mod names no module")
+  const packageNames = new Set(packed.map((p) => p.name))
+  const problems: string[] = []
+  let packagesSeen = 0
+  let commandsSeen = 0
+  for (const file of documentedFiles(root)) {
+    for (const block of fencedBlocks(readFileSync(join(root, file), "utf8"))) {
+      for (const [name] of block.matchAll(/@agent-snap\/[a-z0-9-]+(?:\.[a-z0-9-]+)*/g)) {
+        packagesSeen++
+        if (!packageNames.has(name)) problems.push(`${file} names ${name}, which is not a packed package`)
+      }
+      for (const [, command] of block.matchAll(/(?:^|[\s;&|(])agent-snap[ \t]+([^\s"'`|;&)]+)/gm)) {
+        commandsSeen++
+        if (!subcommands.has(command)) problems.push(`${file} runs agent-snap ${command}, which the binary does not list`)
+      }
+      for (const [tarball] of block.matchAll(/[\w*.-]+\.tgz/g)) {
+        if (!packed.some((p) => globMatches(tarball, p.file))) problems.push(`${file} names ${tarball}, which no packed tarball matches`)
+      }
+      for (const [, dir] of block.matchAll(new RegExp(`(?:\\.|${modulePath.replace(/\./g, "\\.")})/cmd/([a-z0-9-]+)`, "g"))) {
+        if (!existsSync(join(root, "cmd", dir))) problems.push(`${file} names cmd/${dir}, which does not exist`)
+      }
+      for (const [name] of block.matchAll(/\bblink\b/gi)) {
+        problems.push(`${file} names ${name} in a code block, but no shipped package or command is called that (docs/NAMESPACE.md)`)
+      }
+    }
+  }
+  if (packagesSeen === 0 || commandsSeen === 0) {
+    fail(`documented code blocks named ${packagesSeen} packages and ${commandsSeen} agent-snap commands; the scan found nothing to check`)
+  }
+  if (problems.length > 0) fail(`documented names that do not ship:\n${problems.join("\n")}`)
+  console.log(`pack-check: documented names OK (${packagesSeen} package and ${commandsSeen} command mentions)`)
+}
+
 function main(): void {
   if (!bin) fail("AGENT_SNAP_BIN must point at the built agent-snap binary")
 
@@ -34,6 +85,13 @@ function main(): void {
       if (!path.endsWith(".tgz")) fail(`bun pm pack produced no tarball for ${workspace}: ${output}`)
       tarballs.push({ workspace, path })
     }
+
+    const packed = tarballs.map(({ path }) => ({
+      name: JSON.parse(run("tar", ["-xzOf", path, "package/package.json"])).name as string,
+      file: basename(path),
+    }))
+    const subcommands = new Set([...run(bin, []).matchAll(/^\s+agent-snap ([a-z][a-z-]*)/gm)].map((match) => match[1]))
+    checkDocumentedNames(root, packed, subcommands)
 
     // 2. Validate tarball contents (host entry present, stale files absent).
     for (const { workspace, path } of tarballs) {

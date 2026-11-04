@@ -143,3 +143,11 @@ agent-snap version
 Snapshots taken by either version stay listed by both, because both read and
 write the same `refs/agent-snapshots/` refs.
 
+## The docs name only shipped identifiers
+
+`bun run pack-check` reads every fenced code block in `README.md`, in each
+`packages/*/README.md`, and in this file. It fails when a block names an
+`@agent-snap/` package that it did not pack, an `agent-snap` subcommand that
+the built binary does not list in its usage text, a `.tgz` name that no packed
+tarball matches, a `./cmd/` directory that does not exist, or `blink` in any
+form.
