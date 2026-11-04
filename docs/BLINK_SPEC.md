@@ -640,7 +640,8 @@ Reading:
 
 - `snapshot.retention_report` takes `cwd` and an optional `offset`.
 - The report reads every ref under `refs/agent-snapshots/` with one `git for-each-ref --format='%(refname) %(objectname) %(symref)'`. It reads no object there and no commit message. It runs with replace objects disabled, and parses Git's standard output, as FR-12 lookup does.
-- A line `warning: ignoring broken ref <ref>` on the standard error of that read, for a ref under `refs/agent-snapshots/`, names a broken ref. Git prints it for a ref whose file holds no object ID. The report counts it and does not fail.
+- A line `warning: ignoring broken ref <ref>` or `warning: ignoring ref with broken name <ref>` on the standard error of that read, for a ref under `refs/agent-snapshots/`, names a broken ref. Git prints the first for a ref whose file holds no object ID, and the second for a ref whose name it rejects. The report counts it in its namespace, or in `totals.other` when the name has no namespace, and does not fail.
+- The report collects the whole standard error of that read, up to 4 MiB. Standard error longer than that, or any line that is not one of the two warnings for a ref under `refs/agent-snapshots/`, fails the report with `-32603`. A report never counts broken refs from a cut text.
 - The report types each listed `latest` with one `git cat-file --batch-check`, which prints `missing` for an object the repository does not have.
 - A namespace is the 16 lowercase hex digits after `refs/agent-snapshots/` and before the next `/`. A ref under `refs/agent-snapshots/` whose path does not have that form belongs to no namespace. The report counts it in `totals.other` and lists it nowhere.
 - The report covers each namespace under which the read lists a ref or names a broken ref, and each namespace that a current worktree maps to and whose `latest` is a symbolic ref.
@@ -675,7 +676,7 @@ Errors:
 | `cwd` missing | `-32602` | `missing required param: cwd` |
 | `cwd` blank or not a string | `-32602` | `param must be a non-empty string: cwd` |
 | `offset` not an integer from 0 through 2147483647 | `-32602` | `param must be an integer between 0 and 2147483647: offset` |
-| Repository not resolved, or a Git command that exits other than as this section allows | `-32603` | The operation's message |
+| Repository not resolved, a Git command that exits other than as this section allows, or standard error that this section does not allow | `-32603` | The operation's message |
 
 ### FR-18: Namespace drop
 
@@ -687,26 +688,29 @@ Entry:
 
 - Only the CLI command `drop` deletes snapshot refs. No JSONL method deletes a ref, so `serve` cannot.
 - CLI `drop <namespace> --digest <hex> [--cwd <dir>]`. `<namespace>` is 16 lowercase hex digits, and `--digest` is 64 lowercase hex digits from an FR-17 report. It has no option that confirms for the person, and it never reads the confirmation from standard input.
-- Every Git command of a drop runs in the resolved repository with inherited `GIT_*` variables removed, with `core.fsmonitor=`, and with repository hooks turned off as FR-3 turns them off for a create.
+- Every Git command of a drop runs in the resolved repository with inherited `GIT_*` variables removed, with `LANGUAGE=C`, and with `core.fsmonitor=`. Step 9's Git also runs with repository hooks turned off as FR-3 turns them off for a create. The Store builds it through the same function as its other Git commands, without a context.
 - The guarantee covers `serve`, host tools, lifecycle hooks, `SnapClient`, and any caller that gives the CLI pipes. Blink does not claim to stop an agent that has a shell or a terminal.
 
 Sequence. A drop MUST run these steps in this order:
 
 1. Parse the arguments. Bad arguments exit `1`. Then send `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to a buffered channel. Only the CLI's main flow reads that channel. No other goroutine exits the process or prints a result.
-2. Check that standard input, standard output, and standard error are each the controlling terminal, and open the controlling terminal. When a check fails, print that a drop needs a terminal and exit `4`.
-3. Refuse on Windows with exit `1`.
+2. Refuse on Windows with exit `1`. Refuse with exit `1` and `drop needs git 2.30 or later` when `git version` is older.
+3. Check that standard input, standard output, and standard error are each the controlling terminal, and open the controlling terminal. When a check fails, print that a drop needs a terminal and exit `4`.
 4. Resolve the repository and read the namespace as FR-17 reads it. A namespace with no ref and no symbolic `latest` exits `1` with `snapshot namespace not found`. A namespace with a broken ref exits `1` with `namespace holds a ref that Git cannot read: <ref>`. When its digest differs from `--digest`, print `namespace changed since the report` and exit `4`. When it holds more than 10001 refs, print `namespace holds more than 10001 refs` and the runbook's by-hand commands, and exit `4`.
 5. Make a code of six lowercase hex digits from `crypto/rand`. Print the prompt and the code to the terminal. Wait for one line from the terminal and for the signal channel together. A signal in the channel, before or during the wait, declines. Only the code confirms. Any other line, an empty line, or the end of input declines. A decline prints that nothing was deleted and exits `4`.
 6. Take the restore lock (below). Read the namespace again. When its digest differs from `--digest`, print `namespace changed since the report` and exit `4`.
-7. Ignore `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT`. Then read the signal channel once without waiting. A signal found there declines, prints that nothing was deleted, and exits `4`.
-8. Write the transaction to the record file (below), and sync the file and its directory. On any failure, exit `1`.
-9. Run `git -c core.filesRefLockTimeout=1000 update-ref --no-deref --stdin` in its own process group, with no context that can cancel it. Its standard input is the record file's descriptor from step 8, read from its start, and its standard output and standard error are two files beside the record. Wait for it to exit.
-10. Read the namespace again as in step 4, decide the outcome, print a summary to the terminal, and print the drop result object (section 8.8) to standard output.
+7. Read the signal channel once without waiting. A signal found there declines, prints that nothing was deleted, and exits `4`. This read is the last point that declines. The signal channel stays registered until the CLI exits, and no step reads it again, so every later stop signal is caught and discarded.
+8. Write the transaction to the record file (below), and sync the file and its directory. Create the two stream files and the empty hooks directory beside it, and list the configured hooks as FR-3 does. On any failure, exit `1`.
+9. Run `git -c core.filesRefLockTimeout=1000 update-ref --no-deref --stdin` in its own process group, with no context that can cancel it. Its standard input is the record file's descriptor from step 8, read from its start, and its standard output and standard error are the two stream files. It inherits the restore lock's descriptor, and no other child does. Wait for it to exit.
+10. Read the namespace again with the reads of FR-17. This read has none of step 4's refusals. It decides each listed ref's state, and a failed read makes the outcome `unknown`. Then end the restore lock with `LOCK_UN`, print a summary to the terminal, and print the drop result object (section 8.8) to standard output.
+
+Steps 2 to 6 run on the CLI's context, which ends on the first `SIGINT` or `SIGTERM`. A read in step 4 or 6 that fails after that context ended declines with exit `4`. `SIGHUP` and `SIGQUIT` wait in the channel until step 5 or step 7. Steps 7 to 10 run on a context that cannot be cancelled. The CLI never ignores a stop signal, so step 9's Git starts with the default action for each.
 
 Restore lock:
 
 - The restore lock is FR-16's `agent-snap-restore.lock` in the absolute Git directory of the worktree that maps to the namespace. A namespace that no current worktree maps to has none.
-- Step 6 opens it read-only with `O_NOFOLLOW` and `O_NONBLOCK`, and never creates it. When it exists, step 6 takes `flock(LOCK_EX|LOCK_NB)` and holds it until the drop exits. A lock that another process holds prints `a restore is running in the worktree` and exits `4`. A file that cannot be opened or locked for another reason exits `1`.
+- Step 6 opens it read-only with `O_CREAT`, mode 0600, `O_NOFOLLOW`, and `O_NONBLOCK`, and creates it when it is absent. It refuses unless `fstat` shows a regular file with one link. It takes `flock(LOCK_EX|LOCK_NB)`, then refuses unless `fstat` of the descriptor still shows one link and the same device and inode as `lstat` of the path. A lock that another process holds prints `a restore is running in the worktree` and exits `4`. Any other failure to open, check, or lock the file exits `1`.
+- The drop writes no line to the file and never truncates it. Step 9's Git inherits the descriptor, so the lock stays held until Git exits, also when the CLI dies. Step 10 ends the lock with `LOCK_UN` after its read.
 
 Transaction. The record file holds `start`, one line for each ref that step 6 read, `prepare`, and `commit`:
 
@@ -716,23 +720,25 @@ Transaction. The record file holds `start`, one line for each ref that step 6 re
 
 Record:
 
-- The record is `<user cache directory>/agent-snap/drops/<UTC time>-<namespace>.txt`, where the user cache directory is Go's `os.UserCacheDir`. The CLI creates the directory with mode 0700 and refuses one that is not a directory the user owns with mode 0700. It creates the file exclusively with mode 0600, and refuses a path inside the worktree as the FR-3 scratch rules refuse one.
-- The record holds only ref names, object IDs, and the transaction commands. The CLI never removes it.
+- The record is `<user cache directory>/agent-snap/drops/<UTC time>-<namespace>.txt`, where the user cache directory is Go's `os.UserCacheDir`. The Store creates the directory with mode 0700 and refuses one that is not a directory the user owns with mode 0700. It creates the file exclusively with mode 0600, and refuses a path inside the worktree as the FR-3 scratch rules refuse one.
+- Beside the record, with its name up to `.txt`, the Store creates `<name>.out` and `<name>.err` exclusively with mode 0600 for Git's standard output and standard error, and `<name>.hooks`, the empty hooks directory, with mode 0700.
+- The record holds only ref names, object IDs, and the transaction commands. Blink never removes the record, the stream files, or the hooks directory.
 - The prompt and the result name the record. A person recreates the dropped refs from it, one ref at a time, while their objects exist. A plain `git gc` can remove them at once when their pack is older than `gc.pruneExpire`.
 
 Safety:
 
-- A drop MUST delete only refs under its namespace that step 6 read, each only while it still has the value that step read, except a dangling symbolic `latest`, which has no value to check. This holds against a process that cannot write the user's files. A drop MUST NOT write a ref, the index, `HEAD`, configuration, objects, or working-tree files. It creates no file in the Git directory, apart from Git's own lock files.
+- A drop MUST delete only refs under its namespace that step 6 read, each only while it still has the value that step read, except a dangling symbolic `latest`, which has no value to check. This holds against a process that cannot write the user's files. A drop MUST NOT write a ref, the index, `HEAD`, configuration, objects, or working-tree files. In the Git directory it creates the restore lock file when it is absent, and Git creates and changes its own lock files, `packed-refs`, and files under `reftable/`. A drop creates or changes no other file there.
 - A drop MUST refuse while a restore holds the worktree's restore lock.
 - When a drop stops before step 9 starts Git, it has deleted nothing. Once step 9 starts Git, no path of the CLI prints that nothing was deleted unless the outcome is `refused`.
 - Once step 9 starts, the CLI exits by the outcome alone, also when printing the summary or the result fails.
-- A `SIGKILL` sent to Git can leave lock files and `packed-refs.new`, and during Git's commit it can leave some refs deleted. A `SIGKILL` sent to the CLI does not stop Git, which finishes the transaction in its record.
+- A `SIGKILL` sent to Git can leave lock files and `packed-refs.new`, and during Git's commit it can leave some refs deleted. Another signal sent to Git ends it with the default action after Git removes its locks. A `SIGKILL` sent to the CLI does not stop Git, which finishes the transaction in its record.
 
 Outcome. Step 10 puts each listed ref, which is each `delete` line, in one of three states. It is `unchanged` when the after-read has the same digest line for it as step 6, `changed` when it exists with another line, and `absent` when it does not exist.
 
 - `dropped` when Git exited 0 and no listed ref is `unchanged`.
 - `refused` when Git did not exit 0 and no listed ref is `absent`.
 - `unknown` in every other case, including a failed step-10 read.
+- A `refused` outcome can follow a deleted `latest` in one case. Git is killed during its commit after it deleted `latest` and before it deleted any item, and a create writes a new `latest` before step 10 reads it.
 - `error` holds Git's standard error, cut to its first 4096 bytes and repaired as FR-14 repairs text. It is present exactly when Git did not exit 0.
 
 Prompt:
@@ -746,9 +752,9 @@ Exit codes:
 | Code | When |
 | --- | --- |
 | `0` | Outcome `dropped`. |
-| `1` | A failure before step 9 starts Git, including a failure to start it. Bad arguments, Windows, an unresolved repository, an unknown namespace, a broken ref, a restore lock that cannot be read, or a record that could not be written. Nothing was deleted. |
+| `1` | A failure before step 9 starts Git, including a failure to start it. Bad arguments, Windows, Git older than 2.30, an unresolved repository, an unknown namespace, a broken ref, a read that FR-17 fails, a restore lock file that cannot be opened, checked, or locked, or a record that could not be written. Nothing was deleted. |
 | `3` | Outcome `unknown`. |
-| `4` | Nothing was deleted. No terminal, a changed namespace, more than 10001 refs, a running restore, a decline, or outcome `refused`. |
+| `4` | Nothing was deleted. No terminal, a changed namespace, more than 10001 refs, a running restore, a decline, a stop signal before step 7, or outcome `refused`. |
 
 The command never exits `2` on purpose, because Go exits `2` on a panic. Any status other than `0`, `1`, and `4` means that refs may be gone.
 
@@ -1095,7 +1101,7 @@ Namespace entry:
 | `worktree` | string, optional | The path of the current worktree that maps to it. Absent when none does, or when the report could not read the path. |
 | `refs` | integer | Every ref the report read under the namespace. |
 | `snapshots` | integer | Item refs whose names are snapshot identifiers. |
-| `broken` | integer | Refs whose files hold no object ID (FR-17). |
+| `broken` | integer | Refs that Git ignores, because their files hold no object ID or Git rejects their names (FR-17). |
 | `oldest`, `newest` | object, optional | `{id, created_at}`. Present exactly when `snapshots` is greater than 0. |
 | `latest` | `"commit"`, `"not_commit"`, `"missing_object"`, `"symbolic"`, `"broken"`, or `"missing"` | The state of `latest` (FR-17). |
 | `digest` | string | SHA-256 of the namespace's refs, 64 lowercase hex digits (FR-17). |
@@ -1107,7 +1113,9 @@ A client MUST reject a result that breaks any of these rules:
 - Namespaces match `^[0-9a-f]{16}$` and increase strictly. At most one has `current` true.
 - `refs` is at least 1, counting a symbolic `latest` that resolves to nothing. `snapshots` plus `broken` is at most `refs`. The sum of `refs` on one page is at most `totals.refs`.
 - `latest` is `broken` only when `broken` is at least 1.
+- `oldest` and `newest` are present exactly when `snapshots` is greater than 0.
 - `oldest.id` and `newest.id` match FR-12, and `oldest.id` is at most `newest.id`.
+- `digest` matches `^[0-9a-f]{64}$`.
 
 ### 8.8 Drop result object
 
