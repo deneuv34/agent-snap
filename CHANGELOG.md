@@ -164,6 +164,17 @@
   hook whose name contains `=` cannot be turned off that way, so a create
   or a plan in that repository fails with `-32603` and names the hook. The
   captured tree is unchanged.
+- `agent-snap` now reads every object ID, ref record, and path from Git's
+  standard output alone. Before, the store read the tree ID, the commit ID,
+  and the `HEAD` and latest snapshot IDs from Git's standard output and
+  standard error together. A clean filter that printed to standard error on
+  success failed the create with
+  `git commit-tree "<filter text>\n<oid>" ...: not a valid object name` when
+  a file was modified in the same second as the scratch index or had a
+  modification time in the future. A Git failure message still carries
+  Git's standard error. A configured hook listing that is not
+  `hook.<name>.<key>` now fails the create or the plan with `-32603`.
+  Before, it ended the process with a Go panic. The captured tree is unchanged.
 
 ## 0.1.0
 
