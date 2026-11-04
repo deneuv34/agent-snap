@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process"
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 
 const bin = process.env.AGENT_SNAP_BIN?.trim()
 
@@ -19,6 +19,96 @@ function run(command: string, args: string[], cwd?: string): string {
   }
 }
 
+function documentedFiles(root: string): string[] {
+  const packageReadmes = readdirSync(join(root, "packages"))
+    .map((dir) => join("packages", dir, "README.md"))
+    .filter((file) => existsSync(join(root, file)))
+  return ["README.md", join("docs", "NAMESPACE.md"), ...packageReadmes]
+}
+
+const productCommands = ["agent-snap", "blink"]
+const shellLanguages = new Set(["sh", "bash", "shell", "zsh", "console"])
+
+type Block = { language: string; lines: string[] }
+
+function fencedBlocks(markdown: string): Block[] {
+  return [...markdown.matchAll(/^```([^\n]*)\n([\s\S]*?)^```/gm)].map((match) => {
+    const language = match[1].trim().split(/\s+/)[0].toLowerCase()
+    const lines = match[2]
+      .split("\n")
+      .filter((line) => !/^\s*(?:#|\/\/)/.test(line))
+      .map((line) => line.replace(/(?:^|\s)(?:#|\/\/).*$/, ""))
+    return { language, lines }
+  })
+}
+
+function commandsIn(block: Block): Array<{ command: string; argument?: string }> {
+  if (!shellLanguages.has(block.language)) return []
+  const lines = block.language === "console"
+    ? block.lines.filter((line) => /^\s*\$ /.test(line)).map((line) => line.replace(/^\s*\$ /, ""))
+    : block.lines
+  return lines.flatMap((line) =>
+    line.split(/&&|\|\||[;|(`]/).flatMap((segment) => {
+      const words = segment.trim().split(/\s+/).filter((word) => word !== "")
+      while (words.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift()
+      return words.length > 0 ? [{ command: words[0], argument: words[1] }] : []
+    }),
+  )
+}
+
+function globMatches(glob: string, name: string): boolean {
+  const pattern = glob.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")
+  return new RegExp(`^${pattern}$`).test(name)
+}
+
+function checkDocumentedNames(root: string, packed: Array<{ name: string; file: string }>, usage: string): void {
+  const modulePath = readFileSync(join(root, "go.mod"), "utf8").match(/^module (\S+)$/m)?.[1]
+  if (!modulePath) fail("go.mod names no module")
+  const packageNames = new Set(packed.map((p) => p.name))
+  const executables = new Map<string, Set<string>>()
+  for (const [, executable, subcommand] of usage.matchAll(new RegExp(`^\\s+(${productCommands.join("|")}) ([a-z][a-z-]*)`, "gm"))) {
+    executables.set(executable, (executables.get(executable) ?? new Set()).add(subcommand))
+  }
+  const blinkShips = executables.has("blink") || [...packageNames].some((name) => name.startsWith("@blink/"))
+  const problems: string[] = []
+  let packagesSeen = 0
+  let commandsSeen = 0
+  for (const file of documentedFiles(root)) {
+    for (const block of fencedBlocks(readFileSync(join(root, file), "utf8"))) {
+      const code = block.lines.join("\n")
+      for (const [name] of code.matchAll(/@(?:agent-snap|blink)\/[a-z0-9-]+(?:\.[a-z0-9-]+)*/g)) {
+        packagesSeen++
+        if (!packageNames.has(name)) problems.push(`${file} names ${name}, which is not a packed package`)
+      }
+      for (const { command, argument } of commandsIn(block)) {
+        if (!productCommands.includes(command)) continue
+        commandsSeen++
+        const subcommands = executables.get(command)
+        if (!subcommands) problems.push(`${file} runs ${command}, but no shipped executable is called that (docs/NAMESPACE.md)`)
+        else if (argument && !argument.startsWith("-") && !subcommands.has(argument)) {
+          problems.push(`${file} runs ${command} ${argument}, which the binary does not list`)
+        }
+      }
+      for (const [tarball] of code.matchAll(/[\w*.-]+\.tgz/g)) {
+        if (!packed.some((p) => globMatches(tarball, p.file))) problems.push(`${file} names ${tarball}, which no packed tarball matches`)
+      }
+      for (const [, dir] of code.matchAll(new RegExp(`(?:\\.|${modulePath.replace(/\./g, "\\.")})/cmd/([a-z0-9-]+)`, "g"))) {
+        if (!existsSync(join(root, "cmd", dir))) problems.push(`${file} names cmd/${dir}, which does not exist`)
+      }
+      for (const path of code.split(/[\s"'`()=,;[\]{}]+/).filter((word) => word.includes("/"))) {
+        if (!blinkShips && path.split(/[/\\]/).some((part) => /^blink(?:[-.]|$)/.test(part))) {
+          problems.push(`${file} names the path ${path}, but nothing shipped is called blink (docs/NAMESPACE.md)`)
+        }
+      }
+    }
+  }
+  if (packagesSeen === 0 || commandsSeen === 0) {
+    fail(`documented code blocks named ${packagesSeen} packages and ${commandsSeen} agent-snap commands; the scan found nothing to check`)
+  }
+  if (problems.length > 0) fail(`documented names that do not ship:\n${problems.join("\n")}`)
+  console.log(`pack-check: documented names OK (${packagesSeen} package and ${commandsSeen} command mentions)`)
+}
+
 function main(): void {
   if (!bin) fail("AGENT_SNAP_BIN must point at the built agent-snap binary")
 
@@ -34,6 +124,12 @@ function main(): void {
       if (!path.endsWith(".tgz")) fail(`bun pm pack produced no tarball for ${workspace}: ${output}`)
       tarballs.push({ workspace, path })
     }
+
+    const packed = tarballs.map(({ path }) => ({
+      name: JSON.parse(run("tar", ["-xzOf", path, "package/package.json"])).name as string,
+      file: basename(path),
+    }))
+    checkDocumentedNames(root, packed, run(bin, []))
 
     // 2. Validate tarball contents (host entry present, stale files absent).
     for (const { workspace, path } of tarballs) {

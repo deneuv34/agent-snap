@@ -52,7 +52,7 @@ Normal Git commits are not sufficient for this purpose: committing affects the u
 
 - Confirm a restore, require its safety backup, and apply it. FR-15 specifies the backup rule, and FR-16 specifies the confirmation and the write. Phase 5 builds them.
 - Retention and garbage-collection policy.
-- Product-facing naming, UX, and packaging under `blink`.
+- Blink naming beyond documentation and package descriptions. [NAMESPACE.md](NAMESPACE.md) keeps every shipped name and lists what a later rename needs.
 
 ### 4.3 Non-goals for the MVP
 
@@ -1014,7 +1014,7 @@ Deliver the current Go core, protocol, Node client, OpenCode adapter, and Pi ext
 
 ### Milestone B: Blink naming and distribution
 
-Define the package/binary migration strategy, user-facing branding, compatibility aliases, documentation migration, and upgrade path from `agent-snap` to `blink` without breaking existing integrations.
+Brand the user-facing documentation as Blink without breaking existing integrations. [NAMESPACE.md](NAMESPACE.md) records the decision. The executable stays `agent-snap`, the npm packages stay `@agent-snap/*`, and the JSONL methods and the `refs/agent-snapshots/` refs stay as shipped. No `blink` alias or dual-written namespace exists. A later rename needs a revision of that record and compatibility tests.
 
 ### Milestone C: Review
 

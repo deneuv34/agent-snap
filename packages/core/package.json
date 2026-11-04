@@ -1,7 +1,7 @@
 {
   "name": "@agent-snap/core",
   "version": "0.1.0",
-  "description": "Type-safe TypeScript client for the agent-snap Go core (JSONL over stdin/stdout)",
+  "description": "Type-safe TypeScript client for Blink. Speaks JSONL over stdin/stdout to the agent-snap core binary",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -29,6 +29,7 @@
     "access": "public"
   },
   "keywords": [
+    "blink",
     "agent-snap",
     "snapshot",
     "git",
