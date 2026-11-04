@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- `snapshot.restore_plan` blocks a written path (a create, modify, or type
+  change) as `name_collision` when the working tree folds case and a parent
+  directory of the path exists on disk only under a spelling that differs by
+  case, such as a `Dir/` that holds an ignored file where the snapshot has
+  `dir/y`. The restore keeps that directory, and Git writes the file into it as
+  `Dir/y`, so a capture afterwards differs from `result_tree`. Before, the plan
+  was applicable. When `core.ignorecase` is true, a parent does not block if
+  the result tree holds a path below it that `HEAD` also holds, because a
+  capture then keeps the result tree's spelling. When `core.ignorecase` is false
+  on a volume that folds case, that exemption does not apply, because Git then
+  records the disk spelling. A directory that the restore empties does not
+  block.
+  The plan lists the names in each directory once and never follows a symbolic
+  link. A directory it cannot read puts the path in the way. This is the second
+  rule of `name_collision` in FR-15.
 - The OpenCode 1.x, OpenCode 2.x, and Pi hosts now quote file names in tool
   text. A path, `old_path`, scope path, unmatched path, changed file, snapshot
   reason, or origin value that holds a control character, a double quote, or a
