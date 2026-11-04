@@ -143,6 +143,19 @@
   failure, for at most 5 attempts with 150 ms of waits in all. A permission
   failure prints the same message and still fails the create after the
   fifth attempt. Every other ref lock failure apart from a held lock still fails at once.
+- `snapshot.create` and `snapshot.restore_plan` run no repository hook and
+  no fsmonitor program. Before, a create ran the repository's
+  `post-index-change` and `reference-transaction` hooks, each hook that
+  configuration defines with `hook.<name>.command`, and the `core.fsmonitor`
+  program. Each hook received Blink's scratch index. A `post-index-change`
+  hook that printed text made the create fail, because the text became part
+  of the tree ID. `snapshot.get` also ran the fsmonitor program. Every Git
+  command now passes `core.fsmonitor=`. Every command of a create or a plan
+  also passes `core.hooksPath` set to an empty directory in its scratch
+  directory, and `hook.<name>.enabled=false` for each configured hook. A
+  hook whose name contains `=` cannot be turned off that way, so a create
+  or a plan in that repository fails with `-32603` and names the hook. The
+  captured tree is unchanged.
 
 ## 0.1.0
 
