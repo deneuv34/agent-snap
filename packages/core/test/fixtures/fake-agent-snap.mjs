@@ -28,6 +28,10 @@ if (mode === "record-env") {
   record({ event: "env", guardian: process.env.AGENT_SNAP_GUARDIAN ?? null, bunBeBun: process.env.BUN_BE_BUN ?? null })
 }
 
+if (mode === "record-argv") {
+  record({ event: "argv", args: process.argv.slice(2) })
+}
+
 let created = 0
 let grandchildSpawned = false
 

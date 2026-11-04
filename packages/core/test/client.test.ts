@@ -637,6 +637,165 @@ test("unknown method surfaces a SnapRpcError with the wire code", async () => {
   }
 })
 
+async function spawnedArgv(serveArgs: string[]): Promise<string[][]> {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-serve-args-")), "fake.log")
+  const c = new SnapClient({
+    bin: process.execPath,
+    serveArgs,
+    env: { FAKE_AGENT_SNAP_MODE: "record-argv", FAKE_AGENT_SNAP_LOG: log },
+  })
+  try {
+    await c.ping()
+  } finally {
+    await c.close()
+  }
+  return readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { event: string; args?: string[] })
+    .filter((entry) => entry.event === "argv")
+    .map((entry) => entry.args ?? [])
+}
+
+test("serveArgs refuses the restore entry", async () => {
+  for (const flag of ["--restore", "-restore", "--restore=1"]) {
+    const log = join(mkdtempSync(join(tmpdir(), "agent-snap-restore-args-")), "fake.log")
+    assert.throws(
+      () =>
+        new SnapClient({
+          bin: process.execPath,
+          serveArgs: [fixture, "serve", flag],
+          env: { FAKE_AGENT_SNAP_MODE: "record-argv", FAKE_AGENT_SNAP_LOG: log },
+        }),
+      (err: unknown) => err instanceof TypeError && err.message.includes(JSON.stringify(flag)),
+      `serveArgs flag ${flag}`,
+    )
+    assert.equal(existsSync(log), false, "a started process would have logged its argv")
+  }
+})
+
+test("serveArgs that hold a non-string element are refused", () => {
+  assert.throws(
+    () => new SnapClient({ serveArgs: ["serve", new String("--restore") as unknown as string] }),
+    TypeError,
+  )
+})
+
+test("serveArgs without a restore flag still construct", () => {
+  for (const serveArgs of [["serve"], ["serve", "--pre-restore"], ["serve", "-x", "prerestore"]]) {
+    assert.doesNotThrow(() => new SnapClient({ bin: process.execPath, serveArgs }))
+  }
+})
+
+function doctoredRestoreArgs(): string[] {
+  return Object.assign([fixture, "serve", "--restore"], { find: () => undefined })
+}
+
+test("serveArgs from a Proxy whose get trap returns its own map spawns the indexed elements", async () => {
+  const serveArgs = new Proxy([fixture, "serve"], {
+    get(target, key, receiver) {
+      if (key === "map") return doctoredRestoreArgs
+      return Reflect.get(target, key, receiver)
+    },
+  })
+  assert.deepEqual(await spawnedArgv(serveArgs), [["serve"]])
+})
+
+test("serveArgs from an array with an own map spawns the indexed elements", async () => {
+  const serveArgs = Object.assign([fixture, "serve"], { map: doctoredRestoreArgs })
+  assert.deepEqual(await spawnedArgv(serveArgs), [["serve"]])
+})
+
+test("serveArgs from an Array subclass that overrides find is refused", () => {
+  class QuietFind extends Array<string> {
+    override find(): undefined {
+      return undefined
+    }
+  }
+  assert.throws(() => new SnapClient({ serveArgs: QuietFind.from([fixture, "serve", "--restore"]) }), TypeError)
+})
+
+test("serveArgs from an Array subclass that overrides the iterator spawns the indexed elements", async () => {
+  class LyingIterator extends Array<string> {
+    override *[Symbol.iterator](): ArrayIterator<string> {
+      yield fixture
+      yield "serve"
+      yield "--restore"
+    }
+  }
+  assert.deepEqual(await spawnedArgv(LyingIterator.of(fixture, "serve")), [["serve"]])
+})
+
+test("serveArgs whose constructor species builds an array with its own find is refused", () => {
+  const serveArgs = [fixture, "serve", "--restore"]
+  Object.assign(serveArgs, {
+    constructor: {
+      [Symbol.species]: function (length: number) {
+        return Object.assign(new Array<string>(length), { find: () => undefined })
+      },
+    },
+  })
+  assert.throws(() => new SnapClient({ serveArgs }), TypeError)
+})
+
+test("serveArgs with a hole is refused", () => {
+  const middle = [fixture, , "serve"] as unknown as string[]
+  const trailing = Object.assign([fixture, "serve"], { length: 3 })
+  for (const serveArgs of [middle, trailing]) {
+    assert.throws(() => new SnapClient({ serveArgs }), TypeError)
+  }
+})
+
+test("serveArgs that is not an array is refused with a TypeError naming serveArgs", () => {
+  const arrayLike = { length: 2, 0: "serve", 1: "--restore" } as unknown as string[]
+  for (const serveArgs of [arrayLike, "serve" as unknown as string[]]) {
+    assert.throws(
+      () => new SnapClient({ serveArgs }),
+      (err: unknown) => err instanceof TypeError && err.message.startsWith("serveArgs "),
+    )
+  }
+})
+
+test("request refuses snapshot.restore", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-restore-request-")), "fake.log")
+  const c = client({ FAKE_AGENT_SNAP_MODE: "record-argv", FAKE_AGENT_SNAP_LOG: log })
+  try {
+    for (const method of ["snapshot.restore", new String("snapshot.restore") as unknown as string]) {
+      await assert.rejects(
+        () => c.request(method),
+        (err: unknown) => err instanceof TypeError,
+        `method ${String(method)} as ${typeof method}`,
+      )
+      assert.equal(c.pid, undefined, "no process may start")
+    }
+  } finally {
+    await c.close()
+  }
+  assert.equal(existsSync(log), false, "a started process would have logged its argv")
+})
+
+test("serveArgs pushed after construction does not reach the spawn", async () => {
+  const serveArgs = [fixture, "serve"]
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-restore-push-")), "fake.log")
+  const c = new SnapClient({
+    bin: process.execPath,
+    serveArgs,
+    env: { FAKE_AGENT_SNAP_MODE: "record-argv", FAKE_AGENT_SNAP_LOG: log },
+  })
+  serveArgs.push("--restore")
+  try {
+    await c.ping()
+  } finally {
+    await c.close()
+  }
+  const argv = readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as { event: string; args?: string[] })
+    .filter((entry) => entry.event === "argv")
+  assert.deepEqual(argv.map((entry) => entry.args), [["serve"]])
+})
+
 test("a result for a method the client cannot validate surfaces SnapProtocolError", async () => {
   const c = client({ FAKE_AGENT_SNAP_MODE: "unknown-method-result" })
   try {
