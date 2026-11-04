@@ -6,9 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func logScript(t *testing.T, path, marker, log, reply string) {
@@ -162,4 +164,67 @@ func TestCaptureRefusesAConfigHookItCannotDisable(t *testing.T) {
 		t.Fatalf("the refused operations ran the hook: %v", got)
 	}
 	assertEmpty(t, root, "a refused create and plan")
+}
+
+func TestCaptureReadsValuesFromStandardOutputOnly(t *testing.T) {
+	filters := []struct{ name, clean string }{
+		{"quiet", "cat"},
+		{"noisy", "echo noisy filter ran >&2; cat"},
+	}
+	for _, format := range objectFormats {
+		for _, filter := range filters {
+			t.Run(format+"/"+filter.name, func(t *testing.T) {
+				dir := testRepoIn(t, format)
+				writeFile(t, dir, ".gitattributes", "*.txt filter=probe\n")
+				git(t, dir, "config", "filter.probe.clean", filter.clean)
+				writeFile(t, dir, "tracked.txt", "changed\n")
+				future := time.Now().Add(24 * time.Hour)
+				if err := os.Chtimes(filepath.Join(dir, "tracked.txt"), future, future); err != nil {
+					t.Fatal(err)
+				}
+				store := newStore(t, dir)
+
+				snap := create(t, store, "filtered")
+				if tree, want := git(t, dir, "rev-parse", snap.Commit+"^{tree}"), plainCapture(t, dir); tree != want {
+					t.Fatalf("create recorded tree %s, plain Git captures %s", tree, want)
+				}
+				if _, err := store.PlanRestore(context.Background(), snap.ID, PlanQuery{Scope: WholeTree()}); err != nil {
+					t.Fatalf("plan restore: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestCreateRefusesAMalformedHookListing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the git wrapper is a POSIX shell script")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, listing := range []string{"x", "hook.", "hook.a", "hook.command\nv", "\nfoo"} {
+		t.Run(fmt.Sprintf("%q", listing), func(t *testing.T) {
+			dir := testRepo(t)
+			bin := t.TempDir()
+			reply := filepath.Join(bin, "listing")
+			if err := os.WriteFile(reply, []byte(listing+"\x00"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			script := fmt.Sprintf("#!/bin/sh\nfor a; do [ \"$a\" = --get-regexp ] && exec cat %q; done\nexec %q \"$@\"\n", reply, realGit)
+			if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			store := newStore(t, dir)
+
+			if _, err := store.Create(context.Background(), "malformed", Origin{}); err == nil || !strings.Contains(err.Error(), "list configured hooks") {
+				t.Fatalf("create error = %v, want the malformed hook listing refused", err)
+			}
+			if refs := git(t, dir, "for-each-ref", refsPrefix); refs != "" {
+				t.Fatalf("the refused create wrote refs %q", refs)
+			}
+		})
+	}
 }
