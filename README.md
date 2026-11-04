@@ -1,13 +1,19 @@
-# agent-snap
+# Blink
 
 Zero-impact Git working-tree snapshots for AI agent sessions.
 
-Agent sessions mutate your working tree relentlessly. `agent-snap` records
+Agent sessions mutate your working tree relentlessly. Blink records
 snapshots of the working tree at key moments — session start (baseline) and
 when the agent settles to idle — without ever touching `HEAD`, the real index,
 or the working tree. Snapshots live in hidden git refs
 (`refs/agent-snapshots/*`), so they survive `git gc`, never appear in `git
 branch`, and never collide with your real history.
+
+Blink ships as the `agent-snap` executable and the `@agent-snap/core`,
+`@agent-snap/opencode`, and `@agent-snap/pi` packages. Those names, the JSONL
+methods, and the `refs/agent-snapshots/` refs stay as they are, so an existing
+configuration keeps working. [docs/NAMESPACE.md](docs/NAMESPACE.md) records
+that decision, with install and rollback steps.
 
 ## How it works
 

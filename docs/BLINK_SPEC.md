@@ -962,7 +962,7 @@ Deliver the current Go core, protocol, Node client, OpenCode adapter, and Pi ext
 
 ### Milestone B: Blink naming and distribution
 
-Define the package/binary migration strategy, user-facing branding, compatibility aliases, documentation migration, and upgrade path from `agent-snap` to `blink` without breaking existing integrations.
+Brand the user-facing documentation as Blink without breaking existing integrations. [NAMESPACE.md](NAMESPACE.md) records the decision. The executable stays `agent-snap`, the npm packages stay `@agent-snap/*`, and the JSONL methods and the `refs/agent-snapshots/` refs stay as shipped. No `blink` alias or dual-written namespace exists. A later rename needs a revision of that record and compatibility tests.
 
 ### Milestone C: Review
 

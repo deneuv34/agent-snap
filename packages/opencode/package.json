@@ -1,7 +1,7 @@
 {
   "name": "@agent-snap/opencode",
   "version": "0.1.0",
-  "description": "agent-snap plugin for OpenCode 1.x and 2.x: baseline snapshot at session start, coalesced snapshot at session idle, snapshot tools",
+  "description": "Blink plugin for OpenCode 1.x and 2.x: baseline snapshot at session start, coalesced snapshot at session idle, snapshot tools",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -36,6 +36,7 @@
     "access": "public"
   },
   "keywords": [
+    "blink",
     "agent-snap",
     "snapshot",
     "git",

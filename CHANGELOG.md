@@ -164,6 +164,11 @@
   hook whose name contains `=` cannot be turned off that way, so a create
   or a plan in that repository fails with `-32603` and names the hook. The
   captured tree is unchanged.
+- The READMEs and the npm package descriptions name the product Blink. The
+  `agent-snap` executable, the `@agent-snap/*` packages, the JSONL methods,
+  the `refs/agent-snapshots/` refs, and every host tool and command keep
+  their names, so no configuration needs an edit. `docs/NAMESPACE.md`
+  records that decision, with install and rollback commands.
 
 ## 0.1.0
 

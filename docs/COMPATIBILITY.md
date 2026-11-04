@@ -1,11 +1,12 @@
 # Compatibility contract
 
-This is the published contract for `agent-snap` **0.1.0**. Hosts and scripts may
-depend on everything listed here. Changing any frozen identifier requires a
-Phase 1 migration policy and compatibility tests.
+This is the published contract for `agent-snap` **0.1.0**, the core of Blink.
+Hosts and scripts may depend on everything listed here.
 
-Identity remains `agent-snap` until that policy exists. Do not rename the
-executable, npm packages, JSONL methods, or hidden refs in this release.
+[NAMESPACE.md](NAMESPACE.md) is the migration policy for the frozen names. It
+keeps the executable, the npm packages, the JSONL methods, and the hidden refs
+as 0.1.0 shipped them, and it adds no alias. Changing any of them requires a
+revision of that record and compatibility tests.
 
 ## Version
 
@@ -273,7 +274,7 @@ directory root. Pi does not recurse into wrapper `node_modules`.
 
 ## Compatibility promises
 
-Until a migration policy is published:
+Under the policy in [NAMESPACE.md](NAMESPACE.md):
 
 - Method names, error codes, and snapshot field names stay as shipped.
 - `refs/agent-snapshots/` stays the only snapshot namespace.

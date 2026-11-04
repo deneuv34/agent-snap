@@ -1,6 +1,6 @@
 # @agent-snap/core
 
-Type-safe TypeScript client for the agent-snap Go core. Spawns
+Type-safe TypeScript client for Blink. It spawns the Blink core binary as
 `agent-snap serve` and speaks the JSONL wire protocol over stdin/stdout:
 
 ```ts

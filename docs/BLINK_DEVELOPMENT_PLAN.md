@@ -94,6 +94,16 @@ All commands pass on the supported platform matrix, and package artifacts instal
 - Migration documentation has copy-pasteable install and rollback paths.
 - No migration risks orphaning or silently hiding existing snapshot refs.
 
+### Outcome
+
+[NAMESPACE.md](NAMESPACE.md) records the decision for work items 1 to 3.
+Every name stays as 0.1.0 shipped it, with no alias and no dual-write. Blink
+is the name in documentation and package descriptions only.
+
+- Work item 4: the root and package READMEs say Blink, and every install command, configuration entry, executable name, and package name in them is unchanged.
+- Work item 5: no new configuration exists, so the old configuration is the documented one. `bun run pack-check` loads the packed OpenCode plugin and Pi extension against a real repository, as before.
+- Exit criteria: no configuration needs an edit, NAMESPACE.md has install and rollback commands, and no ref is renamed, copied, or hidden.
+
 ## Phase 2 — Snapshot Discovery and Evidence APIs
 
 **GitHub:** [#6](https://github.com/deneuv34/agent-snap/issues/6) · [milestone](https://github.com/deneuv34/agent-snap/milestone/3)

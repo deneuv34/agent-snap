@@ -1,7 +1,9 @@
 # @agent-snap/pi
 
-agent-snap extension for **Pi Coding Agent** (pi.dev,
-`@earendil-works/pi-coding-agent` 0.84 through 1.x, Node >= 22.19).
+Blink extension for **Pi Coding Agent** (pi.dev,
+`@earendil-works/pi-coding-agent` 0.84 through 1.x, Node >= 22.19). The
+package name stays `@agent-snap/pi`, so an existing Pi configuration keeps
+working.
 
 The package declares `pi.extensions: ["dist/extension.js"]` in its
 `package.json`, which Pi's extension discovery reads. The extension:
@@ -57,4 +59,4 @@ The resulting layout — `package.json` with `pi.extensions`, `dist/`, and
 `node_modules/@agent-snap/core` — is what Pi's loader consumes and is
 validated by the repository's pack-check.
 
-Set `AGENT_SNAP_BIN` if the agent-snap Go binary is not on `PATH`.
+Set `AGENT_SNAP_BIN` if the `agent-snap` binary is not on `PATH`.

@@ -1,7 +1,7 @@
 {
   "name": "@agent-snap/pi",
   "version": "0.1.0",
-  "description": "agent-snap extension for Pi Coding Agent (pi.dev): baseline at session_start, coalesced snapshot at agent_settled, flush/cleanup at session_shutdown, plus snapshot tools and commands",
+  "description": "Blink extension for Pi Coding Agent (pi.dev): baseline at session_start, coalesced snapshot at agent_settled, flush/cleanup at session_shutdown, plus snapshot tools and commands",
   "type": "module",
   "main": "./dist/extension.js",
   "types": "./dist/extension.d.ts",
@@ -46,6 +46,7 @@
   },
   "keywords": [
     "pi",
+    "blink",
     "agent-snap",
     "snapshot",
     "git",
