@@ -208,6 +208,11 @@
   not a primitive string and for `snapshot.restore`. No release of
   `agent-snap` dispatches `snapshot.restore` yet, so no working client
   changes.
+- The READMEs and the npm package descriptions name the product Blink. The
+  `agent-snap` executable, the `@agent-snap/*` packages, the JSONL methods,
+  the `refs/agent-snapshots/` refs, and every host tool and command keep
+  their names, so no configuration needs an edit. `docs/NAMESPACE.md`
+  records that decision, with install and rollback commands.
 
 ## 0.1.0
 

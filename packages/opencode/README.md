@@ -1,7 +1,8 @@
 # @agent-snap/opencode
 
-OpenCode plugin for agent-snap, for OpenCode 1.x (>= 1.18.18) and 2.x
-(>= 2.2.5). See the repository README for full details.
+Blink plugin for OpenCode 1.x (>= 1.18.18) and 2.x (>= 2.2.5). The package
+name stays `@agent-snap/opencode`, so an existing OpenCode configuration keeps
+working. See the repository README for full details.
 
 - Baseline snapshot at `session.created` (promise tracked; failures are
   logged, never unhandled).
@@ -41,4 +42,4 @@ The entry's default export carries `server` for 1.x and `setup` for 2.x;
 each host imports only its own adapter. On 2.x, tools that omit `cwd` use the
 calling session's directory.
 
-Set `AGENT_SNAP_BIN` if the agent-snap Go binary is not on `PATH`.
+Set `AGENT_SNAP_BIN` if the `agent-snap` binary is not on `PATH`.
