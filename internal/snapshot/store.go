@@ -41,6 +41,7 @@ var (
 	ErrInvalidReason = errors.New("invalid snapshot reason")
 	ErrInvalidOrigin = errors.New("invalid snapshot origin")
 	ErrNotFound      = errors.New("snapshot not found")
+	errNoSnapshot    = errors.New("no snapshot item ref points at the commit")
 	idPattern        = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}\.[0-9]{9}Z-[0-9a-f]{12}$`)
 	originPattern    = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
 	originLine       = regexp.MustCompile(`^Agent-Snap-([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*): ([!-~](?:[ -~]{0,253}[!-~])?)$`)
@@ -290,7 +291,14 @@ func (s *Store) recordTree(ctx context.Context, env []string, tree, head, reason
 				return Snapshot{}, err
 			}
 			if tree == latestTree {
-				return s.snapshotForCommit(ctx, latest, true)
+				snap, err := s.snapshotAt(ctx, latest)
+				if err == nil {
+					snap.Reused = true
+					return snap, nil
+				}
+				if !errors.Is(err, errNoSnapshot) {
+					return Snapshot{}, err
+				}
 			}
 		}
 
@@ -549,26 +557,6 @@ func (s *Store) List(ctx context.Context, limit int) ([]Snapshot, error) {
 	return items, nil
 }
 
-func (s *Store) snapshotForCommit(ctx context.Context, commit string, reused bool) (Snapshot, error) {
-	out, err := s.gitRaw(ctx, nil, "for-each-ref", "--points-at", commit, "--format=%(refname:strip=4)%00%(contents)%00%(creatordate:iso-strict)%00", s.itemsRef())
-	if err != nil {
-		return Snapshot{}, err
-	}
-	for _, record := range strings.Split(out, "\x00\n") {
-		fields := strings.Split(record, "\x00")
-		if len(fields) > 0 && fields[len(fields)-1] == "" {
-			fields = fields[:len(fields)-1]
-		}
-		if len(fields) != 3 || !ValidID(fields[0]) {
-			continue
-		}
-		created, _ := time.Parse(time.RFC3339, fields[2])
-		reason, origin := parseMessage(fields[1])
-		return Snapshot{ID: fields[0], Commit: commit, Reason: reason, CreatedAt: created, Origin: origin, Reused: reused}, nil
-	}
-	return Snapshot{}, errors.New("snapshot ref not found")
-}
-
 // Get resolves id inside this worktree's namespace only, and returns it only
 // when checkItem accepts the item ref.
 func (s *Store) Get(ctx context.Context, id string) (Detail, error) {
@@ -582,9 +570,11 @@ func (s *Store) Get(ctx context.Context, id string) (Detail, error) {
 	detail := Detail{ID: id, Commit: found.commit, Reason: reason, CreatedAt: created, Origin: origin, Tree: found.tree}
 	if parents := strings.Fields(found.parents); len(parents) == 1 {
 		detail.Parent = parents[0]
-		if detail.ParentID, err = s.snapshotIDOf(ctx, detail.Parent); err != nil {
+		parent, err := s.snapshotAt(ctx, detail.Parent)
+		if err != nil && !errors.Is(err, errNoSnapshot) {
 			return Detail{}, err
 		}
+		detail.ParentID = parent.ID
 	}
 
 	changed, err := s.changedFiles(ctx, lookupEnv, detail.Parent, detail.Commit)
@@ -619,20 +609,22 @@ func (s *Store) lookup(ctx context.Context, id string) (item, error) {
 	return item{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 }
 
-// snapshotIDOf names the snapshot whose item ref points at commit, applying
-// checkItem so a reported parent_id always resolves through Get.
-func (s *Store) snapshotIDOf(ctx context.Context, commit string) (string, error) {
+// snapshotAt returns the snapshot whose item ref points at commit, applying
+// checkItem so a reused id and a reported parent_id always resolve through Get.
+func (s *Store) snapshotAt(ctx context.Context, commit string) (Snapshot, error) {
 	records, err := s.items(ctx, "--points-at", commit, s.itemsRef())
 	if err != nil {
-		return "", err
+		return Snapshot{}, err
 	}
 	for _, record := range records {
 		id := strings.TrimPrefix(record.ref, s.itemsRef())
 		if ValidID(id) && checkItem(record, id) == nil {
-			return id, nil
+			created, _ := time.Parse(time.RFC3339, record.created)
+			reason, origin := parseMessage(record.message)
+			return Snapshot{ID: id, Commit: record.commit, Reason: reason, CreatedAt: created, Origin: origin}, nil
 		}
 	}
-	return "", nil
+	return Snapshot{}, errNoSnapshot
 }
 
 const itemFormat = "%(refname)%00%(symref)%00%(objecttype)%00%(objectname)%00%(tree)%00%(parent)%00" +

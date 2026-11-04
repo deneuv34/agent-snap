@@ -153,7 +153,8 @@ This workflow is a product requirement for the restore release, not an MVP behav
 ### FR-5: Deduplication
 
 - Before creating a commit, Blink MUST compare the newly generated tree with the latest snapshot tree.
-- If they are identical, Blink MUST return the existing snapshot with `reused: true` and MUST NOT create a duplicate commit or snapshot ref.
+- If they are identical and an item ref that FR-12 lookup accepts points at the latest commit, Blink MUST return that snapshot with `reused: true` and MUST NOT create a duplicate commit or snapshot ref.
+- If they are identical and no such item ref exists, Blink MUST create a new snapshot of that tree whose parent is the latest commit, and move `latest` to it as FR-6 requires. This covers a deleted item ref and one that FR-12 lookup refuses. Blink MUST NOT recreate, repoint, or delete an item ref to avoid it. The next create of the same tree reuses the new snapshot.
 - If a new commit is created, it MUST return `reused: false` (omitted from JSON is equivalent to false in the current wire format).
 
 ### FR-6: Concurrent creation
