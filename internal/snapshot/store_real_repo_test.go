@@ -81,9 +81,6 @@ type gitCall struct {
 	noReplace, evidenceEnv bool
 }
 
-// logGitCalls puts a git on PATH that records each call's arguments and the
-// two environment variables that tell the real repository from the evidence
-// repository, and then runs the real Git.
 func logGitCalls(t *testing.T) func() []gitCall {
 	t.Helper()
 	realGit, err := exec.LookPath("git")

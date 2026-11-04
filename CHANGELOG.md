@@ -238,6 +238,16 @@
   A reuse also skips an item ref that lookup refuses. Before, it could report
   such a ref when its name sorted first, and `snapshot.get` then refused that
   id.
+- `snapshot.create`, `snapshot.restore_plan`, and `snapshot.list` now read
+  objects with replace objects disabled. After Blink resolves the repository,
+  every Git command that it runs there passes the resolved `--git-dir` and
+  `--work-tree`. A replace ref for `HEAD` no longer changes the tree that
+  `create` records, and no longer makes a plan list an ignored file as a
+  `delete`. A replace ref for the latest snapshot commit no longer makes
+  `create` reuse a snapshot whose tree differs from the working tree. Blink
+  takes the Git directory from `cwd`, so a `core.worktree` inside another
+  repository no longer sends snapshots there. `docs/COMPATIBILITY.md` says what
+  this means for existing snapshots.
 
 ## 0.1.0
 
