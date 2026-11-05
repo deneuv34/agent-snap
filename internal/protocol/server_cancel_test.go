@@ -2,11 +2,13 @@ package protocol
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -31,6 +33,44 @@ func serveResult(t *testing.T, done <-chan error) error {
 	}
 }
 
+// A blocker's wait is shell code that touches started and then waits until
+// release exists or the test process exits. Both files are in dir.
+type blocker struct{ dir, wait, started, release string }
+
+// The wait watches the test process because cancellation stops Git and not
+// the hook or filter that Git runs, and a test that times out or is killed
+// runs no cleanup. The cleanup writes release before t.TempDir removes dir,
+// then fails the test and kills any process that names dir 5 seconds later.
+func newBlocker(t *testing.T) blocker {
+	t.Helper()
+	dir := t.TempDir()
+	b := blocker{dir: dir, started: filepath.Join(dir, "started"), release: filepath.Join(dir, "release")}
+	b.wait = fmt.Sprintf("touch %q; while [ ! -e %q ] && kill -0 %d 2>/dev/null; do sleep 0.05; done", b.started, b.release, os.Getpid())
+	t.Cleanup(func() {
+		if err := os.WriteFile(b.release, nil, 0o644); err != nil {
+			t.Errorf("release the blocking shell: %v", err)
+		}
+		pattern := regexp.QuoteMeta(dir)
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			out, err := exec.Command("pgrep", "-f", pattern).Output()
+			var exit *exec.ExitError
+			if errors.As(err, &exit) && exit.ExitCode() == 1 {
+				return
+			}
+			if err != nil {
+				t.Errorf("list the processes naming %s: %v", dir, err)
+				return
+			}
+			if time.Now().After(deadline) {
+				_ = exec.Command("pkill", "-KILL", "-f", pattern).Run()
+				t.Errorf("processes %v naming %s outlived the test", strings.Fields(string(out)), dir)
+				return
+			}
+		}
+	})
+	return b
+}
+
 func TestServeReturnsWhenItsContextEndsWhileIdle(t *testing.T) {
 	in, writer := io.Pipe()
 	defer writer.Close()
@@ -46,15 +86,14 @@ func TestServeCancelledMidCreateRemovesItsScratchDirectoryAndLandsNoRef(t *testi
 		t.Skip("the filter is a POSIX command")
 	}
 	dir := protocolRepo(t)
-	signals := t.TempDir()
-	started, release := filepath.Join(signals, "started"), filepath.Join(signals, "release")
+	b := newBlocker(t)
 	if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("*.slow filter=slow\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "x.slow"), []byte("blocks\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	config := exec.Command("git", "config", "filter.slow.clean", fmt.Sprintf("touch %q; while [ ! -e %q ]; do sleep 0.05; done; cat", started, release))
+	config := exec.Command("git", "config", "filter.slow.clean", b.wait+"; cat")
 	config.Dir = dir
 	if out, err := config.CombinedOutput(); err != nil {
 		t.Fatalf("git config: %v: %s", err, out)
@@ -63,12 +102,11 @@ func TestServeCancelledMidCreateRemovesItsScratchDirectoryAndLandsNoRef(t *testi
 	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(key, scratch)
 	}
-	defer func() { _ = os.WriteFile(release, nil, 0o644) }()
 
 	cancel, done := serveInBackground(strings.NewReader(requestLine(1, "snapshot.create", map[string]any{"cwd": dir}) + "\n"))
 	defer cancel()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := os.Stat(started); err == nil {
+		if _, err := os.Stat(b.started); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {

@@ -2,11 +2,13 @@ package snapshot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -27,21 +29,58 @@ func redirectPinnedHooksPath(t *testing.T, hooks string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// A blocker's wait is shell code that touches started and then waits until
+// release exists or the test process exits. Both files are in dir.
+type blocker struct{ dir, wait, started, release string }
+
+// The wait watches the test process because cancellation stops Git and not
+// the hook or filter that Git runs, and a test that times out or is killed
+// runs no cleanup. The cleanup writes release before t.TempDir removes dir,
+// then fails the test and kills any process that names dir 5 seconds later.
+func newBlocker(t *testing.T) blocker {
+	t.Helper()
+	dir := t.TempDir()
+	b := blocker{dir: dir, started: filepath.Join(dir, "started"), release: filepath.Join(dir, "release")}
+	b.wait = fmt.Sprintf("touch %q; while [ ! -e %q ] && kill -0 %d 2>/dev/null; do sleep 0.05; done", b.started, b.release, os.Getpid())
+	t.Cleanup(func() {
+		if err := os.WriteFile(b.release, nil, 0o644); err != nil {
+			t.Errorf("release the blocking shell: %v", err)
+		}
+		pattern := regexp.QuoteMeta(dir)
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			out, err := exec.Command("pgrep", "-f", pattern).Output()
+			var exit *exec.ExitError
+			if errors.As(err, &exit) && exit.ExitCode() == 1 {
+				return
+			}
+			if err != nil {
+				t.Errorf("list the processes naming %s: %v", dir, err)
+				return
+			}
+			if time.Now().After(deadline) {
+				_ = exec.Command("pkill", "-KILL", "-f", pattern).Run()
+				t.Errorf("processes %v naming %s outlived the test", strings.Fields(string(out)), dir)
+				return
+			}
+		}
+	})
+	return b
+}
+
 func TestCreateCancelledWhileGitHoldsRefLocksLeavesNoLock(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows has no SIGTERM, so cancellation kills Git")
 	}
 	dir := testRepo(t)
 	writeFile(t, dir, "file.txt", "changed\n")
-	signals := t.TempDir()
-	started, release := filepath.Join(signals, "started"), filepath.Join(signals, "release")
-	hook := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = prepared ]; then touch %q; while [ ! -e %q ]; do sleep 0.05; done; fi\n", started, release)
-	hooks := t.TempDir()
-	if err := os.WriteFile(filepath.Join(hooks, "reference-transaction"), []byte(hook), 0o755); err != nil {
+	// The hook lives in the blocker's directory, so the process check finds
+	// both the hook and the Git that names the directory as its hooks path.
+	b := newBlocker(t)
+	hook := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = prepared ]; then %s; fi\n", b.wait)
+	if err := os.WriteFile(filepath.Join(b.dir, "reference-transaction"), []byte(hook), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	redirectPinnedHooksPath(t, hooks)
-	defer func() { _ = os.WriteFile(release, nil, 0o644) }()
+	redirectPinnedHooksPath(t, b.dir)
 	store := newStore(t, dir)
 	root := scratchRoot(t)
 
@@ -53,7 +92,7 @@ func TestCreateCancelledWhileGitHoldsRefLocksLeavesNoLock(t *testing.T) {
 		done <- err
 	}()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := os.Stat(started); err == nil {
+		if _, err := os.Stat(b.started); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
