@@ -734,7 +734,9 @@ func sanitizedEnv() []string {
 // while Git removes its ref lock files and leave them in the repository. A
 // Git still running gitStopGrace later is killed, and the pipes are closed
 // even when a filter still holds them, so cleanup finishes inside the client's
-// kill grace. The filter itself is not killed. Windows has no SIGTERM, so
+// kill grace. The filter itself is not killed. Git and the filter stay in the
+// core's process group, so the client's group teardown ends both, which it
+// could not do if Git had a group of its own. Windows has no SIGTERM, so
 // cancellation kills Git there.
 func gitCmd(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)

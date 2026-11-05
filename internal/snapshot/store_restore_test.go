@@ -1252,10 +1252,9 @@ func TestPlanRestoreCancelledWhileAFilterBlocksReturnsNoPlan(t *testing.T) {
 		t.Skip("the filter is a POSIX command")
 	}
 	dir := testRepo(t)
-	signals := t.TempDir()
-	started, release := filepath.Join(signals, "started"), filepath.Join(signals, "release")
+	b := newBlocker(t)
 	writeFile(t, dir, ".gitattributes", "*.slow filter=slow\n")
-	git(t, dir, "config", "filter.slow.clean", fmt.Sprintf("touch %q; while [ ! -e %q ]; do sleep 0.05; done; cat", started, release))
+	git(t, dir, "config", "filter.slow.clean", b.wait+"; cat")
 	store := newStore(t, dir)
 	snap := create(t, store, "snap")
 	writeFile(t, dir, "x.slow", "blocks\n")
@@ -1272,9 +1271,8 @@ func TestPlanRestoreCancelledWhileAFilterBlocksReturnsNoPlan(t *testing.T) {
 		plan, err := store.PlanRestore(ctx, snap.ID, PlanQuery{Scope: WholeTree()})
 		done <- result{plan, err}
 	}()
-	defer func() { _ = os.WriteFile(release, nil, 0o644) }()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := os.Stat(started); err == nil {
+		if _, err := os.Stat(b.started); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -1282,7 +1280,7 @@ func TestPlanRestoreCancelledWhileAFilterBlocksReturnsNoPlan(t *testing.T) {
 		}
 	}
 	cancel()
-	if err := os.WriteFile(release, nil, 0o644); err != nil {
+	if err := os.WriteFile(b.release, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	select {
