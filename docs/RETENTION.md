@@ -72,7 +72,7 @@ The read-only report lands in every layer before the drop, in [Phase 6 lands in 
 The report runs three reads. Every Git command runs with `LANGUAGE=C`, as on main, so Git's messages are in English.
 
 1. One `git for-each-ref --format='%(refname) %(objectname) %(symref)' refs/agent-snapshots/`. It reads no object.
-2. One `git cat-file --batch-check` with the object ID of each listed `latest`. It prints `missing` for an object the repository does not have.
+2. One `git cat-file --batch-check` with the object ID of each listed `latest`. It prints `missing` for an object the repository does not have. It runs with `GIT_NO_LAZY_FETCH=1`, because in a partial clone the same command in the real repository fetched a missing object into the real object store (the promisor probe in [`RESTORE.md`](RESTORE.md)). A Git older than 2.44 ignores the variable. That is inferred from the release that added it, and nothing ran on an older Git.
 3. `git symbolic-ref -q <latest>` for each namespace whose `latest` the first read did not list and did not name as broken.
 
 Round 2 printed `%(objecttype)` in the first read. The broken-ref probe showed that one ref to a missing object then makes `for-each-ref` exit 128 with `fatal: missing object`, in all 8 configurations. The report failed for every namespace in the repository, and every drop failed with it. Without `%(objecttype)`, `for-each-ref` exited 0 and listed that ref, and the other namespace still reported. `cat-file --batch-check` then printed `<oid> missing` for a `latest` whose object was gone.
@@ -94,7 +94,7 @@ For each namespace it reports:
 
 - The namespace, and whether it is the namespace of `cwd`.
 - The worktree it belongs to, when one does.
-- The number of refs, of item refs whose names are snapshot identifiers, and of broken refs.
+- The number of refs, of item refs whose names are snapshot identifiers, and of broken refs. A broken item ref counts as a broken ref and not as a snapshot, whatever its name.
 - The oldest and newest of those identifiers and their times.
 - The state of `latest`, which is `commit`, `not_commit`, `missing_object`, `symbolic`, `missing`, or `broken`.
 - A digest of every ref under the namespace with its value.
@@ -111,7 +111,7 @@ The report finds C without `--path-format`, which Git 2.31 added:
 
 `git rev-parse --git-common-dir` is not used, because it printed `.git` in the main worktree and `../.git` in its subdirectory. A join of that relative path keeps a symbolic link in the path, such as macOS `/var`, that Git resolved to `/private/var` before it hashed. The mapping probe ran the derivation from the root and a subdirectory of the main worktree, a linked worktree, and a worktree made with `--relative-paths`, in a repository under `/var/folders`. In all 8 configurations it gave exactly the namespaces that `agent-snap create` wrote from each of them.
 
-The report shows a worktree path for each mapped namespace. The main worktree's path is the first `worktree` line of `git worktree list --porcelain`. A linked worktree's path is the directory that holds the `.git` file named by the entry's `gitdir` file. The report reads at most 4096 bytes of that file, only when it is a regular file, and joins a relative path to the entry directory. Git 2.48 and later write a relative path there for `--relative-paths`, and the probe saw `../../../../wtrel/.git`. When the file cannot be read, the namespace still maps and the path is absent. After `git worktree remove`, the worktree's entry was gone and its namespace stayed (W1).
+The report shows a worktree path for each mapped namespace. The main worktree's path is the first `worktree` line of `git worktree list --porcelain`. A linked worktree's path is the directory that holds the `.git` file named by the entry's `gitdir` file. The report reads at most 4096 bytes of that file, only when it is a regular file, and joins a relative path to the entry directory. Git 2.48 and later write a relative path there for `--relative-paths`, and the probe saw `../../../../wtrel/.git`. When the file cannot be read, the namespace still maps and the path is absent. `git worktree list` blocks on an entry whose `gitdir` file is a FIFO, which a FIFO probe showed on Git 2.54 and 2.56 (landing step 2). So the report skips that command when any entry's `gitdir` is not a regular file, and the main worktree then has no path. After `git worktree remove`, the worktree's entry was gone and its namespace stayed (W1).
 
 A new linked worktree that takes a removed worktree's name derives the same namespace, and the report shows the old snapshots under the new worktree. Round-1 review measured this. It is a Phase 4 bug on main, and [Follow-ups](#follow-ups) records it. The drop prompt shows the snapshot times, so a person can see that a timeline is older than its worktree.
 
@@ -202,7 +202,7 @@ Revision 3 makes the main flow of the CLI the only place that declines:
 - Step 7 reads the channel once without waiting. A signal found there declines with exit `4`, and Git never starts. That read is the last decision. The CLI keeps the four signals caught until it exits, and never reads a signal that arrives after that read.
 - From step 7 on, the Store runs on a context made with `context.WithoutCancel`, so the signal that ends the CLI's context ends no later step.
 
-The boundary probe ran the main-flow decision with `signal.Ignore` before the read. 0 of 630 runs printed the decline after Git started, and 227 declined before Git started. With the signals caught, nothing reads the channel after step 7, so a signal that arrives after the read changes nothing, however Go delivers it.
+The boundary probe ran the main-flow decision with `signal.Ignore` before the read. 0 of 630 runs printed the decline after Git started, and 227 declined before Git started. That stand-in is retired, so the figure does not measure the current design, which catches the signals. For the current design, the claim that no late decline happens is inferred. With the signals caught, nothing reads the channel after step 7, so a signal that arrives after the read changes nothing, however Go delivers it.
 
 `main` calls `stop()` after the first signal, so that a second signal ends other commands at once. During a drop, the channel of step 1 still wants the signals, so Go keeps them caught after `stop()`. That is inferred from Go 1.27's `os/signal` source, where `Stop` restores the default action only when no other channel wants the signal.
 
@@ -387,7 +387,7 @@ Only tests in `internal/snapshot` replace the Store's seams, which are unexporte
    - `TestRetentionReportIgnoresMessageSize` plants an item with a 4 MiB message, and checks that the report succeeds and holds no reason text.
    - `TestRetentionReportReadsAtMost4096BytesOfAGitdirFile` plants a larger `gitdir` file and a FIFO, and checks that the namespace maps with no path and the report does not block.
    - `TestRetentionReportWritesNothing` fingerprints every ref, the index, `HEAD`, the configuration, the object store, every file of the Git directory with its content hash, and every working-tree path with its mode and content hash, before and after.
-3. Protocol. `snapshot.retention_report` with its validation table and `-32601` from an older binary. `TestServeRetentionReportRejectsUnknownKeys` and `TestServeRetentionReportPagesNamespaces` cover the request rules and `next_offset`. `TestDispatchHasAClosedMethodSet` parses every non-test Go file of `internal/protocol` with `go/ast`. It checks that the dispatcher's case labels are exactly a list in the test of the methods that write no ref, and that the Store methods the package calls are exactly a second list that holds no drop. A new method or call of any name fails it until a reviewer adds it to a list. `TestServeHasNoDeleteMethod` sends `snapshot.drop`, `snapshot.delete`, and `snapshot.prune`, and checks `-32601` for each. The check is `go test ./...`.
+3. Protocol. `snapshot.retention_report` with its validation table and `-32601` from an older binary. `TestServeRetentionReportRejectsUnknownKeys` and `TestServeRetentionReportPagesNamespaces` cover the request rules and `next_offset`. `TestDispatchHasAClosedMethodSet` parses every non-test Go file of `internal/protocol` with `go/ast`. It checks that the dispatcher's case labels are exactly a list in the test of the methods that delete no ref, and that the Store methods the package calls are exactly a second list that holds no drop. A new method or call of any name fails it until a reviewer adds it to a list. `TestServeHasNoDeleteMethod` sends `snapshot.drop`, `snapshot.delete`, and `snapshot.prune`, and checks `-32601` for each. The check is `go test ./...`.
 4. TypeScript. The section 8.7 types and every cross-field rule, `SnapClient.retentionReport`, `SnapLike.retentionReport`, and `SnapRetentionReportUnsupportedError` for `-32601`. One named test covers each rule of section 8.7. The check is `bun run test` and `bun run test:node`.
    - `rejects more than 100 namespaces`.
    - `rejects a page that ends past totals.namespaces`.
@@ -537,7 +537,7 @@ Round 2:
 
 Round 3:
 
-- The boundary probe ran a Go stand-in of steps 7 to 9 at 21 signal offsets around `signal.Ignore`, 10 runs each, for the goroutine design, the main-flow design (three times), and a context-bound Git. It also checked that a child started after `signal.Ignore` survives `SIGINT`.
+- The boundary probe ran a Go stand-in of steps 7 to 9 at 21 signal offsets around `signal.Ignore`, which the current design retired, 10 runs each, for the goroutine design, the main-flow design (three times), and a context-bound Git. It also checked that a child started after `signal.Ignore` survives `SIGINT`.
 - The broken-ref probe ran a missing-object item, a missing-object `latest`, a broken `latest`, a broken item, and refs outside a namespace, in all 8 configurations, the broken cases on files only. All 160 checks passed.
 - The mapping probe derived the namespaces from five working directories in all 8 configurations, and checked the worktree paths and the restore lock path. All 96 checks passed.
 - The by-hand probe ran the over-cap commands, the recovery loop, and the symbolic item deletes against a symbolic `latest`, and the recovery loop after a create and with one object gone, in all 8 configurations. All 112 checks passed.
@@ -578,7 +578,7 @@ Each assumption the design relies on is listed with its label. An observed fact 
 | `-c reftable.lockTimeout=1000` makes a create wait for a drop's reftable lock. | Observed on Git 2.54 and 2.56 (seam probe). Inferred that older Gits ignore the unknown key. | `TestCreateWaitsForAReftableLock`. |
 | A create after a drop starts a new chain on `HEAD`. | Observed (D5) | `TestDropRacesCreates`. |
 | A 10,001-ref drop takes at most about 3 s on the files backend and under 0.1 s on reftable. | Observed (drop-time probe, shared machine) | `TestDropDeletesAtTheCap`. |
-| A signal that arrives after step 7's read of the channel is never read, so it cannot decline. | Requirement. The boundary probe saw no late decline in 630 runs of the main-flow design. | `drop never declines after Git started`. |
+| A signal that arrives after step 7's read of the channel is never read, so it cannot decline. | Requirement. Inferred for the current design, which catches the signals. The boundary probe saw no late decline in 630 runs, but its stand-in called `signal.Ignore`, which this design retired, and the probe was not rerun. | `drop never declines after Git started`. |
 | A Go program that catches a signal starts Git with the default action for it. Git with the default action dies on a direct `SIGTERM` and removes its locks. | Observed (caught-signal probe, 60 of 60) | `TestDropKeepsALatestMovedAfterGitDied`. |
 | Git in its own process group never gets a terminal's group signal, and the CLI discards it. | Observed (round-2 signal probe, caught-signal probe, 60 of 60) | `drop survives signals after Git took its first lock`. |
 | The channel of step 1 keeps the signals caught after `main` calls `stop()`. | Inferred from Go 1.27's `os/signal` source | `drop declines a signal during the second read`. |
