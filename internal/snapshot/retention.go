@@ -39,7 +39,8 @@ var (
 
 	// GIT_NO_LAZY_FETCH keeps cat-file from fetching a missing object into the
 	// real object store in a partial clone. A Git older than 2.44 ignores it.
-	retentionEnv = slices.Concat(lookupEnv, []string{"GIT_OPTIONAL_LOCKS=0", "GIT_NO_LAZY_FETCH=1"})
+	// Store.command already sets GIT_NO_REPLACE_OBJECTS for every call.
+	retentionEnv = []string{"GIT_OPTIONAL_LOCKS=0", "GIT_NO_LAZY_FETCH=1"}
 
 	errNotRegular = errors.New("not a regular file")
 	errTooLarge   = errors.New("file reaches the read limit")
