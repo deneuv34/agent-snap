@@ -45,7 +45,6 @@ var (
 	idPattern        = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}\.[0-9]{9}Z-[0-9a-f]{12}$`)
 	originPattern    = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
 	originLine       = regexp.MustCompile(`^Agent-Snap-([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*): ([!-~](?:[ -~]{0,253}[!-~])?)$`)
-	lookupEnv        = []string{"GIT_NO_REPLACE_OBJECTS=1"}
 )
 
 type Origin struct {
@@ -159,6 +158,7 @@ func splitOrigin(body string) (string, Origin, bool) {
 
 type Store struct {
 	repo    string
+	gitDir  string
 	ns      string
 	zeroOID string
 	now     func() time.Time
@@ -172,7 +172,7 @@ func New(path string) (*Store, error) {
 	}
 	repo := strings.TrimSuffix(strings.TrimSuffix(out, "\n"), "\r")
 
-	format, err := revParse(repo, "--show-object-format")
+	format, err := revParse(path, "--show-object-format")
 	if err != nil {
 		return nil, fmt.Errorf("resolve object format: %w", err)
 	}
@@ -181,22 +181,26 @@ func New(path string) (*Store, error) {
 		zeroOID = strings.Repeat("0", 64)
 	}
 
-	gitDir, err := revParse(repo, "--absolute-git-dir")
+	// The Git directory comes from path, not from the top level, because a
+	// core.worktree setting can make the top level a directory of another
+	// repository.
+	out, err = revParse(path, "--absolute-git-dir")
 	if err != nil {
 		return nil, fmt.Errorf("resolve git dir: %w", err)
 	}
+	gitDir := strings.TrimSuffix(strings.TrimSuffix(out, "\n"), "\r")
 	sum := sha256.Sum256([]byte(strings.TrimSpace(gitDir)))
 	ns := hex.EncodeToString(sum[:8])
 
 	// Every Store pins core.fsmonitor=, so no fsmonitor program decides which
 	// files a read or a capture looks at.
-	return &Store{repo: repo, ns: ns, zeroOID: zeroOID, now: time.Now, pins: []string{"-c", "core.fsmonitor="}}, nil
+	return &Store{repo: repo, gitDir: gitDir, ns: ns, zeroOID: zeroOID, now: time.Now, pins: []string{"-c", "core.fsmonitor="}}, nil
 }
 
 func revParse(dir, option string) (string, error) {
 	cmd := exec.Command("git", "rev-parse", option)
 	cmd.Dir = dir
-	cmd.Env = sanitizedEnv()
+	cmd.Env = append(sanitizedEnv(), "GIT_NO_REPLACE_OBJECTS=1")
 	return output(cmd, []string{"rev-parse", option})
 }
 
@@ -328,7 +332,7 @@ func (s *Store) recordTree(ctx context.Context, env []string, tree, head, reason
 			return Snapshot{}, err
 		}
 		if committed {
-			changed, err := s.changedFiles(ctx, nil, parent, commit)
+			changed, err := s.changedFiles(ctx, parent, commit)
 			if err != nil {
 				return Snapshot{}, err
 			}
@@ -577,7 +581,7 @@ func (s *Store) Get(ctx context.Context, id string) (Detail, error) {
 		detail.ParentID = parent.ID
 	}
 
-	changed, err := s.changedFiles(ctx, lookupEnv, detail.Parent, detail.Commit)
+	changed, err := s.changedFiles(ctx, detail.Parent, detail.Commit)
 	if err != nil {
 		return Detail{}, err
 	}
@@ -634,12 +638,8 @@ type item struct {
 	ref, symref, objectType, commit, tree, parents, authorEmail, committerEmail, created, message string
 }
 
-// items reads item refs for lookup. Replace objects are disabled so a
-// refs/replace entry cannot substitute a snapshot's tree, parents, or message,
-// and the symbolic-ref status comes from the same read as the object it
-// names. A record that does not parse is an error, never "not found".
 func (s *Store) items(ctx context.Context, args ...string) ([]item, error) {
-	out, err := s.gitRaw(ctx, lookupEnv, append([]string{"for-each-ref", "--format=" + itemFormat}, args...)...)
+	out, err := s.gitRaw(ctx, nil, append([]string{"for-each-ref", "--format=" + itemFormat}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -678,14 +678,14 @@ func checkItem(r item, id string) error {
 	return nil
 }
 
-func (s *Store) changedFiles(ctx context.Context, env []string, parent, commit string) ([]string, error) {
+func (s *Store) changedFiles(ctx context.Context, parent, commit string) ([]string, error) {
 	args := []string{"diff-tree", "-z", "--no-commit-id", "--name-only", "-r"}
 	if parent == "" {
 		args = append(args, "--root", commit)
 	} else {
 		args = append(args, parent, commit)
 	}
-	out, err := s.gitRaw(ctx, env, args...)
+	out, err := s.gitRaw(ctx, nil, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -745,10 +745,14 @@ func gitCmd(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// command runs Git in the resolved repository with replace objects off, so a
+// refs/replace entry cannot change what a capture records, what a plan lists,
+// or which snapshot a lookup returns. The explicit Git directory and work tree
+// keep a core.worktree setting from redirecting it.
 func (s *Store) command(ctx context.Context, extraEnv []string, args ...string) *exec.Cmd {
-	cmd := gitCmd(ctx, slices.Concat(s.pins, args)...)
+	cmd := gitCmd(ctx, slices.Concat([]string{"--git-dir=" + s.gitDir, "--work-tree=" + s.repo}, s.pins, args)...)
 	cmd.Dir = s.repo
-	cmd.Env = append(sanitizedEnv(), extraEnv...)
+	cmd.Env = slices.Concat(sanitizedEnv(), []string{"GIT_NO_REPLACE_OBJECTS=1"}, extraEnv)
 	return cmd
 }
 

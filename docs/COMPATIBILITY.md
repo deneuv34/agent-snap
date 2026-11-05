@@ -198,6 +198,42 @@ Namespace: `refs/agent-snapshots/`. Callers never construct these paths; only
 and diff never move `HEAD`, write the real index, or write the working tree;
 get and diff also write no refs or objects.
 
+### Replace refs and `core.worktree`
+
+After 0.1.0, every Git command that Blink runs in a repository reads objects
+with replace objects disabled. A repository with `refs/replace/` entries sees
+four changes:
+
+- `snapshot.create` records the real `HEAD` and working tree. In 0.1.0, a
+  replace ref for `HEAD` could add, remove, or change paths in the recorded
+  tree.
+- `snapshot.create` reuses the latest snapshot only when its real tree
+  matches. In 0.1.0, a replace ref for the latest commit could make it reuse
+  a snapshot whose tree differed from the working tree.
+- `snapshot.restore_plan` reads the real `HEAD`, so its `current_tree` matches
+  what `create` now records. In 0.1.0, it could list an ignored file as a
+  `delete`.
+- `snapshot.list` reports each snapshot's own reason, origin, and creation
+  time. In 0.1.0, it reported those of a replacement commit.
+
+A snapshot that 0.1.0 made under such a replace ref keeps the tree it
+recorded. That tree can differ from the working tree of that moment. `get`,
+`diff`, and `restore_plan` read its commit and tree as stored, as they did in
+0.1.0. The first `create` after the upgrade compares the real trees, so it can
+record a new snapshot where 0.1.0 reused one. A repository without replace
+refs sees no change.
+
+Blink now takes the Git directory from `cwd` and passes it and the top level
+to every later Git command. When `core.worktree` names a directory inside
+another repository, 0.1.0 wrote snapshots into that other repository's refs
+and recorded its whole tree. Now Blink writes into the repository that `cwd`
+finds and records the directory that `core.worktree` names, as `git add -A`
+in that repository would. When `core.worktree` names a directory outside any
+repository, 0.1.0 failed with `resolve object format`, and now the create
+succeeds. Snapshots that 0.1.0 wrote into the other repository stay there.
+They use the namespace of that repository's own Git directory, so they appear
+in its own timeline.
+
 ## TypeScript client (`@agent-snap/core`)
 
 Public surface:

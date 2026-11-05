@@ -922,7 +922,26 @@ func TestPlanRestoreFailsOnASnapshotTreeNoRestoreCouldProduce(t *testing.T) {
 	}
 }
 
-func TestPlanRestoreFailsOnAMissingTargetBlobWithoutFetchingIt(t *testing.T) {
+func objectCount(t *testing.T, dir string) int {
+	t.Helper()
+	count := 0
+	objects := filepath.Join(git(t, dir, "rev-parse", "--absolute-git-dir"), "objects")
+	err := filepath.WalkDir(objects, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			count++
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+func TestPlanFailsOnAMissingBlobWithoutFetching(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the upload-pack wrapper is a POSIX shell script")
+	}
 	dir := testRepo(t)
 	writeFile(t, dir, "lost.txt", "only in the snapshot\n")
 	store := newStore(t, dir)
@@ -933,14 +952,22 @@ func TestPlanRestoreFailsOnAMissingTargetBlobWithoutFetchingIt(t *testing.T) {
 	}
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	git(t, dir, "clone", "--quiet", "--mirror", dir, remote)
+	fetches := filepath.Join(t.TempDir(), "fetches")
+	uploadPack := filepath.Join(t.TempDir(), "upload-pack")
+	script := fmt.Sprintf("#!/bin/sh\necho fetch >> %q\nexec git upload-pack \"$@\"\n", fetches)
+	if err := os.WriteFile(uploadPack, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	git(t, dir, "config", "core.repositoryformatversion", "1")
 	git(t, dir, "config", "extensions.partialClone", "origin")
 	git(t, dir, "remote", "add", "origin", remote)
 	git(t, dir, "config", "remote.origin.promisor", "true")
+	git(t, dir, "config", "remote.origin.uploadpack", uploadPack)
 	gitDir := git(t, dir, "rev-parse", "--absolute-git-dir")
 	if err := os.Remove(filepath.Join(gitDir, "objects", blob[:2], blob[2:])); err != nil {
 		t.Skipf("blob is not a loose object: %v", err)
 	}
+	objects := objectCount(t, dir)
 
 	for _, q := range []PlanQuery{{Scope: WholeTree()}, {Scope: scopeOf(t, "lost.txt")}} {
 		plan, err := store.PlanRestore(context.Background(), snap.ID, q)
@@ -948,29 +975,56 @@ func TestPlanRestoreFailsOnAMissingTargetBlobWithoutFetchingIt(t *testing.T) {
 			t.Fatalf("scope %v: got %v and %+v, want an error that names the missing blob", q.Scope.Paths(), err, plan)
 		}
 	}
+	if after := objectCount(t, dir); after != objects {
+		t.Fatalf("the failed plans changed the object store from %d to %d files", objects, after)
+	}
 	if plan := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: scopeOf(t, "tracked.txt")}); !plan.Applicable {
 		t.Fatalf("a scope that writes no missing blob must plan: %+v", plan)
 	}
 	if gitCommand(dir, append(sanitizedEnv(), "GIT_NO_LAZY_FETCH=1"), "cat-file", "-e", blob).Run() == nil {
 		t.Fatalf("the plan fetched the missing object %s", blob)
 	}
+	if _, err := os.Stat(fetches); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the remote served a fetch during the plans: %v", err)
+	}
+
+	git(t, dir, "cat-file", "-e", blob)
+	if _, err := os.Stat(fetches); err != nil {
+		t.Fatalf("a lazy fetch left no record, so the check above sees nothing: %v", err)
+	}
 }
 
-func TestPlanRestoreIgnoresReplaceRefs(t *testing.T) {
-	dir := testRepo(t)
-	writeFile(t, dir, "a.txt", "a\n")
-	store := newStore(t, dir)
-	snap := create(t, store, "snap")
-	writeFile(t, dir, "a.txt", "changed\n")
-	before := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
+func TestPlanIgnoresReplaceRefs(t *testing.T) {
+	for _, format := range objectFormats {
+		t.Run(format, func(t *testing.T) {
+			dir := testRepoIn(t, format)
+			writeFile(t, dir, ".gitignore", "ignored.txt\n")
+			git(t, dir, "add", ".gitignore")
+			git(t, dir, "commit", "-q", "-m", "ignore")
+			writeFile(t, dir, "ignored.txt", "never captured\n")
+			writeFile(t, dir, "a.txt", "a\n")
+			store := newStore(t, dir)
+			snap := create(t, store, "snap")
+			writeFile(t, dir, "a.txt", "changed\n")
+			before := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
 
-	tree := get(t, store, snap.ID).Tree
-	decoy := treeOf(t, dir, fileEntry(t, dir, modeFile, "decoy.txt", "decoy\n"))
-	git(t, dir, "replace", "-f", tree, decoy)
-	git(t, dir, "replace", "-f", blobOf(t, dir, "a\n"), blobOf(t, dir, "decoy\n"))
-	after := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
-	if !reflect.DeepEqual(after, before) || after.Snapshot.Tree != tree {
-		t.Fatalf("a replace ref changed the plan:\nbefore %+v\nafter  %+v", before, after)
+			head := git(t, dir, "rev-parse", "HEAD")
+			tracksIgnored := treeOf(t, dir,
+				fileEntry(t, dir, modeFile, ".gitignore", "ignored.txt\n"),
+				fileEntry(t, dir, modeFile, "ignored.txt", "never captured\n"),
+				fileEntry(t, dir, modeFile, "tracked.txt", "initial\n"),
+			)
+			git(t, dir, "replace", "-f", head, git(t, dir, "commit-tree", tracksIgnored, "-p", head+"^", "-m", "decoy head"))
+			tree := get(t, store, snap.ID).Tree
+			decoy := treeOf(t, dir, fileEntry(t, dir, modeFile, "decoy.txt", "decoy\n"))
+			git(t, dir, "replace", "-f", tree, decoy)
+			git(t, dir, "replace", "-f", blobOf(t, dir, "a\n"), blobOf(t, dir, "decoy\n"))
+
+			after := planAndCheck(t, dir, store, snap.ID, PlanQuery{Scope: WholeTree()})
+			if !reflect.DeepEqual(after, before) || after.Snapshot.Tree != tree {
+				t.Fatalf("a replace ref changed the plan:\nbefore %s %s\nafter  %s %s", before.CurrentTree, entriesJSON(before.Entries), after.CurrentTree, entriesJSON(after.Entries))
+			}
+		})
 	}
 }
 
