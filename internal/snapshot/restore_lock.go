@@ -70,19 +70,21 @@ func (s *Store) lockRestore() (*restoreLock, error) {
 		return nil, fmt.Errorf("take restore lock: %w", err)
 	}
 	lock := &restoreLock{file: f}
-	if err := lock.start(path); err != nil {
-		// No child holds the descriptor yet, so its close ends the lock even
-		// when LOCK_UN fails.
+	// No child holds the descriptor yet, so its close ends the lock even when
+	// LOCK_UN fails.
+	if err := lockedFileIsOnPath(f, path); err != nil {
+		// A refused file can have another name, so nothing writes to it.
+		_ = lock.unlock()
+		return nil, err
+	}
+	if err := lock.start(); err != nil {
 		_ = lock.release()
 		return nil, err
 	}
 	return lock, nil
 }
 
-func (l *restoreLock) start(path string) error {
-	if err := lockedFileIsOnPath(l.file, path); err != nil {
-		return err
-	}
+func (l *restoreLock) start() error {
 	if err := writeLockLine(l.file, lockCore, os.Getpid()); err != nil {
 		return err
 	}
@@ -113,14 +115,14 @@ func lockedFileIsOnPath(f *os.File, path string) error {
 	return nil
 }
 
+func (l *restoreLock) release() error {
+	return errors.Join(l.file.Truncate(0), l.unlock())
+}
+
 // A process that inherited the descriptor keeps a lock held past the close,
 // and LOCK_UN ends it for every holder.
-func (l *restoreLock) release() error {
-	return errors.Join(
-		l.file.Truncate(0),
-		flockFile(l.file, syscall.LOCK_UN),
-		l.file.Close(),
-	)
+func (l *restoreLock) unlock() error {
+	return errors.Join(flockFile(l.file, syscall.LOCK_UN), l.file.Close())
 }
 
 // CheckRestoreSupport runs the lock step's checks of the lock file and its

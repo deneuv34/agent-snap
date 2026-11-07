@@ -5,6 +5,7 @@ package snapshot
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -247,12 +248,45 @@ func TestRestoreLockRefusesWhileHeld(t *testing.T) {
 }
 
 func TestRestoreLockRefusesAReplacedFile(t *testing.T) {
-	store := newStore(t, testRepo(t))
-	path := lockPathOf(store)
-	const replacement = "replacement\n"
-	realFlock := flockFile
-	replaceFlockFile(t, func(f *os.File, how int) error {
-		if how != syscall.LOCK_UN {
+	const deadCore = "core 4242\n"
+	refuse := func(t *testing.T, change func(store *Store, path string)) (*Store, string) {
+		t.Helper()
+		store := newStore(t, testRepo(t))
+		path := lockPathOf(store)
+		if err := os.WriteFile(path, []byte(deadCore), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		locked, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer locked.Close()
+		realFlock := flockFile
+		replaceFlockFile(t, func(f *os.File, how int) error {
+			if how != syscall.LOCK_UN {
+				change(store, path)
+			}
+			return realFlock(f, how)
+		})
+
+		_, err = store.lockRestore()
+		if err == nil || errors.Is(err, ErrRestoreBusy) {
+			t.Fatalf("want an internal refusal, got %v", err)
+		}
+		got, err := io.ReadAll(locked)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != deadCore {
+			t.Fatalf("the locked file changed to %q", got)
+		}
+		flockFile = realFlock
+		return store, path
+	}
+
+	t.Run("a new file renamed onto the path", func(t *testing.T) {
+		const replacement = "replacement\n"
+		store, path := refuse(t, func(store *Store, path string) {
 			next := filepath.Join(store.gitDir, "replacement")
 			if err := os.WriteFile(next, []byte(replacement), 0o600); err != nil {
 				t.Fatal(err)
@@ -260,20 +294,26 @@ func TestRestoreLockRefusesAReplacedFile(t *testing.T) {
 			if err := os.Rename(next, path); err != nil {
 				t.Fatal(err)
 			}
+		})
+		if got := readLockFile(t, path); got != replacement {
+			t.Fatalf("the new file changed to %q", got)
 		}
-		return realFlock(f, how)
+		takeLock(t, store)
 	})
 
-	_, err := store.lockRestore()
-	if err == nil || errors.Is(err, ErrRestoreBusy) {
-		t.Fatalf("want an internal refusal, got %v", err)
-	}
-	if got := readLockFile(t, path); got != replacement {
-		t.Fatalf("the new file changed to %q", got)
-	}
-
-	flockFile = realFlock
-	takeLock(t, store)
+	t.Run("a second name linked to the file", func(t *testing.T) {
+		var second string
+		store, _ := refuse(t, func(store *Store, path string) {
+			second = filepath.Join(store.gitDir, "second-name")
+			if err := os.Link(path, second); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if err := os.Remove(second); err != nil {
+			t.Fatal(err)
+		}
+		takeLock(t, store)
+	})
 }
 
 func TestRestoreLockLineFormat(t *testing.T) {
