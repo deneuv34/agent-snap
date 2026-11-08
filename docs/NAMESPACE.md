@@ -42,6 +42,25 @@ A later move needs all of these first:
 - Compatibility tests that run the old and the new binary against the same repository and show that no snapshot disappears from either `list`.
 - A rule that no release deletes an old ref until Phase 6 retention owns deletion.
 
+## A reused worktree name keeps its namespace
+
+**Decided for Phase 5, landing step 8a.**
+
+`git worktree add` names a linked worktree's directory after the last part of
+its path, and removing the worktree frees that name. A new worktree under the
+name gets the same Git directory, so it derives the same namespace, and the
+removed worktree's refs are still there. FR-4 starts each linked worktree's
+timeline when Git added it, and a snapshot from before that moment is outside
+the timeline. The namespace, its derivation, and the ref layout stay as they
+are, so nothing migrates.
+
+| Alternative | Why it loses now |
+| --- | --- |
+| Salt the namespace with a per-worktree value | Every linked timeline moves unless new code reads both namespaces. A 0.1.0 binary keeps writing the old namespace, so the chains diverge as they do under dual-write. |
+| Write an ownership marker on create | No marker exists yet, so the first run cannot tell a live worktree from a reused one. It adds a ref outside the layout above, or a second Blink file in the Git directory. |
+| Refuse until a person drops the namespace | Automatic checkpoints stop in that worktree. |
+| Delete or move the old refs when the reuse is detected | No release deletes an old ref until Phase 6 retention owns deletion, and a person must confirm a drop. A move is a migration. Git has no hook for worktree removal. |
+
 ## The executable stays `agent-snap`, with no `blink` alias
 
 | Alternative | Why it loses now |

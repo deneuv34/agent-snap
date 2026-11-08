@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A linked worktree added under a removed worktree's name no longer inherits
+  that worktree's snapshots. `snapshot.list` leaves them out,
+  `snapshot.get`, `snapshot.diff`, and `snapshot.restore_plan` answer `-32001`
+  for them, and `snapshot.create` neither reuses them nor chains onto them.
+  Before, a restore plan could target the removed worktree's work. A worktree's
+  timeline starts at the modification time of its `commondir` file (FR-4). No
+  ref, namespace, or protocol field changes, and the old refs stay until a
+  person drops the namespace.
 - `snapshot.restore_plan` blocks a written path (a create, modify, or type
   change) as `name_collision` when the working tree folds case and a parent
   directory of the path exists on disk only under a spelling that differs by

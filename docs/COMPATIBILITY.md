@@ -243,6 +243,32 @@ succeeds. Snapshots that 0.1.0 wrote into the other repository stay there.
 They use the namespace of that repository's own Git directory, so they appear
 in its own timeline.
 
+### A reused worktree name
+
+Git names a linked worktree's directory inside the Git directory after the last
+part of the worktree's path, and removing the worktree frees that name. In
+0.1.0, a new worktree under a freed name derived the same namespace and
+inherited the removed worktree's snapshots. Now a linked worktree's timeline
+starts when Git added it (FR-4). In such a worktree:
+
+- `snapshot.list` leaves out the removed worktree's snapshots.
+- `snapshot.get`, `snapshot.diff`, and `snapshot.restore_plan` answer `-32001`
+  for them.
+- `snapshot.create` neither reuses them nor chains onto them. The worktree's
+  first snapshot has `HEAD` as its parent.
+
+No ref, namespace, method, field, or error code changes. The older refs stay
+until a person drops the namespace, and the retention report counts them. A
+0.1.0 binary still lists them, and snapshots from both binaries chain onto each
+other. A worktree that never reused a name sees no change.
+
+The start is the modification time of the `commondir` file in the worktree's
+Git directory. If that time moves forward, as when a backup is restored without
+its file times, or the clock steps back past the worktree's creation, Blink
+hides the worktree's snapshots until the time is set back. On a file system
+with one-second timestamps, a snapshot taken in the second that the name was
+reused stays visible.
+
 ## TypeScript client (`@agent-snap/core`)
 
 Public surface:

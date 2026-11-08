@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,7 @@ const (
 	latestSuffix      = "/latest"
 	messagePrefix     = "agent-snap: "
 	identityEmail     = "agent-snap@localhost"
+	idTimeLayout      = "20060102T150405.000000000Z"
 	addAttempts       = 5
 	changedFilesLimit = 1000
 	originLimit       = 64
@@ -161,6 +163,7 @@ type Store struct {
 	repo    string
 	gitDir  string
 	ns      string
+	born    time.Time
 	zeroOID string
 	now     func() time.Time
 	pins    []string
@@ -193,10 +196,26 @@ func New(path string) (*Store, error) {
 	gitDir := strings.TrimSuffix(strings.TrimSuffix(out, "\n"), "\r")
 	sum := sha256.Sum256([]byte(strings.TrimSpace(gitDir)))
 	ns := hex.EncodeToString(sum[:8])
+	born, err := worktreeBirth(gitDir)
+	if err != nil {
+		return nil, fmt.Errorf("read worktree birth: %w", err)
+	}
 
 	// Every Store pins core.fsmonitor=, so no fsmonitor program decides which
 	// files a read or a capture looks at.
-	return &Store{repo: repo, gitDir: gitDir, ns: ns, zeroOID: zeroOID, now: time.Now, pins: []string{"-c", "core.fsmonitor="}, run: output}, nil
+	return &Store{repo: repo, gitDir: gitDir, ns: ns, born: born, zeroOID: zeroOID, now: time.Now, pins: []string{"-c", "core.fsmonitor="}, run: output}, nil
+}
+
+// Git writes commondir only in git worktree add. Move and repair rewrite gitdir.
+func worktreeBirth(gitDir string) (time.Time, error) {
+	info, err := os.Lstat(filepath.Join(gitDir, "commondir"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return info.ModTime(), nil
 }
 
 func revParse(dir, option string) (string, error) {
@@ -212,6 +231,35 @@ func (s *Store) itemsRef() string {
 
 func (s *Store) latestRef() string {
 	return refsPrefix + s.ns + latestSuffix
+}
+
+func (s *Store) inTimeline(id string) bool {
+	if s.born.IsZero() {
+		return true
+	}
+	taken, err := idInstant(id)
+	return err == nil && !taken.Before(s.born)
+}
+
+func idInstant(id string) (time.Time, error) {
+	return time.Parse(idTimeLayout, id[:strings.IndexByte(id, '-')])
+}
+
+func (s *Store) inherited(ctx context.Context, commit string) (bool, error) {
+	if s.born.IsZero() {
+		return false, nil
+	}
+	records, err := s.items(ctx, "--points-at", commit, s.itemsRef())
+	if err != nil {
+		return false, err
+	}
+	for _, record := range records {
+		id := strings.TrimPrefix(record.ref, s.itemsRef())
+		if ValidID(id) && !s.inTimeline(id) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snapshot, error) {
@@ -318,7 +366,15 @@ func (s *Store) recordTree(ctx context.Context, env []string, tree, head, reason
 		}
 
 		latest, latestErr := s.git(ctx, env, "rev-parse", "--verify", s.latestRef())
-		if latestErr == nil {
+		own := latestErr == nil
+		if own {
+			inherited, err := s.inherited(ctx, latest)
+			if err != nil {
+				return Snapshot{}, err
+			}
+			own = !inherited
+		}
+		if own {
 			latestTree, err := s.git(ctx, env, "rev-parse", latest+"^{tree}")
 			if err != nil {
 				return Snapshot{}, err
@@ -336,7 +392,7 @@ func (s *Store) recordTree(ctx context.Context, env []string, tree, head, reason
 		}
 
 		parent := head
-		if latestErr == nil {
+		if own {
 			parent = latest
 		}
 
@@ -351,7 +407,7 @@ func (s *Store) recordTree(ctx context.Context, env []string, tree, head, reason
 		}
 
 		now := s.now().UTC()
-		id := now.Format("20060102T150405.000000000Z") + "-" + commit[:12]
+		id := now.Format(idTimeLayout) + "-" + commit[:12]
 		latestHash := ""
 		if latestErr == nil {
 			latestHash = latest
@@ -568,10 +624,7 @@ func (s *Store) List(ctx context.Context, limit int) ([]Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	if out == "" {
-		return []Snapshot{}, nil
-	}
-	var items []Snapshot
+	items := []Snapshot{}
 	for _, record := range strings.Split(out, "\x00\n") {
 		if record == "" {
 			continue
@@ -580,7 +633,7 @@ func (s *Store) List(ctx context.Context, limit int) ([]Snapshot, error) {
 		if len(fields) > 0 && fields[len(fields)-1] == "" {
 			fields = fields[:len(fields)-1]
 		}
-		if len(fields) != 4 || !ValidID(fields[0]) {
+		if len(fields) != 4 || !ValidID(fields[0]) || !s.inTimeline(fields[0]) {
 			continue
 		}
 		created, _ := time.Parse(time.RFC3339, fields[3])
@@ -630,6 +683,9 @@ func (s *Store) lookup(ctx context.Context, id string) (item, error) {
 	if !ValidID(id) {
 		return item{}, fmt.Errorf("%w: %q", ErrInvalidID, id)
 	}
+	if !s.inTimeline(id) {
+		return item{}, fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
 	ref := s.itemsRef() + id
 	records, err := s.items(ctx, ref)
 	if err != nil {
@@ -655,7 +711,7 @@ func (s *Store) snapshotAt(ctx context.Context, commit string) (Snapshot, error)
 	}
 	for _, record := range records {
 		id := strings.TrimPrefix(record.ref, s.itemsRef())
-		if ValidID(id) && checkItem(record, id) == nil {
+		if ValidID(id) && s.inTimeline(id) && checkItem(record, id) == nil {
 			created, _ := time.Parse(time.RFC3339, record.created)
 			reason, origin := parseMessage(record.message)
 			return Snapshot{ID: id, Commit: record.commit, Reason: reason, CreatedAt: created, Origin: origin}, nil
