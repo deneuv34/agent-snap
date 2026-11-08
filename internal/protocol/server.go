@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/deneuv34/agent-snap/internal/snapshot"
@@ -80,19 +82,39 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		if line == "" {
 			continue
 		}
-		var req Request
-		if err := json.Unmarshal([]byte(line), &req); err != nil {
-			if err := writeResponse(enc, json.RawMessage("null"), nil, &Error{Code: CodeParseError, Message: "parse error: " + err.Error()}); err != nil {
-				return fmt.Errorf("write response: %w", err)
-			}
-			continue
+		req, rerr := decodeRequest([]byte(line))
+		var result any
+		if rerr == nil {
+			result, rerr = dispatch(ctx, &req)
 		}
-		result, rerr := dispatch(ctx, &req)
 		if err := writeResponse(enc, req.ID, result, rerr); err != nil {
 			return fmt.Errorf("write response: %w", err)
 		}
 	}
 	return nil
+}
+
+// decodeRequest checks the keys before it fills Request, because struct
+// decoding folds case and would read "METHOD" as method and "ID" as id.
+func decodeRequest(line []byte) (Request, *Error) {
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(line, &keys); err != nil {
+		return Request{ID: json.RawMessage("null")}, parseError(err)
+	}
+	for _, key := range slices.Sorted(maps.Keys(keys)) {
+		if key != "id" && key != "method" && key != "params" {
+			return Request{ID: keys["id"]}, &Error{Code: CodeInvalidParams, Message: "unknown request key: " + key}
+		}
+	}
+	var req Request
+	if err := json.Unmarshal(line, &req); err != nil {
+		return Request{ID: json.RawMessage("null")}, parseError(err)
+	}
+	return req, nil
+}
+
+func parseError(err error) *Error {
+	return &Error{Code: CodeParseError, Message: "parse error: " + err.Error()}
 }
 
 func dispatch(ctx context.Context, req *Request) (any, *Error) {
