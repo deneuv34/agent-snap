@@ -46,9 +46,18 @@ Request:
 {"id":1,"method":"snapshot.create","params":{"cwd":"/path/to/repo","reason":"why"}}
 ```
 
-Unknown keys on the request or in `params` are rejected. `cwd` is required and
-must be a non-empty string for `snapshot.create`, `snapshot.list`,
-`snapshot.get`, `snapshot.diff`, and `snapshot.restore_plan`.
+The server rejects unknown keys on the request or in `params` with `-32602`. A
+request holds only `id`, `method`, and `params`, spelled exactly. Any other key
+gets `unknown request key: <key>` with the request's `id`, and the method does
+not run. A key in `params` that the method does not take gets
+`unknown param: <key>`.
+
+A 0.1.0 binary ignores an unknown request key and reads `METHOD` as `method`.
+`SnapClient` has only ever sent those three keys, so it behaves the same against
+either binary.
+
+`cwd` is required and must be a non-empty string for `snapshot.create`,
+`snapshot.list`, `snapshot.get`, `snapshot.diff`, and `snapshot.restore_plan`.
 
 | Method | Params | Result |
 | --- | --- | --- |

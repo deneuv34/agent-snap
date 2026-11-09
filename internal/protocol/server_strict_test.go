@@ -57,6 +57,96 @@ func TestServerRejectsUnknownParams(t *testing.T) {
 	}
 }
 
+func TestServerRejectsUnknownRequestKeys(t *testing.T) {
+	cases := []struct {
+		name   string
+		line   string
+		key    string
+		wantID any
+	}{
+		{name: "beside ping", line: `{"id":9,"method":"ping","bogus":1}`, key: "bogus", wantID: float64(9)},
+		{name: "before the id", line: `{"bogus":1,"id":9,"method":"ping"}`, key: "bogus", wantID: float64(9)},
+		{name: "null value", line: `{"id":9,"method":"ping","bogus":null}`, key: "bogus", wantID: float64(9)},
+		{name: "empty name", line: `{"id":9,"method":"ping","":1}`, key: "", wantID: float64(9)},
+		{name: "string id", line: `{"id":"req-9","method":"ping","bogus":1}`, key: "bogus", wantID: "req-9"},
+		{name: "beside params", line: `{"id":9,"method":"snapshot.list","params":{"cwd":"/tmp"},"bogus":1}`, key: "bogus", wantID: float64(9)},
+		{name: "JSON-RPC version", line: `{"jsonrpc":"2.0","id":9,"method":"ping"}`, key: "jsonrpc", wantID: float64(9)},
+		{name: "before the method lookup", line: `{"id":9,"method":"snapshot.nope","bogus":1}`, key: "bogus", wantID: float64(9)},
+		{name: "mistyped method", line: `{"id":9,"method":5,"bogus":1}`, key: "bogus", wantID: float64(9)},
+		{name: "origin name is not the retry message", line: `{"id":9,"method":"snapshot.create","params":{"cwd":"/tmp"},"source":"tool"}`, key: "source", wantID: float64(9)},
+		{name: "first of two in byte order", line: `{"id":9,"method":"ping","zeta":1,"alpha":2}`, key: "alpha", wantID: float64(9)},
+		{name: "method in another case", line: `{"id":9,"METHOD":"ping"}`, key: "METHOD", wantID: float64(9)},
+		{name: "params in another case", line: `{"id":9,"method":"ping","Params":{}}`, key: "Params", wantID: float64(9)},
+		{name: "id only in another case", line: `{"ID":9,"method":"ping"}`, key: "ID", wantID: nil},
+		{name: "exact id beside another case", line: `{"id":9,"ID":4,"method":"ping"}`, key: "ID", wantID: float64(9)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			response := serveRequest(t, tc.line)
+			if got := errCode(t, response); got != CodeInvalidParams {
+				t.Fatalf("want %d, got %v: %v", CodeInvalidParams, got, response)
+			}
+			if got, want := errMessage(t, response), "unknown request key: "+tc.key; got != want {
+				t.Fatalf("message = %q, want %q", got, want)
+			}
+			if response["id"] != tc.wantID {
+				t.Fatalf("id = %v, want %v: %v", response["id"], tc.wantID, response)
+			}
+		})
+	}
+}
+
+func TestServerAcceptsTheThreeRequestKeys(t *testing.T) {
+	for _, line := range []string{
+		`{"id":9,"method":"ping"}`,
+		`{"id":9,"method":"ping","params":{}}`,
+		`{"id":9,"method":"ping","params":null}`,
+	} {
+		response := serveRequest(t, line)
+		if _, hasErr := response["error"]; hasErr {
+			t.Fatalf("%s must be accepted: %v", line, response)
+		}
+		if response["id"] != float64(9) {
+			t.Fatalf("%s: id = %v, want 9", line, response["id"])
+		}
+	}
+}
+
+func TestServerRunsNothingForAnUnknownRequestKey(t *testing.T) {
+	dir := protocolRepo(t)
+	rejected, err := json.Marshal(map[string]any{"id": 1, "method": "snapshot.create", "params": map[string]any{"cwd": dir}, "bogus": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := string(rejected) + "\n" + requestLine(2, "snapshot.list", map[string]any{"cwd": dir}) + "\n"
+	var output bytes.Buffer
+	if err := Serve(context.Background(), strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 responses, got %d: %s", len(lines), output.String())
+	}
+	var refused map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &refused); err != nil {
+		t.Fatal(err)
+	}
+	if got := errCode(t, refused); got != CodeInvalidParams {
+		t.Fatalf("want %d, got %v: %v", CodeInvalidParams, got, refused)
+	}
+	var listed struct {
+		Result struct {
+			Snapshots []json.RawMessage `json:"snapshots"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Result.Snapshots) != 0 {
+		t.Fatalf("the refused create recorded a snapshot: %s", lines[1])
+	}
+}
+
 func TestServerRejectsBadLimit(t *testing.T) {
 	response := serveRequest(t, requestLine(1, "snapshot.list", map[string]any{"cwd": "/tmp", "limit": "many"}))
 	if got := errCode(t, response); got != CodeInvalidParams {

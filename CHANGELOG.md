@@ -248,6 +248,13 @@
   takes the Git directory from `cwd`, so a `core.worktree` inside another
   repository no longer sends snapshots there. `docs/COMPATIBILITY.md` says what
   this means for existing snapshots.
+- `serve` now rejects a request that holds a key other than `id`, `method`, and
+  `params`, with `-32602` and `unknown request key: <key>`, and the method does
+  not run. Before, it ignored such a key and read `METHOD`, `ID`, or `Params` as
+  the lowercase key, although `docs/COMPATIBILITY.md` said unknown request keys
+  are rejected. `SnapClient` has only ever sent those three keys, so hosts see
+  no change. A hand-written client that sends another key, such as `jsonrpc`,
+  now gets this error and must drop the key.
 
 ## 0.1.0
 

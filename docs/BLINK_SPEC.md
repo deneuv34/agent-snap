@@ -207,6 +207,7 @@ The executable is `agent-snap`. Blink is the product name in documentation and p
 - Unknown methods return code `-32601`.
 - Malformed JSON returns `-32700`; invalid parameters return `-32602`; internal operation failures return `-32603`; a well-formed snapshot identifier with no snapshot in the worktree namespace returns `-32001`, for `snapshot.get`, for either side of `snapshot.diff`, and for the `id` of `snapshot.restore_plan`.
 - A `snapshot.restore_plan` request whose `current_tree` the working tree no longer captures to returns `-32002` (FR-15).
+- A request holds only the keys `id`, `method`, and `params`, compared exactly, so `METHOD` is an unknown key. Any other key MUST return `-32602` with the message `unknown request key: <key>`. The response carries the request's `id` when the request has that key. When several keys are unknown, the message names the first in byte order. The server checks the keys before it looks up the method. The method does not run, and an unknown key beside an unknown method returns `-32602`.
 - Parameter validation MUST reject unknown keys, missing `cwd`, blank `cwd`, malformed types, invalid list limits, malformed snapshot identifiers, invalid origin values, reasons that end with an origin paragraph (FR-13), a diff `offset` or `max_patch_bytes` outside its range (FR-14), and restore plan `paths`, `offset`, and `current_tree` values that break FR-15. The server rejects every invalid `paths` value, and never reads one as a plan of the whole tree.
 
 ### FR-10: TypeScript client
