@@ -38,6 +38,7 @@ function clientWith(parts: Partial<SnapLike>): SnapLike {
     get: unexpected("get"),
     diff: unexpected("diff"),
     restorePlan: unexpected("restorePlan"),
+    retentionReport: unexpected("retentionReport"),
     async close() {},
     ...parts,
   }

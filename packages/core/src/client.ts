@@ -29,6 +29,10 @@ import type {
   SnapRestoreRepoBlocker,
   SnapRestoreSide,
   SnapRestoreTotals,
+  SnapRetentionLatest,
+  SnapRetentionNamespace,
+  SnapRetentionReport,
+  SnapRetentionStamp,
   SnapSnapshot,
   SnapSnapshotDetail,
 } from "./types.js"
@@ -48,6 +52,13 @@ export class SnapRestorePlanUnsupportedError extends SnapRpcError {
   constructor() {
     super(-32601, "the installed agent-snap cannot plan restores; upgrade agent-snap")
     this.name = "SnapRestorePlanUnsupportedError"
+  }
+}
+
+export class SnapRetentionReportUnsupportedError extends SnapRpcError {
+  constructor() {
+    super(-32601, "the installed agent-snap cannot report retention; upgrade agent-snap")
+    this.name = "SnapRetentionReportUnsupportedError"
   }
 }
 
@@ -585,6 +596,10 @@ function requireIncreasingPaths(entries: SnapRestoreEntry[]): void {
   }
 }
 
+function followsPagingRule(nextOffset: unknown, end: number, total: number): boolean {
+  return end < total ? nextOffset === end : nextOffset === undefined
+}
+
 function validateRestorePlan(result: unknown): SnapRestorePlan {
   if (!isRecord(result)) throw restorePlanError("must be an object")
   const { snapshot, paths, current_tree, result_tree, applicable, blockers, unmatched, offset, next_offset, totals, entries } = result
@@ -616,8 +631,7 @@ function validateRestorePlan(result: unknown): SnapRestorePlan {
   if (entries.length > 0 && offset + entries.length > checkedTotals.entries) {
     throw restorePlanError("page extends past totals.entries")
   }
-  const end = offset + entries.length
-  if (end < checkedTotals.entries ? next_offset !== end : next_offset !== undefined) {
+  if (!followsPagingRule(next_offset, offset + entries.length, checkedTotals.entries)) {
     throw restorePlanError("next_offset must be offset plus the page length exactly when entries remain")
   }
   const expectApplicable = repoBlockers.length === 0 && unmatched.length === 0 && checkedTotals.blocked === 0
@@ -635,6 +649,69 @@ function validateRestorePlan(result: unknown): SnapRestorePlan {
     next_offset,
     totals: checkedTotals,
     entries: checkedEntries,
+  }
+}
+
+const MAX_RETENTION_NAMESPACES = 100
+const RETENTION_LATEST_STATES: readonly string[] = ["commit", "not_commit", "missing_object", "symbolic", "broken", "missing"]
+const NAMESPACE_NAME = /^[0-9a-f]{16}$/
+const REFS_DIGEST = /^[0-9a-f]{64}$/
+
+function retentionReportError(message: string): SnapProtocolError {
+  return new SnapProtocolError(`snapshot.retention_report result ${message}`)
+}
+
+function validateRetentionStamp(stamp: unknown, name: "oldest" | "newest"): SnapRetentionStamp {
+  if (!isRecord(stamp) || typeof stamp.created_at !== "string") throw retentionReportError(`has a malformed ${name}`)
+  if (!isSnapshotId(stamp.id)) throw retentionReportError(`has a malformed ${name}.id`)
+  return { id: stamp.id, created_at: stamp.created_at }
+}
+
+function validateRetentionNamespace(entry: unknown): SnapRetentionNamespace {
+  if (!isRecord(entry)) throw retentionReportError("has a malformed namespace entry")
+  const { namespace, current, worktree, refs, snapshots, broken, oldest, newest, latest, digest } = entry
+  if (typeof namespace !== "string" || !NAMESPACE_NAME.test(namespace)) throw retentionReportError("has a malformed namespace")
+  if (typeof current !== "boolean") throw retentionReportError("has a malformed current flag")
+  if (worktree !== undefined && typeof worktree !== "string") throw retentionReportError("has a malformed worktree")
+  if (!isCount(refs) || !isCount(snapshots) || !isCount(broken)) throw retentionReportError("has malformed ref counts")
+  if (refs < 1) throw retentionReportError("has a namespace with no refs")
+  if (snapshots + broken > refs) throw retentionReportError("has snapshots plus broken above refs")
+  if (typeof latest !== "string" || !RETENTION_LATEST_STATES.includes(latest)) throw retentionReportError("has a malformed latest")
+  if (latest === "broken" && broken < 1) throw retentionReportError("has a broken latest with no broken ref")
+  if (typeof digest !== "string" || !REFS_DIGEST.test(digest)) throw retentionReportError("has a malformed digest")
+  if ((oldest !== undefined) !== snapshots > 0 || (newest !== undefined) !== snapshots > 0) {
+    throw retentionReportError("must carry oldest and newest exactly when snapshots is above 0")
+  }
+  const first = oldest === undefined ? undefined : validateRetentionStamp(oldest, "oldest")
+  const last = newest === undefined ? undefined : validateRetentionStamp(newest, "newest")
+  if (first !== undefined && last !== undefined && first.id > last.id) throw retentionReportError("has oldest after newest")
+  return { namespace, current, worktree, refs, snapshots, broken, oldest: first, newest: last, latest: latest as SnapRetentionLatest, digest }
+}
+
+function validateRetentionReport(result: unknown): SnapRetentionReport {
+  if (!isRecord(result)) throw retentionReportError("must be an object")
+  const { offset, next_offset, totals, namespaces } = result
+  if (!isCount(offset) || (next_offset !== undefined && !isCount(next_offset))) throw retentionReportError("has a malformed offset")
+  if (!isRecord(totals) || !isCount(totals.namespaces) || !isCount(totals.refs) || !isCount(totals.other)) {
+    throw retentionReportError("has malformed totals")
+  }
+  if (!Array.isArray(namespaces) || namespaces.length > MAX_RETENTION_NAMESPACES) throw retentionReportError("has malformed namespaces")
+  const checked = namespaces.map((entry) => validateRetentionNamespace(entry))
+  if (checked.some((entry, i) => i > 0 && (checked[i - 1] as SnapRetentionNamespace).namespace >= entry.namespace)) {
+    throw retentionReportError("namespaces must be strictly increasing")
+  }
+  if (checked.filter((entry) => entry.current).length > 1) throw retentionReportError("has two current namespaces")
+  const end = offset + checked.length
+  if (checked.length > 0 && end > totals.namespaces) throw retentionReportError("page extends past totals.namespaces")
+  if (!followsPagingRule(next_offset, end, totals.namespaces)) {
+    throw retentionReportError("next_offset must be offset plus the page length exactly when namespaces remain")
+  }
+  if (checked.reduce((sum, entry) => sum + entry.refs, 0) > totals.refs) throw retentionReportError("has a page whose refs exceed totals.refs")
+  return {
+    offset,
+    next_offset,
+    totals: { namespaces: totals.namespaces, refs: totals.refs, other: totals.other },
+    namespaces: checked,
   }
 }
 
@@ -661,6 +738,8 @@ function validateResult(method: string, result: unknown): unknown {
       return validateDiff(result)
     case "snapshot.restore_plan":
       return validateRestorePlan(result)
+    case "snapshot.retention_report":
+      return validateRetentionReport(result)
     default:
       throw new SnapProtocolError(`response for "${method}" has a result this client cannot validate`)
   }
@@ -806,6 +885,17 @@ export class SnapClient {
       return await this.request<SnapRestorePlan>("snapshot.restore_plan", params, { signal })
     } catch (error) {
       if (error instanceof SnapRpcError && error.code === -32601) throw new SnapRestorePlanUnsupportedError()
+      throw error
+    }
+  }
+
+  async retentionReport(cwd: string, offset?: number, signal?: AbortSignal): Promise<SnapRetentionReport> {
+    const params: Record<string, unknown> = { cwd }
+    if (offset !== undefined) params.offset = offset
+    try {
+      return await this.request<SnapRetentionReport>("snapshot.retention_report", params, { signal })
+    } catch (error) {
+      if (error instanceof SnapRpcError && error.code === -32601) throw new SnapRetentionReportUnsupportedError()
       throw error
     }
   }

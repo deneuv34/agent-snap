@@ -48,6 +48,9 @@ function fakeClient() {
       }
       return empty
     },
+    async retentionReport() {
+      throw new Error("unexpected retentionReport")
+    },
     async restorePlan(cwd, id, options, signal) {
       restorePlans.push({ cwd, id, options, signal })
       const empty: SnapRestorePlan = {

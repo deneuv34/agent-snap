@@ -453,6 +453,9 @@ function loadDiff(result: SnapDiff) {
     async restorePlan() {
       throw new Error("unexpected restorePlan")
     },
+    async retentionReport() {
+      throw new Error("unexpected retentionReport")
+    },
     async close() {},
   }
   const tools = new Map<string, unknown>()
@@ -708,6 +711,9 @@ function loadRestorePlan(result: SnapRestorePlan, failure?: Error) {
       plans.push({ cwd, id, options, signal })
       if (failure !== undefined) throw failure
       return result
+    },
+    async retentionReport() {
+      throw new Error("unexpected retentionReport")
     },
     async close() {},
   }

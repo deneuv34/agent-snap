@@ -138,6 +138,39 @@ export interface SnapRestorePlanOptions {
   currentTree?: string
 }
 
+export type SnapRetentionLatest = "commit" | "not_commit" | "missing_object" | "symbolic" | "broken" | "missing"
+
+export interface SnapRetentionStamp {
+  id: string
+  created_at: string
+}
+
+export interface SnapRetentionNamespace {
+  namespace: string
+  current: boolean
+  worktree?: string
+  refs: number
+  snapshots: number
+  broken: number
+  oldest?: SnapRetentionStamp
+  newest?: SnapRetentionStamp
+  latest: SnapRetentionLatest
+  digest: string
+}
+
+export interface SnapRetentionTotals {
+  namespaces: number
+  refs: number
+  other: number
+}
+
+export interface SnapRetentionReport {
+  offset: number
+  next_offset?: number
+  totals: SnapRetentionTotals
+  namespaces: SnapRetentionNamespace[]
+}
+
 export interface SnapListResult {
   snapshots: SnapSnapshot[]
 }
@@ -153,5 +186,6 @@ export interface SnapLike {
   get(cwd: string, id: string, signal?: AbortSignal): Promise<SnapSnapshotDetail>
   diff(cwd: string, from: string, to: string, page?: SnapDiffPage, signal?: AbortSignal): Promise<SnapDiff>
   restorePlan(cwd: string, id: string, options?: SnapRestorePlanOptions, signal?: AbortSignal): Promise<SnapRestorePlan>
+  retentionReport(cwd: string, offset?: number, signal?: AbortSignal): Promise<SnapRetentionReport>
   close(): Promise<void>
 }
