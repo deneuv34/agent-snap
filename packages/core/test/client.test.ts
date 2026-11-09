@@ -1,10 +1,10 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { SnapClient, SnapProtocolError, SnapRestorePlanUnsupportedError, SnapRpcError } from "../src/index.js"
+import { SnapClient, SnapProtocolError, SnapRestorePlanUnsupportedError, SnapRetentionReportUnsupportedError, SnapRpcError } from "../src/index.js"
 import { GROUP_WAIT_MS, WINDOWS_TREE_WAIT_MS, groupEmptyDecision, windowsTreeCompletionDecision } from "../src/teardown.js"
 
 const fixture = fileURLToPath(new URL("./fixtures/fake-agent-snap.mjs", import.meta.url))
@@ -1206,4 +1206,343 @@ test("every result field that carries a snapshot id accepts a well-formed id", a
   } finally {
     await c.close()
   }
+})
+
+const retentionNamespace = "690ea131b35b63a0"
+const retentionOldest = { id: "20260301T090000.000000000Z-0a1b2c3d4e5f", created_at: "2026-03-01T09:00:00Z" }
+const retentionNewest = { id: "20261103T170000.000000000Z-5d6e7f8a9b0c", created_at: "2026-11-03T17:00:00Z" }
+
+function retentionEntry(overrides: Record<string, unknown> = {}) {
+  return {
+    namespace: retentionNamespace,
+    current: true,
+    worktree: "/home/dev/app",
+    refs: 3,
+    snapshots: 2,
+    broken: 0,
+    oldest: retentionOldest,
+    newest: retentionNewest,
+    latest: "commit",
+    digest: "d".repeat(64),
+    ...overrides,
+  }
+}
+
+function retentionNoSnapshots(overrides: Record<string, unknown> = {}) {
+  return retentionEntry({ refs: 1, snapshots: 0, oldest: undefined, newest: undefined, ...overrides })
+}
+
+function retentionPage(overrides: Record<string, unknown> = {}) {
+  return { offset: 0, totals: { namespaces: 1, refs: 3, other: 0 }, namespaces: [retentionEntry()], ...overrides }
+}
+
+function namespaceAt(i: number) {
+  return i.toString(16).padStart(16, "0")
+}
+
+function reportClient(report: unknown, extraEnv: Record<string, string> = {}) {
+  const file = join(mkdtempSync(join(tmpdir(), "agent-snap-report-")), "report.json")
+  writeFileSync(file, JSON.stringify(report))
+  return client({ FAKE_AGENT_SNAP_REPORT: file, ...extraEnv })
+}
+
+async function assertReportRejected(report: unknown, message: string) {
+  const c = reportClient(report)
+  try {
+    await assert.rejects(
+      () => c.retentionReport("/repo"),
+      (err: unknown) => err instanceof SnapProtocolError && err.message === `snapshot.retention_report result ${message}`,
+      `expected "${message}"`,
+    )
+  } finally {
+    await c.close()
+  }
+}
+
+test("retentionReport sends exactly cwd when no offset is given, and offset when given", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-report-")), "log.jsonl")
+  const c = reportClient(retentionPage(), { FAKE_AGENT_SNAP_LOG: log })
+  try {
+    await c.retentionReport("/some/repo")
+    await c.retentionReport("/some/repo", undefined)
+    await c.retentionReport("/some/repo", 0)
+    await c.retentionReport("/some/repo", 200)
+  } finally {
+    await c.close()
+  }
+  assert.deepEqual(requestsOf(log), [
+    { method: "snapshot.retention_report", params: { cwd: "/some/repo" } },
+    { method: "snapshot.retention_report", params: { cwd: "/some/repo" } },
+    { method: "snapshot.retention_report", params: { cwd: "/some/repo", offset: 0 } },
+    { method: "snapshot.retention_report", params: { cwd: "/some/repo", offset: 200 } },
+  ])
+})
+
+test("retentionReport returns the validated report without unknown keys", async () => {
+  const c = reportClient({
+    ...retentionPage({ namespaces: [{ ...retentionEntry(), extra: 1, oldest: { ...retentionOldest, extra: 1 } }] }),
+    totals: { namespaces: 1, refs: 3, other: 2, extra: 1 },
+    extra: 1,
+  })
+  try {
+    const report = await c.retentionReport("/repo")
+    assert.deepEqual(JSON.parse(JSON.stringify(report)), {
+      offset: 0,
+      totals: { namespaces: 1, refs: 3, other: 2 },
+      namespaces: [retentionEntry()],
+    })
+  } finally {
+    await c.close()
+  }
+})
+
+test("valid retention reports in every state round-trip", async () => {
+  const hundred = Array.from({ length: 100 }, (_, i) => retentionEntry({ namespace: namespaceAt(i), current: i === 0 }))
+  const reports: Record<string, Record<string, unknown>> = {
+    "an empty repository": { totals: { namespaces: 0, refs: 0, other: 0 }, namespaces: [] },
+    "other refs and no namespace": { totals: { namespaces: 0, refs: 0, other: 4 }, namespaces: [] },
+    "an offset past the end": { offset: 7, totals: { namespaces: 1, refs: 3, other: 0 }, namespaces: [] },
+    "a full page with more to read": { totals: { namespaces: 101, refs: 303, other: 0 }, namespaces: hundred, next_offset: 100 },
+    "the last page": { offset: 100, totals: { namespaces: 101, refs: 303, other: 0 }, namespaces: [retentionEntry()] },
+    "no current namespace": { namespaces: [retentionEntry({ current: false })] },
+    "no worktree path": { namespaces: [retentionEntry({ worktree: undefined })] },
+    "one snapshot": { namespaces: [retentionEntry({ oldest: retentionNewest })] },
+    "not_commit": { namespaces: [retentionEntry({ latest: "not_commit" })] },
+    "missing_object": { namespaces: [retentionEntry({ latest: "missing_object" })] },
+    "symbolic": { namespaces: [retentionEntry({ latest: "symbolic" })] },
+    "missing": { namespaces: [retentionEntry({ latest: "missing" })] },
+    "a broken latest": { namespaces: [retentionEntry({ latest: "broken", refs: 3, snapshots: 2, broken: 1 })] },
+    "a lone broken item": { namespaces: [retentionNoSnapshots({ broken: 1, latest: "missing" })] },
+    "a dangling symbolic latest": { namespaces: [retentionNoSnapshots({ latest: "symbolic" })] },
+  }
+  await Promise.all(
+    Object.entries(reports).map(async ([name, overrides]) => {
+      const report = retentionPage(overrides)
+      const c = reportClient(report)
+      try {
+        const result = await c.retentionReport("/repo")
+        assert.deepEqual(JSON.parse(JSON.stringify(result)), JSON.parse(JSON.stringify(report)), name)
+      } finally {
+        await c.close()
+      }
+    }),
+  )
+})
+
+test("malformed retention field types surface SnapProtocolError", async () => {
+  const cases: Array<[unknown, string]> = [
+    ["just a string", "must be an object"],
+    [retentionPage({ offset: -1 }), "has a malformed offset"],
+    [retentionPage({ offset: "0" }), "has a malformed offset"],
+    [retentionPage({ next_offset: 1.5 }), "has a malformed offset"],
+    [retentionPage({ next_offset: null }), "has a malformed offset"],
+    [retentionPage({ totals: undefined }), "has malformed totals"],
+    [retentionPage({ totals: { namespaces: 1, refs: 3 } }), "has malformed totals"],
+    [retentionPage({ namespaces: "none" }), "has malformed namespaces"],
+    [retentionPage({ namespaces: ["x"] }), "has a malformed namespace entry"],
+    [retentionPage({ namespaces: [retentionEntry({ current: "yes" })] }), "has a malformed current flag"],
+    [retentionPage({ namespaces: [retentionEntry({ worktree: 7 })] }), "has a malformed worktree"],
+    [retentionPage({ namespaces: [retentionEntry({ refs: "3" })] }), "has malformed ref counts"],
+    [retentionPage({ namespaces: [retentionEntry({ snapshots: -1 })] }), "has malformed ref counts"],
+    [retentionPage({ namespaces: [retentionEntry({ broken: 0.5 })] }), "has malformed ref counts"],
+    [retentionPage({ namespaces: [retentionEntry({ latest: "gone" })] }), "has a malformed latest"],
+    [retentionPage({ namespaces: [retentionEntry({ latest: 1 })] }), "has a malformed latest"],
+    [retentionPage({ namespaces: [retentionEntry({ oldest: "x" })] }), "has a malformed oldest"],
+    [retentionPage({ namespaces: [retentionEntry({ newest: { id: retentionNewest.id } })] }), "has a malformed newest"],
+  ]
+  await Promise.all(cases.map(([report, message]) => assertReportRejected(report, message)))
+})
+
+test("rejects more than 100 namespaces", async () => {
+  const namespaces = Array.from({ length: 101 }, (_, i) => retentionEntry({ namespace: namespaceAt(i), current: false }))
+  await assertReportRejected(retentionPage({ totals: { namespaces: 101, refs: 303, other: 0 }, namespaces }), "has malformed namespaces")
+})
+
+test("rejects a page that ends past totals.namespaces", async () => {
+  await assertReportRejected(retentionPage({ offset: 1 }), "page extends past totals.namespaces")
+})
+
+test("rejects a next_offset that breaks the paging rule", async () => {
+  const message = "next_offset must be offset plus the page length exactly when namespaces remain"
+  const three = { namespaces: 3, refs: 9, other: 0 }
+  await Promise.all([
+    assertReportRejected(retentionPage({ totals: three, next_offset: 2 }), message),
+    assertReportRejected(retentionPage({ totals: three }), message),
+    assertReportRejected(retentionPage({ next_offset: 1 }), message),
+    assertReportRejected(retentionPage({ offset: 5, totals: three, namespaces: [], next_offset: 5 }), message),
+  ])
+})
+
+test("rejects a namespace that is not 16 lowercase hex digits", async () => {
+  await Promise.all(
+    ["ABCDEF0123456789", "0123456789abcde", "0123456789abcdef0", "0123456789abcdeg", "0123456789abcdef\n"].map((namespace) =>
+      assertReportRejected(retentionPage({ namespaces: [retentionEntry({ namespace })] }), "has a malformed namespace"),
+    ),
+  )
+})
+
+test("rejects namespaces out of order", async () => {
+  const totals = { namespaces: 2, refs: 6, other: 0 }
+  const message = "namespaces must be strictly increasing"
+  const entries = (first: number, second: number) => [
+    retentionEntry({ namespace: namespaceAt(first), current: false }),
+    retentionEntry({ namespace: namespaceAt(second), current: false }),
+  ]
+  await Promise.all([
+    assertReportRejected(retentionPage({ totals, namespaces: entries(2, 1) }), message),
+    assertReportRejected(retentionPage({ totals, namespaces: entries(1, 1) }), message),
+  ])
+})
+
+test("rejects two current namespaces", async () => {
+  await assertReportRejected(
+    retentionPage({
+      totals: { namespaces: 2, refs: 6, other: 0 },
+      namespaces: [retentionEntry({ namespace: namespaceAt(1) }), retentionEntry({ namespace: namespaceAt(2) })],
+    }),
+    "has two current namespaces",
+  )
+})
+
+test("rejects a namespace with no refs", async () => {
+  await assertReportRejected(
+    retentionPage({ namespaces: [retentionNoSnapshots({ refs: 0, latest: "missing" })] }),
+    "has a namespace with no refs",
+  )
+})
+
+test("rejects snapshots plus broken above refs", async () => {
+  await assertReportRejected(
+    retentionPage({ namespaces: [retentionEntry({ refs: 3, snapshots: 3, broken: 1 })] }),
+    "has snapshots plus broken above refs",
+  )
+})
+
+test("rejects a page whose refs exceed totals.refs", async () => {
+  await assertReportRejected(
+    retentionPage({
+      totals: { namespaces: 2, refs: 5, other: 0 },
+      namespaces: [retentionEntry({ namespace: namespaceAt(1) }), retentionEntry({ namespace: namespaceAt(2), current: false })],
+    }),
+    "has a page whose refs exceed totals.refs",
+  )
+})
+
+test("rejects a broken latest with no broken ref", async () => {
+  await assertReportRejected(
+    retentionPage({ namespaces: [retentionEntry({ latest: "broken", broken: 0 })] }),
+    "has a broken latest with no broken ref",
+  )
+})
+
+test("rejects oldest and newest that disagree with snapshots", async () => {
+  const message = "must carry oldest and newest exactly when snapshots is above 0"
+  await Promise.all(
+    [
+      retentionEntry({ refs: 1, snapshots: 0 }),
+      retentionEntry({ refs: 1, snapshots: 1, oldest: undefined, newest: undefined }),
+      retentionEntry({ refs: 1, snapshots: 1, newest: undefined }),
+      retentionEntry({ refs: 1, snapshots: 1, oldest: undefined }),
+      retentionEntry({ refs: 1, snapshots: 0, oldest: undefined }),
+      retentionEntry({ refs: 1, snapshots: 0, oldest: null, newest: null }),
+    ].map((entry) => assertReportRejected(retentionPage({ namespaces: [entry] }), message)),
+  )
+})
+
+test("rejects an identifier that fails the FR-12 syntax", async () => {
+  await Promise.all(
+    Object.values(malformedIDs).flatMap((id) => [
+      assertReportRejected(retentionPage({ namespaces: [retentionEntry({ oldest: { ...retentionOldest, id } })] }), "has a malformed oldest.id"),
+      assertReportRejected(retentionPage({ namespaces: [retentionEntry({ newest: { ...retentionNewest, id } })] }), "has a malformed newest.id"),
+    ]),
+  )
+})
+
+test("rejects oldest after newest", async () => {
+  await assertReportRejected(
+    retentionPage({ namespaces: [retentionEntry({ oldest: retentionNewest, newest: retentionOldest })] }),
+    "has oldest after newest",
+  )
+})
+
+test("rejects a digest that is not 64 lowercase hex digits", async () => {
+  await Promise.all(
+    ["D".repeat(64), "d".repeat(63), "d".repeat(65), "g".repeat(64), `${"d".repeat(64)}\n`, 7].map((digest) =>
+      assertReportRejected(retentionPage({ namespaces: [retentionEntry({ digest })] }), "has a malformed digest"),
+    ),
+  )
+})
+
+test("an old binary's method-not-found rejects retentionReport with the typed unsupported error", async () => {
+  const c = client()
+  try {
+    await assert.rejects(
+      () => c.retentionReport("/repo"),
+      (err: unknown) =>
+        err instanceof SnapRetentionReportUnsupportedError &&
+        err instanceof SnapRpcError &&
+        err.name === "SnapRetentionReportUnsupportedError" &&
+        err.code === -32601 &&
+        /cannot report retention/.test(err.message),
+    )
+  } finally {
+    await c.close()
+  }
+})
+
+test("retentionReport keeps the wire code of any other error", async () => {
+  const c = client({ FAKE_AGENT_SNAP_MODE: "retention-invalid-params" })
+  try {
+    await assert.rejects(
+      () => c.retentionReport("/repo", -1),
+      (err: unknown) =>
+        err instanceof SnapRpcError &&
+        !(err instanceof SnapRetentionReportUnsupportedError) &&
+        err.name === "SnapRpcError" &&
+        err.code === -32602 &&
+        err.message === "param must be an integer between 0 and 2147483647: offset",
+    )
+  } finally {
+    await c.close()
+  }
+})
+
+test("aborting a retentionReport tears down the transport and rejects with AbortError", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-report-abort-")), "fake.log")
+  const c = reportClient(retentionPage(), { FAKE_AGENT_SNAP_MODE: "retention-slow", FAKE_AGENT_SNAP_LOG: log })
+  const controller = new AbortController()
+  try {
+    const rejected = assert.rejects(
+      c.retentionReport("/repo", undefined, controller.signal),
+      (err: unknown) => (err as Error).name === "AbortError",
+    )
+    await abortOnceReceived(controller, log, "snapshot.retention_report")
+    await rejected
+    assert.equal(c.pid, undefined, "abort must start teardown of the transport")
+  } finally {
+    await c.close()
+  }
+  const events = readFileSync(log, "utf8")
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as { event: string })
+  assert.ok(events.some((entry) => entry.event === "request"), "the report must have reached the child before the abort")
+  assert.ok(!events.some((entry) => entry.event === "completed"), "aborted report must never complete")
+})
+
+test("an already-aborted retentionReport rejects without starting the transport", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "agent-snap-report-abort-")), "fake.log")
+  const c = client({ FAKE_AGENT_SNAP_LOG: log })
+  const controller = new AbortController()
+  controller.abort()
+  try {
+    await assert.rejects(
+      () => c.retentionReport("/repo", undefined, controller.signal),
+      (err: unknown) => (err as Error).name === "AbortError",
+    )
+    assert.equal(c.pid, undefined)
+  } finally {
+    await c.close()
+  }
+  assert.equal(existsSync(log), false, "no request may reach a child")
 })

@@ -248,17 +248,25 @@ in its own timeline.
 Public surface:
 
 - `SnapClient` / `SnapClient.fromEnv()` / `SnapClient.defaultBin()`
-- `SnapLike` (`create(cwd, reason?, signal?, origin?)`, `list`, `get`, `diff(cwd, from, to, page?, signal?)`, `restorePlan(cwd, id, options?, signal?)`, `close`)
+- `SnapLike` (`create(cwd, reason?, signal?, origin?)`, `list`, `get`, `diff(cwd, from, to, page?, signal?)`, `restorePlan(cwd, id, options?, signal?)`, `retentionReport(cwd, offset?, signal?)`, `close`)
 - `SnapOrigin`, `SnapSnapshot`, `SnapSnapshotDetail`, `SnapListResult`, `PingResult`
 - `SnapDiff`, `SnapDiffFile`, `SnapDiffHunk`, `SnapDiffSide`, `SnapDiffPage`, `SnapDiffStatus`, `SnapDiffPatch`
 - `SnapRestorePlan`, `SnapRestorePlanOptions`
+- `SnapRetentionReport`, `SnapRetentionNamespace`, `SnapRetentionStamp`, `SnapRetentionTotals`, `SnapRetentionLatest`
 - `SnapRpcError` (JSON-RPC `code` + `message`)
 - `SnapRestorePlanUnsupportedError` (extends `SnapRpcError`, code `-32601`)
+- `SnapRetentionReportUnsupportedError` (extends `SnapRpcError`, code `-32601`)
 - `SnapProtocolError` (malformed child output)
 
 `AGENT_SNAP_BIN` overrides the executable. Default timeout is **30 seconds**.
 `AbortSignal` and timeout start process-tree teardown immediately. Every
 success and error payload is runtime-validated before it reaches a host.
+
+`retentionReport` needs a binary that answers `snapshot.retention_report`.
+Against an older binary, only `retentionReport` fails, with
+`SnapRetentionReportUnsupportedError`. The export is additive, and `SnapLike`
+gains a required `retentionReport` method, so an outside implementation must
+add it.
 
 Hosts depend on `SnapLike` only. They do not spawn `agent-snap` themselves
 and do not invoke Git.

@@ -150,6 +150,14 @@ returns the validated restore plan (section 8.5). It rejects with
 when the installed `agent-snap` cannot plan restores. `SnapLike` gains
 `restorePlan`.
 
+`client.retentionReport(cwd, offset?, signal?)` returns one validated page of
+the retention report (section 8.7). It rejects with `SnapProtocolError` for a
+report that breaks section 8.7. It rejects with
+`SnapRetentionReportUnsupportedError`, which extends `SnapRpcError` with code
+-32601, when the installed `agent-snap` cannot report retention. `SnapLike`
+gains `retentionReport`. See FR-17 in
+[`docs/BLINK_SPEC.md`](docs/BLINK_SPEC.md).
+
 Both hosts expose the plan as `agent_snap_restore_plan(id, paths?, offset?, current_tree?, cwd?)`.
 The tool is read-only and returns one page as text. It names the `offset` and
 `current_tree` to request next. No release can apply a restore. See FR-15 in

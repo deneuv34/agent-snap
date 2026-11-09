@@ -77,6 +77,9 @@ function fakeClient() {
     async restorePlan() {
       throw new Error("unexpected restorePlan")
     },
+    async retentionReport() {
+      throw new Error("unexpected retentionReport")
+    },
     async close() {
       closed = true
     },
@@ -102,6 +105,9 @@ function detailClient(detail: SnapSnapshotDetail) {
     },
     async restorePlan() {
       throw new Error("unexpected restorePlan")
+    },
+    async retentionReport() {
+      throw new Error("unexpected retentionReport")
     },
     async close() {},
   }
@@ -324,6 +330,9 @@ test("a rejected baseline is logged and never unhandled", async () => {
     async restorePlan() {
       throw new Error("unexpected restorePlan")
     },
+    async retentionReport() {
+      throw new Error("unexpected retentionReport")
+    },
     async close() {},
   }
   const plugin = createAgentSnapPlugin({ client, directory: "/fallback", log: (m) => logs.push(m) })
@@ -394,6 +403,9 @@ test("list and get show a stored origin and omit an absent one", async () => {
     },
     async restorePlan() {
       throw new Error("unexpected restorePlan")
+    },
+    async retentionReport() {
+      throw new Error("unexpected retentionReport")
     },
     async close() {},
   }
@@ -621,6 +633,9 @@ function diffClient(result: SnapDiff) {
     },
     async restorePlan() {
       throw new Error("unexpected restorePlan")
+    },
+    async retentionReport() {
+      throw new Error("unexpected retentionReport")
     },
     async close() {},
   }
@@ -870,6 +885,9 @@ function restorePlanClient(result: SnapRestorePlan, failure?: Error) {
       plans.push({ cwd, id, options, signal })
       if (failure !== undefined) throw failure
       return result
+    },
+    async retentionReport() {
+      throw new Error("unexpected retentionReport")
     },
     async close() {},
   }

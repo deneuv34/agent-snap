@@ -84,6 +84,13 @@
   installed `agent-snap` answers `-32601`, it rejects with the new
   `SnapRestorePlanUnsupportedError`, which extends `SnapRpcError`. `SnapLike`
   gains `restorePlan`.
+- `SnapClient.retentionReport(cwd, offset?, signal?)` sends
+  `snapshot.retention_report` and returns one validated page of the retention
+  report. It rejects a report that breaks the section 8.7 rules with
+  `SnapProtocolError`. When the installed `agent-snap` answers `-32601`, it
+  rejects with the new `SnapRetentionReportUnsupportedError`, which extends
+  `SnapRpcError`. `SnapLike` gains `retentionReport`, so an outside
+  implementation must add it.
 - `agent-snap restore-plan <id> [--cwd <dir>] [--path <path>]... [--offset <n>]
   [--current-tree <oid>]` prints one page of the restore plan as JSON. It
   exits 0 when it prints a plan, including one that is not applicable, and 1 on

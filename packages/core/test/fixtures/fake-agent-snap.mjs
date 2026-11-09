@@ -5,6 +5,7 @@ const mode = process.env.FAKE_AGENT_SNAP_MODE ?? ""
 const logFile = process.env.FAKE_AGENT_SNAP_LOG
 const stateFile = process.env.FAKE_AGENT_SNAP_STATE
 const snapshotID = process.env.FAKE_AGENT_SNAP_ID
+const reportFile = process.env.FAKE_AGENT_SNAP_REPORT
 
 const record = (obj) => {
   if (logFile) appendFileSync(logFile, JSON.stringify({ pid: process.pid, ...obj }) + "\n")
@@ -223,6 +224,20 @@ function handle(req) {
         respond(req, malformedPlans[mode](planResult(req.params)))
       } else {
         respond(req, planResult(req.params))
+      }
+      break
+    case "snapshot.retention_report":
+      if (mode === "retention-invalid-params") {
+        respond(req, null, { code: -32602, message: "param must be an integer between 0 and 2147483647: offset" })
+      } else if (reportFile === undefined) {
+        respond(req, null, { code: -32601, message: "method not found" })
+      } else if (mode === "retention-slow") {
+        setTimeout(() => {
+          record({ event: "completed", method: req.method })
+          respond(req, JSON.parse(readFileSync(reportFile, "utf8")))
+        }, 5000)
+      } else {
+        respond(req, JSON.parse(readFileSync(reportFile, "utf8")))
       }
       break
     default:
