@@ -1,6 +1,7 @@
 package snapshot
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -163,6 +164,7 @@ type Store struct {
 	zeroOID string
 	now     func() time.Time
 	pins    []string
+	run     func(cmd *exec.Cmd, args []string) (string, error)
 }
 
 func New(path string) (*Store, error) {
@@ -194,7 +196,7 @@ func New(path string) (*Store, error) {
 
 	// Every Store pins core.fsmonitor=, so no fsmonitor program decides which
 	// files a read or a capture looks at.
-	return &Store{repo: repo, gitDir: gitDir, ns: ns, zeroOID: zeroOID, now: time.Now, pins: []string{"-c", "core.fsmonitor="}}, nil
+	return &Store{repo: repo, gitDir: gitDir, ns: ns, zeroOID: zeroOID, now: time.Now, pins: []string{"-c", "core.fsmonitor="}, run: output}, nil
 }
 
 func revParse(dir, option string) (string, error) {
@@ -245,9 +247,9 @@ func (s *Store) Create(ctx context.Context, reason string, origin Origin) (Snaps
 // hook, because a hook would receive the scratch index. Configured hooks are
 // listed once, so one added during the operation can still run.
 func (s *Store) withoutHooks(ctx context.Context, scratchDir string) (*Store, error) {
-	hooks := filepath.Join(scratchDir, "hooks")
-	if err := os.Mkdir(hooks, 0o700); err != nil {
-		return nil, fmt.Errorf("create empty hooks directory: %w", err)
+	hooks, err := createHooksDir(scratchDir)
+	if err != nil {
+		return nil, err
 	}
 	out, err := s.gitRaw(ctx, nil, "config", "-z", "--get-regexp", `^hook\..*\.(command|event)$`)
 	var exit *exec.ExitError
@@ -257,16 +259,45 @@ func (s *Store) withoutHooks(ctx context.Context, scratchDir string) (*Store, er
 	if err != nil {
 		return nil, fmt.Errorf("list configured hooks: %w", err)
 	}
-	pins := slices.Concat(s.pins, []string{"-c", "core.hooksPath=" + hooks})
-	seen := map[string]bool{}
+	var names []string
 	for _, record := range records(out) {
 		key, _, _ := strings.Cut(record, "\n")
-		name, ok := strings.CutPrefix(key, "hook.")
-		dot := strings.LastIndexByte(name, '.')
-		if !ok || dot < 0 {
+		name, ok := hookName(key)
+		if !ok {
 			return nil, fmt.Errorf("list configured hooks: Git listed %q, which is not hook.<name>.<key>", key)
 		}
-		name = name[:dot]
+		names = append(names, name)
+	}
+	disabled, err := disabledHooks(names)
+	if err != nil {
+		return nil, err
+	}
+	op := *s
+	op.pins = slices.Concat(s.pins, []string{"-c", "core.hooksPath=" + hooks}, disabled)
+	return &op, nil
+}
+
+func createHooksDir(scratchDir string) (string, error) {
+	hooks := filepath.Join(scratchDir, "hooks")
+	if err := os.Mkdir(hooks, 0o700); err != nil {
+		return "", fmt.Errorf("create empty hooks directory: %w", err)
+	}
+	return hooks, nil
+}
+
+func hookName(key string) (string, bool) {
+	name, ok := strings.CutPrefix(key, "hook.")
+	dot := strings.LastIndexByte(name, '.')
+	if !ok || dot < 0 {
+		return "", false
+	}
+	return name[:dot], true
+}
+
+func disabledHooks(names []string) ([]string, error) {
+	var pins []string
+	seen := map[string]bool{}
+	for _, name := range names {
 		if strings.Contains(name, "=") {
 			return nil, fmt.Errorf("list configured hooks: hook name %q contains '=', so it cannot be disabled on the Git command line", name)
 		}
@@ -275,9 +306,7 @@ func (s *Store) withoutHooks(ctx context.Context, scratchDir string) (*Store, er
 			pins = append(pins, "-c", "hook."+name+".enabled=false")
 		}
 	}
-	op := *s
-	op.pins = pins
-	return &op, nil
+	return pins, nil
 }
 
 func (s *Store) recordTree(ctx context.Context, env []string, tree, head, reason string, origin Origin) (Snapshot, error) {
@@ -414,8 +443,12 @@ func createScratchIndex(repo string) (scratchDir string, cleanup func(), err err
 }
 
 func scratchEnv(dir string) []string {
+	return scratchEnvFor(dir, "index")
+}
+
+func scratchEnvFor(dir, index string) []string {
 	return []string{
-		"GIT_INDEX_FILE=" + filepath.Join(dir, "index"),
+		"GIT_INDEX_FILE=" + filepath.Join(dir, index),
 		"TMPDIR=" + dir,
 		"TMP=" + dir,
 		"TEMP=" + dir,
@@ -766,27 +799,36 @@ func (s *Store) git(ctx context.Context, extraEnv []string, args ...string) (str
 func (s *Store) gitStdin(ctx context.Context, extraEnv []string, stdin string, args ...string) (string, error) {
 	cmd := s.command(ctx, extraEnv, args...)
 	cmd.Stdin = strings.NewReader(stdin)
-	out, err := output(cmd, args)
+	out, err := s.run(cmd, args)
 	return strings.TrimSpace(out), err
 }
 
 // gitRaw keeps the output untrimmed, so NUL-separated records keep their
 // leading and trailing whitespace.
 func (s *Store) gitRaw(ctx context.Context, extraEnv []string, args ...string) (string, error) {
-	return output(s.command(ctx, extraEnv, args...), args)
+	return s.run(s.command(ctx, extraEnv, args...), args)
+}
+
+func output(cmd *exec.Cmd, args []string) (string, error) {
+	return outputOnceStarted(cmd, args, func(int) {})
 }
 
 // A clean filter, a process filter such as Git LFS, or Git itself can print
 // to standard error while a command succeeds, so that text must never reach
 // an object ID, a ref record, or a path list.
-func output(cmd *exec.Cmd, args []string) (string, error) {
+func outputOnceStarted(cmd *exec.Cmd, args []string, started func(pid int)) (string, error) {
+	var stdout bytes.Buffer
 	stderr := &cappedBuffer{}
-	cmd.Stderr = stderr
-	out, err := cmd.Output()
+	cmd.Stdout, cmd.Stderr = &stdout, stderr
+	err := cmd.Start()
+	if err == nil {
+		started(cmd.Process.Pid)
+		err = cmd.Wait()
+	}
 	if err != nil {
 		return "", &gitError{args: args, err: err, stderr: strings.TrimSpace(stderr.String())}
 	}
-	return string(out), nil
+	return stdout.String(), nil
 }
 
 // stderrLimit bounds the standard error kept from one Git command. Git prints
