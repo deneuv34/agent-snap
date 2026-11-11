@@ -148,6 +148,8 @@ This workflow is a product requirement for the restore release, not an MVP behav
 
 - Blink MUST store checkpoint refs below `refs/agent-snapshots/` until the product namespace is formally migrated.
 - The namespace MUST be derived from the resolved absolute Git directory, so linked worktrees do not share a checkpoint timeline accidentally.
+- A linked worktree's timeline MUST start when Git added that worktree. The start is the modification time of the `commondir` file in the worktree's Git directory, which Git writes once, in `git worktree add`. A main worktree has no `commondir` file, so its timeline has no start.
+- A worktree added under a removed worktree's name gets that worktree's Git directory and derives the same namespace. A snapshot whose identifier, compared at its full nanosecond precision, holds a time before the start belongs to the removed worktree and is outside the timeline. Listing skips it (FR-7), lookup does not find it (FR-12), and a create neither reuses it nor chains onto it (FR-5). Deciding this MUST write nothing. Its refs stay until a person drops the namespace (FR-18).
 - A snapshot is stored at `refs/agent-snapshots/<namespace>/items/<snapshot-id>`.
 - The newest snapshot is stored at `refs/agent-snapshots/<namespace>/latest`.
 - The implementation MUST reject symbolic refs at either target path and use `git update-ref --no-deref`.
@@ -158,6 +160,7 @@ This workflow is a product requirement for the restore release, not an MVP behav
 - If they are identical and an item ref that FR-12 lookup accepts points at the latest commit, Blink MUST return that snapshot with `reused: true` and MUST NOT create a duplicate commit or snapshot ref.
 - If they are identical and no such item ref exists, Blink MUST create a new snapshot of that tree whose parent is the latest commit, and move `latest` to it as FR-6 requires. This covers a deleted item ref and one that FR-12 lookup refuses. Blink MUST NOT recreate, repoint, or delete an item ref to avoid it. The next create of the same tree reuses the new snapshot.
 - If a new commit is created, it MUST return `reused: false` (omitted from JSON is equivalent to false in the current wire format).
+- A `latest` that names a snapshot outside the worktree's timeline (FR-4) counts as no latest for the comparison and for the new commit's parent, so the parent is `HEAD`. The create still moves `latest` with compare-and-swap against the value it read (FR-6).
 
 ### FR-6: Concurrent creation
 
@@ -178,6 +181,7 @@ This workflow is a product requirement for the restore release, not an MVP behav
 - JSONL callers may request an integer limit from 1 through 100; the CLI requires a positive integer.
 - Results MUST be sorted newest first by snapshot identifier.
 - Listing MUST skip an item ref whose name is not a snapshot identifier (FR-12). A skipped ref does not count toward the limit. A create that reuses the latest snapshot (FR-5) reports it under an item ref name that passes the same check.
+- Listing MUST skip a snapshot outside the worktree's timeline (FR-4). A skipped snapshot does not count toward the limit.
 - Listing and that reuse lookup MUST read objects with Git replace objects disabled and parse only Git's standard output, never its diagnostics, as FR-12 lookup does. A warning about an item ref whose name Git cannot read MUST NOT hide or rename a real snapshot.
 - Listed entries include identifier, commit, reason, and creation time, plus `source` and `host` when the snapshot stores them. `changed_files` and `reused` are creation-result metadata and are not guaranteed on list results.
 
@@ -259,7 +263,7 @@ The executable is `agent-snap`. Blink is the product name in documentation and p
 
 ### FR-12: Snapshot lookup
 
-- Lookup takes `cwd` and a snapshot identifier, and resolves the identifier only inside the worktree namespace derived from `cwd`. Identifiers from another worktree are not found.
+- Lookup takes `cwd` and a snapshot identifier, and resolves the identifier only inside the worktree namespace derived from `cwd`. Identifiers from another worktree are not found. That includes a removed worktree whose name this worktree reuses (FR-4).
 - An identifier MUST match `<YYYYMMDD>T<HHMMSS>.<nanoseconds>Z-<12 lowercase hex digits>` before any ref path is built from it.
 - Lookup MUST fail closed when the item ref is symbolic, does not point at a commit, points at a commit with more than one parent, points at a commit whose ID does not begin with the identifier's 12-digit suffix, or points at a commit without the `agent-snap: ` message prefix and the fixed product author and committer identity. The same rules decide whether a parent is reported as a snapshot (`parent_id`).
 - Lookup MUST read objects with Git replace objects disabled, and MUST parse only Git's standard output, never its diagnostics. Unparseable Git output is an internal error, not "not found".
@@ -639,7 +643,7 @@ Errors:
 
 A retention report lists every snapshot namespace in the repository. It is read-only. Blink never deletes a snapshot ref on its own, and no create, list, host event, or timer deletes one.
 
-Phase 6 deletes only whole namespaces (FR-18). Each snapshot names the previous one as its parent (FR-2, FR-6), so `latest` reaches every snapshot of its namespace, and deleting items while `latest` stays frees no object. Selective retention by age or count waits for an operator decision under gate `g-retention-scope`.
+Phase 6 deletes only whole namespaces (FR-18). Each snapshot names the previous one as its parent (FR-2, FR-6), so `latest` reaches every snapshot of its chain, and deleting items while `latest` stays frees no object of that chain. A namespace that a reused worktree name holds has two chains (FR-4), and only item refs reach the older one. Selective retention by age or count waits for an operator decision under gate `g-retention-scope`.
 
 Reading:
 
@@ -849,7 +853,7 @@ Returned by lookup (`snapshot.get`).
 | `source`, `host` | string, optional | As in the snapshot object. |
 | `tree` | string | Full Git tree object ID of the snapshot. |
 | `parent` | string, optional | Full ID of the parent commit: the previous checkpoint, or `HEAD` when the snapshot started the chain. Absent when the snapshot has no parent. |
-| `parent_id` | string, optional | Snapshot identifier of the parent when the parent is a snapshot in the same worktree namespace. |
+| `parent_id` | string, optional | Snapshot identifier of the parent when the parent is a snapshot in the same worktree namespace and inside the worktree's timeline (FR-4). |
 | `changed_files` | string array | Paths changed between the snapshot and its parent, or every path when there is no parent. Always present; at most 1000 entries. |
 | `changed_files_truncated` | boolean, optional | `true` when more than 1000 paths changed and `changed_files` holds only the first 1000. |
 

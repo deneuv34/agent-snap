@@ -393,7 +393,7 @@ func (s *Store) namespaceReport(ns string, read *namespaceRead, worktree string)
 // idTime reads the time an identifier names, in whole seconds. An identifier
 // whose digits are no date has the zero time.
 func idTime(id string) time.Time {
-	t, err := time.Parse("20060102T150405.000000000Z", id[:strings.IndexByte(id, '-')])
+	t, err := idInstant(id)
 	if err != nil {
 		return time.Time{}
 	}

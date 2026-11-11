@@ -33,7 +33,7 @@ The default beats the selective cleanup because the drop is the only delete that
 
 ## What a snapshot costs on disk
 
-Each snapshot commit names the previous snapshot as its parent (FR-2, FR-6). `latest` names the newest commit, so `latest` reaches every snapshot of its namespace. Deleting an item ref while `latest` stays makes no object unreachable. The round-1 storage probe showed it on Git 2.54 and 2.56, SHA-1 and SHA-256, files and reftable.
+Each snapshot commit names the previous snapshot as its parent (FR-2, FR-6). `latest` names the newest commit, so `latest` reaches every snapshot of its chain. A namespace that a reused worktree name holds has two chains (FR-4), and only item refs reach the older one. Deleting an item ref while `latest` stays makes no object of that chain unreachable. The round-1 storage probe showed it on Git 2.54 and 2.56, SHA-1 and SHA-256, files and reftable.
 
 A snapshot of text edits is small. Round-1 review recorded 300 snapshots of one-line edits in a clone of this repository, and the packed size grew from 1007 KiB to 1167 KiB after `git gc`, about 0.5 KiB a snapshot. Disk grows fast only when large files that are not ignored keep changing, because every changed blob is stored again.
 
@@ -113,7 +113,7 @@ The report finds C without `--path-format`, which Git 2.31 added:
 
 The report shows a worktree path for each mapped namespace. The main worktree's path is the first `worktree` line of `git worktree list --porcelain`. A linked worktree's path is the directory that holds the `.git` file named by the entry's `gitdir` file. The report reads at most 4096 bytes of that file, only when it is a regular file, and joins a relative path to the entry directory. Git 2.48 and later write a relative path there for `--relative-paths`, and the probe saw `../../../../wtrel/.git`. When the file cannot be read, the namespace still maps and the path is absent. `git worktree list` blocks on an entry whose `gitdir` file is a FIFO, which a FIFO probe showed on Git 2.54 and 2.56 (landing step 2). So the report skips that command when any entry's `gitdir` is not a regular file, and the main worktree then has no path. After `git worktree remove`, the worktree's entry was gone and its namespace stayed (W1).
 
-A new linked worktree that takes a removed worktree's name derives the same namespace, and the report shows the old snapshots under the new worktree. Round-1 review measured this. It is a Phase 4 bug on main, and [Follow-ups](#follow-ups) records it. The drop prompt shows the snapshot times, so a person can see that a timeline is older than its worktree.
+A new linked worktree that takes a removed worktree's name derives the same namespace. Its timeline starts when Git added it (FR-4), so `list` and lookup leave out the removed worktree's snapshots. The report reads refs, so it counts both timelines under the new worktree, and the drop deletes both. Round-1 review measured the shared namespace. The drop prompt shows the snapshot times, so a person can see that a timeline is older than its worktree.
 
 ### The digest covers every ref with its value
 
@@ -515,7 +515,6 @@ These invariants are proposed here. The coordinator adds them to AGENTS.md when 
 
 ## Follow-ups
 
-- Namespace reuse. A new linked worktree created under a removed worktree's name inherits its timeline. `list` shows the old snapshots, and a restore can target them. This is a Phase 4 bug on main.
 - FR-16 confirmation code. The FR-16 code is the backup ID's last six hex digits, and the plan tool prints the backup ID. The same `TIOCSTI` injection works on it. Carry a random code into the FR-16 landing step that builds the CLI prompt.
 - FR-16 landing notes. A restore that meets a drop's lock refuses with `-32005`, and the lock file is empty. The restore's message then names no holder. Phase 5 step 8 can name a drop as a possible holder.
 - A reused CLI create. `agent-snap create` in an unchanged tree returns the automatic snapshot it reused, with that snapshot's origin. The CLI could print `reused` and the origin.
